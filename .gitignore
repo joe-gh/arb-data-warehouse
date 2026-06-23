@@ -1,0 +1,27 @@
+# --- secrets / credentials (never commit) ---
+*.env
+.env
+.env.*
+.arb-dbtest.env
+*.pem
+*.key
+
+# --- vendor JDBC driver (licensed DataDirect OpenEdge; fetch separately, see README) ---
+*.jar
+
+# --- pulled data + generated artifacts ---
+dump/
+*.csv
+
+# --- debug samples / scratch ---
+product_*.json
+*_enrichment.json
+*.php
+
+# --- python ---
+__pycache__/
+*.pyc
+*.pyo
+
+# --- os ---
+.DS_Store

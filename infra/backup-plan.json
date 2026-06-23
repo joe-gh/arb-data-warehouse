@@ -1,0 +1,29 @@
+{
+  "BackupPlanName": "fdm4-warehouse-gfs",
+  "Rules": [
+    {
+      "RuleName": "daily-7d",
+      "TargetBackupVaultName": "Default",
+      "ScheduleExpression": "cron(0 6 * * ? *)",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 180,
+      "Lifecycle": { "DeleteAfterDays": 7 }
+    },
+    {
+      "RuleName": "weekly-28d",
+      "TargetBackupVaultName": "Default",
+      "ScheduleExpression": "cron(0 6 ? * SUN *)",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 180,
+      "Lifecycle": { "DeleteAfterDays": 28 }
+    },
+    {
+      "RuleName": "monthly-180d",
+      "TargetBackupVaultName": "Default",
+      "ScheduleExpression": "cron(0 6 1 * ? *)",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 180,
+      "Lifecycle": { "DeleteAfterDays": 180 }
+    }
+  ]
+}
