@@ -10,12 +10,18 @@ auto-applied — install them by hand (`crontab -e` for the correct user on each
 # flock = no overlap; timeout = hard cap.
 0 * * * *   /usr/bin/flock -n /tmp/fdm4-pull.lock /usr/bin/timeout 3300 /bin/bash /opt/fdm4-extractor/run_sync.sh >> /opt/fdm4-extractor/run_sync.log 2>&1
 
-# Reaper: kill any pull/load wedged past 3300s.
-*/10 * * * * ps -eo pid,etimes,args | awk '/[r]un_sync.sh|[p]ull_fdm4|[l]oad_dump/ && $2>3300 {print $1}' | xargs -r kill -9
+# Reaper (reap.sh): kill any pull/load wedged past the 55m cap AND flip its
+# dangling 'running' control row to 'failed'. The mark-failed step closes the
+# gap where SIGKILL bypasses run_sync.sh's EXIT trap (which would otherwise leave
+# the row 'running' until the daily prune). Runs every 10m so stale rows clear fast.
+*/10 * * * * /bin/bash /opt/fdm4-extractor/reap.sh >/dev/null 2>&1
 
-# Prune: fail stale 'running' control rows >6h + delete control rows >30d.
+# Daily prune: backstop fail of any 'running' row >6h + delete control rows >30d.
+# (reap.sh now handles the fast fail-stale path; this is the long-tail cleanup.)
 17 5 * * *  sudo -u postgres psql -d arb_warehouse -tAc "UPDATE woo.sync_control SET status='failed', error=COALESCE(error,'stale running') WHERE status='running' AND started_at < now()-interval '6 hours'; DELETE FROM woo.sync_control WHERE requested_at < now()-interval '30 days'" >/dev/null 2>&1
 ```
+
+`reap.sh` lives in this repo at `infra/reap.sh` (deployed to `/opt/fdm4-extractor/reap.sh`).
 
 ## Production WordPress box — `www-data` crontab
 
