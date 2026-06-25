@@ -101,6 +101,25 @@ AS $$
 DECLARE
     total integer;
 BEGIN
+    -- Precompute available stock per item ONCE into an indexed temp table: latest
+    -- item-balance snapshot per (item-number, warehouse), on-hand - committed (floored),
+    -- summed across warehouses. Done up front rather than as an inline subquery in the
+    -- big variation join — inlined, the DISTINCT-ON sort got re-planned badly and slowed
+    -- refresh ~4.5x; materialized + indexed + analyzed, the join is trivial.
+    CREATE TEMP TABLE _bal ON COMMIT DROP AS
+        SELECT "item-number" AS item_number, SUM(GREATEST(0, on_hand - committed)) AS stock
+        FROM (
+            SELECT DISTINCT ON ("item-number", warehouse)
+                   "item-number",
+                   COALESCE(NULLIF("inv-bal", '')::numeric, 0)   AS on_hand,
+                   COALESCE(NULLIF("committed", '')::numeric, 0) AS committed
+            FROM fdm4."item-balance"
+            ORDER BY "item-number", warehouse, "trans-date" DESC
+        ) latest
+        GROUP BY "item-number";
+    CREATE INDEX ON _bal (item_number);
+    ANALYZE _bal;
+
     -- Freshly-computed desired set into a temp table (same extraction as before,
     -- now also computing the structural / stock-price / content hashes).
     CREATE TEMP TABLE _next ON COMMIT DROP AS
@@ -194,24 +213,10 @@ BEGIN
               ON sc."style-code" = i."style-code" AND sc."color-code" = i."color-code"
             LEFT JOIN fdm4."style-size" ss
               ON ss."style-code" = i."style-code" AND ss."size-code" = i."size-code"
-            -- fdm4.item-balance is a DAILY SNAPSHOT history: one row per
-            -- (item-number, warehouse, trans-date). Take only the LATEST snapshot
-            -- per (item-number, warehouse) — summing the raw rows would add up weeks
-            -- of daily history and grossly overstate stock. Stock = AVAILABLE =
-            -- on-hand (inv-bal) minus committed (units already allocated to orders),
-            -- floored at 0, then summed across warehouses.
-            LEFT JOIN (
-                SELECT "item-number", SUM(GREATEST(0, on_hand - committed)) AS stock
-                FROM (
-                    SELECT DISTINCT ON ("item-number", warehouse)
-                           "item-number",
-                           COALESCE(NULLIF("inv-bal", '')::numeric, 0)   AS on_hand,
-                           COALESCE(NULLIF("committed", '')::numeric, 0) AS committed
-                    FROM fdm4."item-balance"
-                    ORDER BY "item-number", warehouse, "trans-date" DESC
-                ) latest
-                GROUP BY "item-number"
-            ) bal ON bal."item-number" = i."item-number"
+            -- Available stock per item, precomputed once into _bal above (latest
+            -- item-balance snapshot per warehouse, on-hand - committed, summed). See the
+            -- _bal note for why this is materialized instead of an inline subquery.
+            LEFT JOIN _bal bal ON bal.item_number = i."item-number"
             WHERE i."upc-code" IS NOT NULL AND i."upc-code" <> ''   -- skip items with no barcode
             -- Deterministic pick among duplicate (store,catalog,upc) rows (e.g. dup
             -- colour entries in storeData) so payload / content_hash / row_version is
