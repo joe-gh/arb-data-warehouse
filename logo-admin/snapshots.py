@@ -1,0 +1,738 @@
+"""Allowlisted full-row snapshots, semantic diffs, and exact restoration."""
+
+import json
+from collections import defaultdict
+from numbers import Number
+from typing import Any, Iterable, Mapping, Optional, Sequence
+
+from domain import InvalidCommand
+from mutations import MutationScope
+
+
+ASSIGNMENT_COLUMNS = (
+    "fdm4_store",
+    "product_style",
+    "garment_color_code",
+    "position",
+    "design_id",
+    "logo_code",
+    "color_scheme_id",
+    "location",
+    "optional",
+    "background",
+    "cost_override",
+    "sort_order",
+    "image_url",
+    "active",
+    "updated_by",
+    "updated_at",
+    "option_row",
+    "name_override",
+    "row_version",
+    "catalog_id",
+)
+STORE_SETTINGS_COLUMNS = (
+    "fdm4_store",
+    "enabled",
+    "allows_none",
+    "updated_by",
+    "updated_at",
+)
+STORE_PRICING_COLUMNS = (
+    "fdm4_store",
+    "tier_name",
+    "note",
+    "updated_at",
+)
+VOLATILE_PREVIEW_COLUMNS = frozenset({"updated_by", "updated_at"})
+RESTORE_COLUMNS = {
+    ("logo", "assignment"): frozenset(ASSIGNMENT_COLUMNS),
+    ("logo", "store_settings"): frozenset(STORE_SETTINGS_COLUMNS),
+    ("woo", "store_pricing_tier"): frozenset(STORE_PRICING_COLUMNS),
+}
+SNAPSHOT_SCOPE_KINDS = frozenset({
+    "assignment_option_row",
+    "assignment_color",
+    "assignment_style",
+    "store_settings_row",
+    "store_pricing_tier_row",
+})
+RESTORE_SCOPE_KINDS = frozenset({
+    "assignment_option_row",
+    "assignment_color",
+    "assignment_style",
+    "store_settings_row",
+    "store_pricing_tier_row",
+})
+SCOPE_TABLE_BY_KIND = {
+    "assignment_option_row": "logo.assignment",
+    "assignment_color": "logo.assignment",
+    "assignment_style": "logo.assignment",
+    "store_settings_row": "logo.store_settings",
+    "store_pricing_tier_row": "woo.store_pricing_tier",
+}
+MAX_SNAPSHOT_ROWS_PER_SCOPE = 2_000
+MAX_SNAPSHOT_ROWS_TOTAL = 5_000
+MAX_SNAPSHOT_ROW_BYTES = 256 * 1024
+MAX_SNAPSHOT_SCOPE_BYTES = 2 * 1024 * 1024
+MAX_SNAPSHOT_TOTAL_BYTES = 5 * 1024 * 1024
+MAX_SNAPSHOT_STATE_BYTES = 6 * 1024 * 1024
+MAX_SEMANTIC_DIFF_BYTES = 12 * 1024 * 1024
+MAX_SNAPSHOT_SCOPE_ENTRIES = 500
+
+SCOPE_KEY_COLUMNS = {
+    "assignment_style": ("fdm4_store", "product_style"),
+    "assignment_color": (
+        "fdm4_store", "product_style", "garment_color_code",
+    ),
+    "assignment_option_row": (
+        "fdm4_store", "product_style", "garment_color_code", "option_row",
+    ),
+    "store_settings_row": ("fdm4_store",),
+    "store_pricing_tier_row": ("fdm4_store",),
+}
+
+
+def validate_restore_schema(cursor) -> None:
+    """Fail write-enabled startup if exact-undo column coverage has drifted."""
+
+    for (schema, table), expected in RESTORE_COLUMNS.items():
+        cursor.execute(
+            """
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema = %s AND table_name = %s
+             ORDER BY ordinal_position
+            """,
+            (schema, table),
+        )
+        actual = frozenset(str(row["column_name"]) for row in cursor.fetchall())
+        if actual != expected:
+            missing = sorted(expected - actual)
+            unexpected = sorted(actual - expected)
+            raise RuntimeError(
+                f"exact-undo schema mismatch for {schema}.{table}; "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+
+
+def scope_dict(scope: MutationScope) -> dict:
+    return {"kind": scope.kind, "key": dict(scope.key)}
+
+
+def scope_from_dict(value: Mapping[str, Any]) -> MutationScope:
+    kind = str(value.get("kind", ""))
+    if kind not in SNAPSHOT_SCOPE_KINDS or kind not in RESTORE_SCOPE_KINDS:
+        raise InvalidCommand("unknown snapshot scope")
+    key = value.get("key")
+    if not isinstance(key, Mapping):
+        raise InvalidCommand("snapshot scope key is invalid")
+    expected_keys = SCOPE_KEY_COLUMNS[kind]
+    if set(key) != set(expected_keys):
+        raise InvalidCommand("snapshot scope key columns are invalid")
+    for name in expected_keys:
+        item = key[name]
+        if name == "option_row":
+            if type(item) is not int:
+                raise InvalidCommand("snapshot option-row key is invalid")
+        elif not isinstance(item, str):
+            raise InvalidCommand("snapshot text key is invalid")
+    return MutationScope(kind, dict(key))  # type: ignore[arg-type]
+
+
+def _scope_token(scope: MutationScope) -> str:
+    return json.dumps(scope_dict(scope), sort_keys=True, separators=(",", ":"))
+
+
+def compact_scopes(scopes: Iterable[MutationScope]) -> tuple[MutationScope, ...]:
+    """Deduplicate scopes and remove assignment scopes contained by broader ones."""
+
+    unique = {_scope_token(scope): scope for scope in scopes}
+    values = list(unique.values())
+    styles = {
+        (str(s.key["fdm4_store"]), str(s.key["product_style"]))
+        for s in values
+        if s.kind == "assignment_style"
+    }
+    colors = {
+        (
+            str(s.key["fdm4_store"]),
+            str(s.key["product_style"]),
+            str(s.key["garment_color_code"]),
+        )
+        for s in values
+        if s.kind == "assignment_color"
+        and (str(s.key["fdm4_store"]), str(s.key["product_style"])) not in styles
+    }
+    kept: list[MutationScope] = []
+    for scope in values:
+        if scope.kind in {"assignment_color", "assignment_option_row"}:
+            style_key = (
+                str(scope.key["fdm4_store"]),
+                str(scope.key["product_style"]),
+            )
+            if style_key in styles:
+                continue
+        if scope.kind == "assignment_option_row":
+            color_key = (
+                str(scope.key["fdm4_store"]),
+                str(scope.key["product_style"]),
+                str(scope.key["garment_color_code"]),
+            )
+            if color_key in colors:
+                continue
+        kept.append(scope)
+    return tuple(sorted(kept, key=_scope_token))
+
+
+def lock_scopes(cursor, scopes: Iterable[MutationScope]) -> tuple[MutationScope, ...]:
+    """Serialize application mutations, including scopes that have no rows yet.
+
+    Row locks cannot protect an empty settings/pricing row or a new assignment
+    key. Transaction-scoped advisory locks close that phantom window. Every
+    application HTTP, MCP, preview, apply, and undo path uses these same stable
+    scope tokens in sorted order, so overlapping operations cannot race or
+    deadlock by taking locks in different orders.
+    """
+
+    compacted = compact_scopes(scopes)
+    lock_set = {_scope_token(scope): scope for scope in compacted}
+    # Every assignment mutation also takes its style ancestor. Without this,
+    # an option-row write and a simultaneous color/style write use different
+    # advisory keys even though their row sets overlap.
+    for scope in compacted:
+        if scope.kind.startswith("assignment_"):
+            ancestor = MutationScope(
+                "assignment_style",
+                {
+                    "fdm4_store": scope.key["fdm4_store"],
+                    "product_style": scope.key["product_style"],
+                },
+            )
+            lock_set[_scope_token(ancestor)] = ancestor
+    for token in sorted(lock_set):
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (token,),
+        )
+    return compacted
+
+
+def lock_scope_tables(cursor, scopes: Iterable[MutationScope]) -> tuple[str, ...]:
+    """Exclude non-cooperating writers while exact apply/undo is in flight.
+
+    Advisory scope locks serialize application/MCP routes, but imports and ETL
+    do not share that protocol. SHARE ROW EXCLUSIVE conflicts with their DML
+    table locks and closes phantom insert/delete windows. Call this only after
+    ``lock_scopes`` so cooperating writers use one global lock order.
+    """
+
+    tables = tuple(sorted({
+        SCOPE_TABLE_BY_KIND[scope.kind]
+        for scope in compact_scopes(scopes)
+    }))
+    for table in tables:
+        # Names come only from the closed mapping above, never user input.
+        cursor.execute(
+            f"LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE"
+        )
+    return tables
+
+
+def _assignment_where(scope: MutationScope) -> tuple[str, tuple]:
+    key = scope.key
+    if scope.kind == "assignment_style":
+        return (
+            "fdm4_store = %s AND product_style = %s",
+            (key["fdm4_store"], key["product_style"]),
+        )
+    if scope.kind == "assignment_color":
+        return (
+            "fdm4_store = %s AND product_style = %s "
+            "AND garment_color_code = %s",
+            (
+                key["fdm4_store"],
+                key["product_style"],
+                key["garment_color_code"],
+            ),
+        )
+    if scope.kind == "assignment_option_row":
+        return (
+            "fdm4_store = %s AND product_style = %s "
+            "AND garment_color_code = %s AND option_row = %s",
+            (
+                key["fdm4_store"],
+                key["product_style"],
+                key["garment_color_code"],
+                key["option_row"],
+            ),
+        )
+    raise InvalidCommand("not an assignment scope")
+
+
+def _bounded_snapshot_rows(
+    cursor,
+    source_sql: str,
+    params: tuple,
+) -> tuple[list[dict], int]:
+    """Keep oversized rowsets inside PostgreSQL and return only a sentinel."""
+
+    cursor.execute(
+        f"""
+        WITH source AS MATERIALIZED (
+            {source_sql}
+        ), measured AS MATERIALIZED (
+            SELECT ordinal, row,
+                   octet_length(row::text)::bigint AS row_bytes
+              FROM source
+        ), stats AS (
+            SELECT count(*)::integer AS row_count,
+                   coalesce(max(row_bytes), 0)::bigint AS max_row_bytes,
+                   coalesce(sum(row_bytes), 0)::bigint AS scope_bytes
+              FROM measured
+        )
+        SELECT CASE
+                   WHEN stats.row_count <= %s
+                    AND stats.max_row_bytes <= %s
+                    AND stats.scope_bytes <= %s
+                   THEN measured.row
+                   ELSE NULL
+               END AS row,
+               stats.row_count, stats.max_row_bytes, stats.scope_bytes
+          FROM stats
+          LEFT JOIN measured
+            ON stats.row_count <= %s
+           AND stats.max_row_bytes <= %s
+           AND stats.scope_bytes <= %s
+         ORDER BY measured.ordinal NULLS LAST
+        """,
+        params + (
+            MAX_SNAPSHOT_ROWS_PER_SCOPE,
+            MAX_SNAPSHOT_ROW_BYTES,
+            MAX_SNAPSHOT_SCOPE_BYTES,
+            MAX_SNAPSHOT_ROWS_PER_SCOPE,
+            MAX_SNAPSHOT_ROW_BYTES,
+            MAX_SNAPSHOT_SCOPE_BYTES,
+        ),
+    )
+    result_rows = list(cursor.fetchall())
+    stats = result_rows[0] if result_rows else {
+        "row_count": 0,
+        "max_row_bytes": 0,
+        "scope_bytes": 0,
+    }
+    if int(stats["row_count"]) > MAX_SNAPSHOT_ROWS_PER_SCOPE:
+        raise InvalidCommand("Affected scope exceeds the exact-snapshot row limit")
+    if int(stats["max_row_bytes"]) > MAX_SNAPSHOT_ROW_BYTES:
+        raise InvalidCommand("Affected row exceeds the exact-snapshot byte limit")
+    if int(stats["scope_bytes"]) > MAX_SNAPSHOT_SCOPE_BYTES:
+        raise InvalidCommand("Affected scope exceeds the exact-snapshot byte limit")
+    return (
+        [dict(row["row"]) for row in result_rows if row.get("row") is not None],
+        int(stats["scope_bytes"]),
+    )
+
+
+def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
+    lock = " FOR UPDATE" if for_update else ""
+    if scope.kind.startswith("assignment_"):
+        where, params = _assignment_where(scope)
+        rows, snapshot_bytes = _bounded_snapshot_rows(
+            cursor,
+            f"""
+            SELECT row_number() OVER (
+                       ORDER BY garment_color_code, option_row, position
+                   ) AS ordinal,
+                   to_jsonb(locked) AS row
+              FROM (
+                  SELECT * FROM logo.assignment
+                   WHERE {where}
+                   ORDER BY garment_color_code, option_row, position
+                   LIMIT %s{lock}
+              ) AS locked
+            """,
+            params + (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,),
+        )
+        table = "logo.assignment"
+    elif scope.kind == "store_settings_row":
+        rows, snapshot_bytes = _bounded_snapshot_rows(
+            cursor,
+            f"""
+            SELECT 1 AS ordinal, to_jsonb(locked) AS row
+              FROM (
+                  SELECT * FROM logo.store_settings
+                   WHERE fdm4_store = %s{lock}
+              ) AS locked
+            """,
+            (scope.key["fdm4_store"],),
+        )
+        table = "logo.store_settings"
+    elif scope.kind == "store_pricing_tier_row":
+        rows, snapshot_bytes = _bounded_snapshot_rows(
+            cursor,
+            f"""
+            SELECT 1 AS ordinal, to_jsonb(locked) AS row
+              FROM (
+                  SELECT * FROM woo.store_pricing_tier
+                   WHERE fdm4_store = %s{lock}
+              ) AS locked
+            """,
+            (scope.key["fdm4_store"],),
+        )
+        table = "woo.store_pricing_tier"
+    else:
+        raise InvalidCommand("unsupported snapshot scope")
+    return {
+        "scope": scope_dict(scope),
+        "table": table,
+        "rows": rows,
+        "_bytes": snapshot_bytes,
+    }
+
+
+def snapshot_scopes(
+    cursor,
+    scopes: Iterable[MutationScope],
+    *,
+    for_update: bool = False,
+) -> list[dict]:
+    snapshots: list[dict] = []
+    total_rows = 0
+    total_bytes = 0
+    for scope in compact_scopes(scopes):
+        snapshot = _snapshot_one(cursor, scope, for_update=for_update)
+        total_rows += len(snapshot["rows"])
+        total_bytes += int(snapshot.get("_bytes", 0))
+        if total_rows > MAX_SNAPSHOT_ROWS_TOTAL:
+            raise InvalidCommand(
+                "Change-set exceeds the total exact-snapshot row limit"
+            )
+        if total_bytes > MAX_SNAPSHOT_TOTAL_BYTES:
+            raise InvalidCommand(
+                "Change-set exceeds the total exact-snapshot byte limit"
+            )
+        snapshot.pop("_bytes", None)
+        snapshots.append(snapshot)
+    validate_snapshot_state(snapshots, expected_scopes=compact_scopes(scopes))
+    return snapshots
+
+
+def _semantic_rows(rows: Sequence[Mapping[str, Any]], ignored: set[str]) -> list[dict]:
+    return [
+        {key: value for key, value in row.items() if key not in ignored}
+        for row in rows
+    ]
+
+
+def _row_key(table: str, row: Mapping[str, Any]) -> str:
+    if table == "logo.assignment":
+        values = [
+            row.get("fdm4_store"),
+            row.get("product_style"),
+            row.get("garment_color_code"),
+            row.get("option_row"),
+            row.get("position"),
+        ]
+    else:
+        values = [row.get("fdm4_store")]
+    return json.dumps(values, separators=(",", ":"), default=str)
+
+
+def diff_states(
+    before: Sequence[Mapping[str, Any]],
+    after: Sequence[Mapping[str, Any]],
+    *,
+    ignored_columns: set[str] | frozenset[str] = frozenset(),
+) -> dict:
+    ignored = set(ignored_columns)
+    before_by_scope = {_scope_token(scope_from_dict(e["scope"])): e for e in before}
+    after_by_scope = {_scope_token(scope_from_dict(e["scope"])): e for e in after}
+    changes = []
+    for token in sorted(set(before_by_scope) | set(after_by_scope)):
+        left = before_by_scope.get(token, {"rows": [], "table": ""})
+        right = after_by_scope.get(token, {"rows": [], "table": left["table"]})
+        table = str(right.get("table") or left.get("table"))
+        left_rows = {
+            _row_key(table, row): row
+            for row in _semantic_rows(left.get("rows", []), ignored)
+        }
+        right_rows = {
+            _row_key(table, row): row
+            for row in _semantic_rows(right.get("rows", []), ignored)
+        }
+        for row_key in sorted(set(left_rows) | set(right_rows)):
+            old = left_rows.get(row_key)
+            new = right_rows.get(row_key)
+            if old != new:
+                changes.append({
+                    "table": table,
+                    "key": json.loads(row_key),
+                    "before": old,
+                    "after": new,
+                })
+    result = {"changes": changes, "count": len(changes)}
+    if json_size_bytes(result) > MAX_SEMANTIC_DIFF_BYTES:
+        raise InvalidCommand("Semantic preview exceeds the byte limit")
+    return result
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def json_size_bytes(value: Any) -> int:
+    return sum(
+        len(chunk.encode("utf-8"))
+        for chunk in json.JSONEncoder(
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).iterencode(value)
+    )
+
+
+def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
+    expected = RESTORE_COLUMNS[tuple(table.split(".", 1))]
+    if set(row) != set(expected):
+        raise InvalidCommand("Journal row columns do not match the restore schema")
+    if table == "logo.assignment":
+        text_columns = set(ASSIGNMENT_COLUMNS) - {
+            "position", "option_row", "optional", "cost_override",
+            "sort_order", "active", "updated_at", "name_override",
+            "row_version", "catalog_id",
+        }
+        for column in text_columns:
+            if not isinstance(row[column], str):
+                raise InvalidCommand("Journal assignment text value is invalid")
+        if row["name_override"] is not None and not isinstance(
+            row["name_override"], str
+        ):
+            raise InvalidCommand("Journal assignment name override is invalid")
+        for column in ("position", "option_row", "sort_order"):
+            if type(row[column]) is not int:
+                raise InvalidCommand("Journal assignment integer value is invalid")
+        for column in ("optional", "active"):
+            if type(row[column]) is not bool:
+                raise InvalidCommand("Journal assignment boolean value is invalid")
+        cost = row["cost_override"]
+        if cost is not None and (not isinstance(cost, Number) or isinstance(cost, bool)):
+            raise InvalidCommand("Journal assignment cost value is invalid")
+    elif table == "logo.store_settings":
+        if not isinstance(row["fdm4_store"], str) or not isinstance(
+            row["updated_by"], str
+        ):
+            raise InvalidCommand("Journal store-settings text value is invalid")
+        if type(row["enabled"]) is not bool or type(row["allows_none"]) is not bool:
+            raise InvalidCommand("Journal store-settings boolean value is invalid")
+    elif table == "woo.store_pricing_tier":
+        if any(
+            not isinstance(row[column], str)
+            for column in ("fdm4_store", "tier_name", "note")
+        ):
+            raise InvalidCommand("Journal pricing text value is invalid")
+    if not isinstance(row["updated_at"], str):
+        raise InvalidCommand("Journal timestamp value is invalid")
+
+
+def _row_is_within_scope(
+    table: str,
+    row: Mapping[str, Any],
+    scope: MutationScope,
+) -> bool:
+    if str(row.get("fdm4_store")) != str(scope.key["fdm4_store"]):
+        return False
+    if table != "logo.assignment":
+        return True
+    if str(row.get("product_style")) != str(scope.key["product_style"]):
+        return False
+    if scope.kind in {"assignment_color", "assignment_option_row"} and str(
+        row.get("garment_color_code")
+    ) != str(scope.key["garment_color_code"]):
+        return False
+    if scope.kind == "assignment_option_row" and int(
+        row.get("option_row", -1)
+    ) != int(scope.key["option_row"]):
+        return False
+    return True
+
+
+def validate_snapshot_state(
+    state: Sequence[Mapping[str, Any]],
+    *,
+    expected_scopes: Optional[Iterable[MutationScope]] = None,
+) -> tuple[MutationScope, ...]:
+    """Validate an entire journal state before any lock or restore DML."""
+
+    if isinstance(state, (str, bytes)) or not isinstance(state, Sequence):
+        raise InvalidCommand("Journal snapshot is not a sequence")
+    entries = list(state)
+    if len(entries) > MAX_SNAPSHOT_SCOPE_ENTRIES:
+        raise InvalidCommand("Journal snapshot has too many scope entries")
+    scopes: list[MutationScope] = []
+    seen_scopes: set[str] = set()
+    seen_rows: set[tuple[str, str]] = set()
+    total_rows = 0
+    for entry in entries:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "scope", "table", "rows",
+        }:
+            raise InvalidCommand("Journal snapshot entry is invalid")
+        if not isinstance(entry["scope"], Mapping):
+            raise InvalidCommand("Journal snapshot scope is invalid")
+        scope = scope_from_dict(entry["scope"])
+        token = _scope_token(scope)
+        if token in seen_scopes:
+            raise InvalidCommand("Journal snapshot repeats a scope")
+        seen_scopes.add(token)
+        scopes.append(scope)
+        table = str(entry["table"])
+        if table != SCOPE_TABLE_BY_KIND[scope.kind]:
+            raise InvalidCommand("Journal snapshot table does not match its scope")
+        rows = entry["rows"]
+        if not isinstance(rows, list) or len(rows) > MAX_SNAPSHOT_ROWS_PER_SCOPE:
+            raise InvalidCommand("Journal snapshot rows are invalid")
+        total_rows += len(rows)
+        if total_rows > MAX_SNAPSHOT_ROWS_TOTAL:
+            raise InvalidCommand("Journal snapshot exceeds the restore row limit")
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise InvalidCommand("Journal snapshot row is invalid")
+            _validate_row_types(table, row)
+            if not _row_is_within_scope(table, row, scope):
+                raise InvalidCommand("Journal row falls outside its declared scope")
+            if json_size_bytes(row) > MAX_SNAPSHOT_ROW_BYTES:
+                raise InvalidCommand("Journal row exceeds the restore byte limit")
+            row_identity = (table, _row_key(table, row))
+            if row_identity in seen_rows:
+                raise InvalidCommand("Journal snapshot repeats a business row")
+            seen_rows.add(row_identity)
+    compacted = compact_scopes(scopes)
+    if len(compacted) != len(scopes) or {
+        _scope_token(scope) for scope in compacted
+    } != seen_scopes:
+        raise InvalidCommand("Journal snapshot contains overlapping scopes")
+    if expected_scopes is not None:
+        expected = {
+            _scope_token(scope) for scope in compact_scopes(expected_scopes)
+        }
+        if expected != seen_scopes:
+            raise InvalidCommand("Journal snapshot scopes do not match the change-set")
+    if json_size_bytes(entries) > MAX_SNAPSHOT_STATE_BYTES:
+        raise InvalidCommand("Journal snapshot exceeds the restore byte limit")
+    return tuple(compacted)
+
+
+def states_equal(left: Any, right: Any) -> bool:
+    return canonical_json(left) == canonical_json(right)
+
+
+def _delete_scope(cursor, scope: MutationScope) -> None:
+    if scope.kind.startswith("assignment_"):
+        where, params = _assignment_where(scope)
+        # Companion slots depend semantically on their position-1 anchor.
+        # Delete them first so restore remains safe if that relationship is
+        # promoted to a deployed constraint/trigger later.
+        cursor.execute(
+            f"DELETE FROM logo.assignment WHERE {where} AND position > 1",
+            params,
+        )
+        cursor.execute(
+            f"DELETE FROM logo.assignment WHERE {where} AND position = 1",
+            params,
+        )
+    elif scope.kind == "store_settings_row":
+        cursor.execute(
+            "DELETE FROM logo.store_settings WHERE fdm4_store = %s",
+            (scope.key["fdm4_store"],),
+        )
+    elif scope.kind == "store_pricing_tier_row":
+        cursor.execute(
+            "DELETE FROM woo.store_pricing_tier WHERE fdm4_store = %s",
+            (scope.key["fdm4_store"],),
+        )
+    else:
+        raise InvalidCommand("unsupported restore scope")
+
+
+def _insert_assignment(cursor, row: Mapping[str, Any]) -> None:
+    cursor.execute(
+        f"""
+        INSERT INTO logo.assignment ({', '.join(ASSIGNMENT_COLUMNS)})
+        VALUES ({', '.join(['%s'] * len(ASSIGNMENT_COLUMNS))})
+        """,
+        tuple(row[column] for column in ASSIGNMENT_COLUMNS),
+    )
+
+
+def _insert_settings(cursor, row: Mapping[str, Any]) -> None:
+    cursor.execute(
+        f"""
+        INSERT INTO logo.store_settings ({', '.join(STORE_SETTINGS_COLUMNS)})
+        VALUES ({', '.join(['%s'] * len(STORE_SETTINGS_COLUMNS))})
+        """,
+        tuple(row[column] for column in STORE_SETTINGS_COLUMNS),
+    )
+
+
+def _insert_pricing(cursor, row: Mapping[str, Any]) -> None:
+    cursor.execute(
+        f"""
+        INSERT INTO woo.store_pricing_tier ({', '.join(STORE_PRICING_COLUMNS)})
+        VALUES ({', '.join(['%s'] * len(STORE_PRICING_COLUMNS))})
+        """,
+        tuple(row[column] for column in STORE_PRICING_COLUMNS),
+    )
+
+
+def restore_state(
+    cursor,
+    state: Sequence[Mapping[str, Any]],
+    *,
+    expected_scopes: Optional[Iterable[MutationScope]] = None,
+) -> None:
+    """Replace each allowlisted scope with its exact recorded rows."""
+
+    entries = list(state)
+    validate_snapshot_state(entries, expected_scopes=expected_scopes)
+    for entry in entries:
+        _delete_scope(cursor, scope_from_dict(entry["scope"]))
+
+    assignments: list[Mapping[str, Any]] = []
+    settings: list[Mapping[str, Any]] = []
+    pricing: list[Mapping[str, Any]] = []
+    for entry in entries:
+        table = entry.get("table")
+        if table == "logo.assignment":
+            assignments.extend(entry.get("rows", []))
+        elif table == "logo.store_settings":
+            settings.extend(entry.get("rows", []))
+        elif table == "woo.store_pricing_tier":
+            pricing.extend(entry.get("rows", []))
+        else:
+            raise InvalidCommand("unsupported table in journal snapshot")
+
+    unique_assignments = {
+        _row_key("logo.assignment", row): row for row in assignments
+    }
+    for row in sorted(
+        unique_assignments.values(),
+        key=lambda value: (
+            value["fdm4_store"],
+            value["product_style"],
+            value["garment_color_code"],
+            value["option_row"],
+            value["position"],
+        ),
+    ):
+        _insert_assignment(cursor, row)
+    for row in {str(r["fdm4_store"]): r for r in settings}.values():
+        _insert_settings(cursor, row)
+    for row in {str(r["fdm4_store"]): r for r in pricing}.values():
+        _insert_pricing(cursor, row)

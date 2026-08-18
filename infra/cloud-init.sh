@@ -87,7 +87,7 @@ INI
 
 # Postgres 18 stores passwords as SCRAM-SHA-256 verifiers. Copy those verbatim
 # from pg_authid into userlist.txt so PgBouncer authenticates clients (and
-# passes through to the server) with matching SCRAM secrets — no MD5 mismatch.
+# passes through to the server) with matching SCRAM secrets - no MD5 mismatch.
 sudo -u postgres psql -tA -c \
   "SELECT '\"'||rolname||'\" \"'||rolpassword||'\"' FROM pg_authid WHERE rolname IN ('etl_writer','woo_reader','insights_reader');" \
   > /etc/pgbouncer/userlist.txt
@@ -127,9 +127,9 @@ cat > /root/arb_warehouse_credentials.txt <<CREDS
 arb_warehouse credentials (generated $(date -u +%FT%TZ))
 Connect via PgBouncer on this host, port 6432.
 
-etl_writer       ${ETL_PW}    (read/write, schema fdm4 — extractor)
-woo_reader       ${WOO_PW}    (read-only — WooCommerce nightly pull)
-insights_reader  ${INS_PW}    (read-only — Insights)
+etl_writer       ${ETL_PW}    (read/write, schema fdm4 - extractor)
+woo_reader       ${WOO_PW}    (read-only - WooCommerce nightly pull)
+insights_reader  ${INS_PW}    (read-only - Insights)
 
 psql "host=127.0.0.1 port=6432 dbname=arb_warehouse user=etl_writer"
 CREDS

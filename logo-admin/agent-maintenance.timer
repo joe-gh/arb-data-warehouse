@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Logo Admin agent cleanup hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=10m
+Unit=agent-maintenance.service
+
+[Install]
+WantedBy=timers.target

@@ -1,9 +1,9 @@
 # Cron schedules
 
 Source of truth for the live cron jobs that drive the pipeline. These are **not**
-auto-applied — install them by hand (`crontab -e` for the correct user on each host).
+auto-applied - install them by hand (`crontab -e` for the correct user on each host).
 
-## Warehouse box (EC2 `fdm4-warehouse`) — root crontab
+## Warehouse box (EC2 `fdm4-warehouse`) - root crontab
 
 ```cron
 # Hourly live FDM4 pull -> load -> transform (~7.5 min).
@@ -23,7 +23,30 @@ auto-applied — install them by hand (`crontab -e` for the correct user on each
 
 `reap.sh` lives in this repo at `infra/reap.sh` (deployed to `/opt/fdm4-extractor/reap.sh`).
 
-## Production WordPress box — `www-data` crontab
+## Warehouse box - `ubuntu` crontab (media pipeline)
+
+```cron
+# :35 Publish new PIM originals to S3 (reads pim.product_state, subtracts pim.media_object).
+35 * * * * /usr/bin/flock -n /tmp/media-publish.lock /usr/bin/timeout 3000 /usr/bin/python3 /opt/fdm4-extractor/publish-product-media.py --workers 2 >> /home/ubuntu/media-publish-cron.log 2>&1
+
+# :55 Generate any pending renditions (WHERE generated=false; partial index makes idle runs free).
+55 * * * * /usr/bin/flock -n /tmp/media-generate.lock /usr/bin/timeout 3000 nice -n 10 /usr/bin/python3 /opt/fdm4-extractor/generate-renditions.py --workers 4 >> /home/ubuntu/media-generate-cron.log 2>&1
+```
+
+The middle step of the hourly cascade (`:45` incremental rendition export) runs on
+the **production WordPress box** `ubuntu` crontab - it needs WP-CLI and the blog
+tables. Each stage self-heals if the previous one hasn't run yet
+(miss → `_arb_cdn_unresolved` marker → weekly retry; empty pending set → no-op):
+
+```cron
+# :45 Export rendition definitions for NEW attachments only (no stamp, no marker).
+45 * * * * /usr/bin/flock -n /home/ubuntu/.media-export.lock /usr/bin/timeout 3000 sudo -u www-data php -d max_execution_time=0 /usr/local/bin/wp --path=/var/www/arborwear arb media-rendition-export --blogs=all --incremental >> /home/ubuntu/media-export-cron.log 2>&1
+
+# Sun 03:12 Retry unresolved attachments whose markers are older than 7 days.
+12 3 * * 0 /usr/bin/flock -n /home/ubuntu/.media-export.lock /usr/bin/timeout 7200 sudo -u www-data php -d max_execution_time=0 /usr/local/bin/wp --path=/var/www/arborwear arb media-rendition-export --blogs=all --retry-unresolved >> /home/ubuntu/media-export-cron.log 2>&1
+```
+
+## Production WordPress box - `www-data` crontab
 
 ```cron
 # Gated full reconcile every 15 min. flock = no overlap; timeout 14400 (4h) = reaper.

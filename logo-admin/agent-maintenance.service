@@ -1,0 +1,29 @@
+[Unit]
+Description=Arborwear Logo Admin agent retention cleanup
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=arb-logo-admin
+Group=arb-logo-admin
+WorkingDirectory=/opt/arb-logo-admin
+EnvironmentFile=/etc/arb-logo-admin.env
+ExecStart=/opt/arb-logo-admin-venv/bin/python -m maintenance cleanup
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/arb-logo-admin/agent-uploads
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

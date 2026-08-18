@@ -1,0 +1,1 @@
+"""Logo Admin test package."""

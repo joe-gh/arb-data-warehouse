@@ -1,7 +1,7 @@
 -- ============================================================================
--- woo.sync_control — cross-box coordination + status for the FDM4 → Postgres → Woo
+-- woo.sync_control - cross-box coordination + status for the FDM4 → Postgres → Woo
 -- pipeline, so WP can KNOW the pull's status (and trigger on-demand runs) over the
--- Postgres connection it already has — no SSH, no HTTP service on the DB box.
+-- Postgres connection it already has - no SSH, no HTTP service on the DB box.
 --
 --   * The box (run_sync.sh, role etl_writer/postgres) writes pull run status.
 --   * WP (role woo_reader) reads status to gate its Woo sync, and INSERTs request
@@ -9,7 +9,7 @@
 --
 -- The warehouse is SHARED by dev + prod (both connect as woo_reader). So this is ONE
 -- table; the `env` column separates per-env Woo operations. The FDM4 pull is 'global'
--- (a single refresh serves both envs — same FDM4 source).
+-- (a single refresh serves both envs - same FDM4 source).
 --
 -- Apply:  sudo -u postgres psql -d arb_warehouse -f sync_control.sql   (idempotent)
 -- ============================================================================
@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS sync_control_op_status  ON woo.sync_control (op, stat
 CREATE INDEX IF NOT EXISTS sync_control_env_status ON woo.sync_control (env, status, requested_at DESC);
 
 -- WP (woo_reader): read status, request runs, update its own requests. (Write access
--- is scoped to THIS table only — woo_reader stays read-only on the data tables.)
+-- is scoped to THIS table only - woo_reader stays read-only on the data tables.)
 GRANT USAGE ON SCHEMA woo TO woo_reader;
 GRANT SELECT, INSERT, UPDATE ON woo.sync_control TO woo_reader;
 GRANT USAGE, SELECT ON SEQUENCE woo.sync_control_id_seq TO woo_reader;

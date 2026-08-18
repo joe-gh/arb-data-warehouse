@@ -1,4 +1,4 @@
-# FDM4 → Postgres → WooCommerce Product Sync — Full Technical Reference
+# FDM4 → Postgres → WooCommerce Product Sync - Full Technical Reference
 
 **The "ODBC process" end-to-end, plus every protection mechanism.**
 
@@ -6,7 +6,7 @@ Status: **LIVE on production, fully automated, hands-off** since 2026-06-23.
 Last verified cycle: pull `v3952361` (259,107 rows) → reconcile 73 stores in 74s, 0 errors → `IN SYNC`.
 
 > **Terminology note.** This is referred to internally as the "ODBC process," but the
-> live FDM4 connection is technically **JDBC** — the DataDirect OpenEdge JDBC driver
+> live FDM4 connection is technically **JDBC** - the DataDirect OpenEdge JDBC driver
 > driven from Python (`jaydebeapi`). There is no ODBC layer. Everything below uses
 > "the pull" for that stage.
 
@@ -22,13 +22,13 @@ feed-flood), raced with itself, and gave us no control over timing or correctnes
 This system **replaces that feed** with a **reconcile-don't-replay** pipeline:
 
 1. **Pull** FDM4's raw product tables into a Postgres **warehouse** (read-only mirror).
-2. **Transform** them into a **desired-state** table — exactly what each store's catalog
+2. **Transform** them into a **desired-state** table - exactly what each store's catalog
    *should* look like in Woo.
 3. **Reconcile** Woo against that desired-state from inside WordPress (WP-CLI + WC CRUD),
    touching only what actually changed.
 
 The FDM4 REST feed is **shut off** (paused on their side + blocked defensively by the
-`arb-wc-api-emergency-block` mu-plugin — see §9).
+`arb-wc-api-emergency-block` mu-plugin - see §9).
 
 ---
 
@@ -37,12 +37,12 @@ The FDM4 REST feed is **shut off** (paused on their side + blocked defensively b
 ```mermaid
 flowchart TB
     subgraph FDM4["🏭 FDM4 ERP (OpenEdge / Progress)"]
-        OE[("PUB schema<br/>style, item, price-list,<br/>catalog_product_detail, …")]
+        OE[("PUB schema<br/>style, item, price-list,<br/>catalog_product_detail, ...")]
     end
 
     NAT{{"NAT 155.130.75.80<br/>fdm4:4065 · irms:6055<br/>DataDirect OpenEdge JDBC"}}
 
-    subgraph WH["☁️ Warehouse EC2 — 3.20.17.84 (i-0d43b6efd4809df21, r7g.xlarge)"]
+    subgraph WH["☁️ Warehouse EC2 - 3.20.17.84 (i-0d43b6efd4809df21, r7g.xlarge)"]
         direction TB
         PULL["pull_fdm4.py<br/>(JDBC → CSV)"]
         DUMP[/"/opt/fdm4-extractor/dump/*.csv<br/>raw, all-TEXT"/]
@@ -55,7 +55,7 @@ flowchart TB
         XFORM["woo.refresh_product_state()<br/>raw → desired-state"]
     end
 
-    subgraph PROD["🌐 Production WordPress — 3.18.173.225 (WooCommerce multisite, 100+ stores)"]
+    subgraph PROD["🌐 Production WordPress - 3.18.173.225 (WooCommerce multisite, 100+ stores)"]
         direction TB
         ENGINE["arb-product-sync engine<br/>(WP-CLI, reconcile-don't-replay)"]
         WCDB[("WooCommerce DB<br/>posts / postmeta / lookup<br/>+ arb_wh_sync_state")]
@@ -104,7 +104,7 @@ sequenceDiagram
     Load->>Ctl: UPDATE status=success, refresh_version=MAX(row_version), rows_loaded
     Note over Ctl: warehouse now advertises a new version
 
-    CronP->>Gate: every 15 min — sync-gate
+    CronP->>Gate: every 15 min - sync-gate
     Gate->>Ctl: pull_version > last woo-full(env)?
     alt new pull landed
         Gate-->>CronP: exit 0 (RUN)
@@ -121,7 +121,7 @@ stores**, gate skips the other ~3 ticks/hour for free.
 
 ---
 
-## 4. Stage 1 — PULL (`db-test/pull_fdm4.py`, runs on the warehouse box)
+## 4. Stage 1 - PULL (`db-test/pull_fdm4.py`, runs on the warehouse box)
 
 Streams 8 FDM4 `PUB` tables to CSV. Run by `run_sync.sh` as root (reads the 0600 creds).
 
@@ -131,49 +131,49 @@ Streams 8 FDM4 `PUB` tables to CSV. Run by `run_sync.sh` as root (reads the 0600
 | 2 | `style-color` | colour-code → colour description |
 | 3 | `style-size` | size-code → size description |
 | 4 | `item` | the sellable item: style+colour+size, **upc-code = variation SKU**, retail-price, active |
-| 5 | `price-list` | price-categ / price-method (⚠️ **not currently read** — see §12) |
+| 5 | `price-list` | price-categ / price-method (⚠️ **not currently read** - see §12) |
 | 6 | `item-balance` | inventory; summed per item-number → stock |
 | 7 | `catalog_product` | catalog membership |
-| 8 | `catalog_product_detail` | per-store **`storeData` JSON** — which colours each store/catalog offers + `customPrice` |
+| 8 | `catalog_product_detail` | per-store **`storeData` JSON** - which colours each store/catalog offers + `customPrice` |
 
 Key implementation details:
 
 - **JDBC over the NAT** (`155.130.75.80`, port 4065) via the DataDirect OpenEdge driver.
 - **Explicit column list, never `SELECT *`.** The driver truncates character columns to
   their *display width* on `SELECT *` (e.g. the `storeData` JSON came back clipped to 40
-  chars). Naming every column returns full SQL width. This is load-bearing — `SELECT *`
+  chars). Naming every column returns full SQL width. This is load-bearing - `SELECT *`
   silently corrupts the JSON.
 - **Raw layer = all TEXT.** Every value is written as a string; no type-casting here.
   Casting happens in the transform. This keeps the pull faithful and dumb.
 - Output: `dump/<table>.csv` + `manifest.json` (row counts), `BATCH = 5000`.
-- Connection set read-only (`setReadOnly(true)`) — FDM4 is never written.
+- Connection set read-only (`setReadOnly(true)`) - FDM4 is never written.
 
 ---
 
-## 5. Stage 2 — LOAD (`db-test/infra/load_dump.py`, runs as `postgres`)
+## 5. Stage 2 - LOAD (`db-test/infra/load_dump.py`, runs as `postgres`)
 
 ```mermaid
 flowchart LR
     A["dump/*.csv"] --> B{"for each CSV"}
     B --> C["DROP TABLE IF EXISTS fdm4.&lt;t&gt;"]
     C --> D["CREATE TABLE fdm4.&lt;t&gt;<br/>(every column TEXT, from CSV header)"]
-    D --> E["COPY … FROM STDIN (FORMAT csv, HEADER true)"]
+    D --> E["COPY ... FROM STDIN (FORMAT csv, HEADER true)"]
     E --> F["GRANT SELECT → woo_reader, insights_reader"]
     F --> B
     B -->|"all loaded"| G["SELECT woo.refresh_product_state()"]
     G --> H["woo.store_product_state rebuilt"]
 ```
 
-- **Idempotent**: each table is fully dropped + recreated from its CSV header — no schema
+- **Idempotent**: each table is fully dropped + recreated from its CSV header - no schema
   drift, no partial state. All columns `text`.
-- Local **peer auth** (`/var/run/postgresql`, user `postgres`) — no password on disk.
+- Local **peer auth** (`/var/run/postgresql`, user `postgres`) - no password on disk.
 - After loading, it **calls the transform itself** (guarded by `to_regprocedure(...)` so
   it's a no-op if the transform function isn't installed yet). So `load → desired-state`
   is one atomic step, not two crons.
 
 ---
 
-## 6. Stage 3 — TRANSFORM (`db-test/sql/woo_transform.sql` → `woo.refresh_product_state()`)
+## 6. Stage 3 - TRANSFORM (`db-test/sql/woo_transform.sql` → `woo.refresh_product_state()`)
 
 Turns the raw `fdm4.*` mirror into the **desired-state** the Woo engine reads:
 `woo.store_product_state`, **keyed `(fdm4_store, catalog_id, sku)`**.
@@ -215,18 +215,18 @@ flowchart TB
 
 ### 6.1 The desired-state model
 
-- **Parents** — one row per `(store, catalog, product)` from each store's `storeData`
+- **Parents** - one row per `(store, catalog, product)` from each store's `storeData`
   JSON (`catalog_product_detail`, `detail_type='storeData'`, `site_id ~ '^S_'`). `sku =
   style-code`, `kind='parent'`.
-- **Variations** — `kind='variation'`, `sku = item.upc-code`. Built by exploding the
+- **Variations** - `kind='variation'`, `sku = item.upc-code`. Built by exploding the
   store's `storeData product[0].color[]` array and **joining `fdm4.item` on (style-code,
   color-code)**. So a variation exists for a store **only if that store's catalog lists
-  the colour**. (This is why a store with an empty `color[]` array gets *no* variations —
+  the colour**. (This is why a store with an empty `color[]` array gets *no* variations -
   see §12.)
 - **Colour/size names** from `style-color` / `style-size`; **stock** = `Σ item-balance.inv-bal`
   per `item-number`.
 
-### 6.2 Price resolution (important — see §12 for the gap)
+### 6.2 Price resolution (important - see §12 for the gap)
 
 ```mermaid
 flowchart LR
@@ -238,9 +238,9 @@ flowchart LR
 ```
 
 The `retail-price` fallback exists because FDM4 sometimes ships `customPrice = 0` for
-items that *do* have a real retail price — without it those landed in Woo (and on orders)
+items that *do* have a real retail price - without it those landed in Woo (and on orders)
 as **$0** (the 112-DAV-ST / 8050-STAR bug, fixed 2026-06). **`fdm4.price-list` is not
-consulted at all** — relevant to special-pricing questions (§12).
+consulted at all** - relevant to special-pricing questions (§12).
 
 ### 6.3 Change-tracking (what makes deltas cheap and idempotent)
 
@@ -260,7 +260,7 @@ consulted at all** — relevant to special-pricing questions (§12).
 
 ---
 
-## 7. The control table — `woo.sync_control` (the coordination point)
+## 7. The control table - `woo.sync_control` (the coordination point)
 
 The single piece of shared state between the two boxes.
 
@@ -294,12 +294,12 @@ flowchart TB
 ```
 
 Because the reconcile cron fires every 15 min but pulls land hourly, the gate makes ~3 of
-every 4 ticks a no-op — and crucially it **fails safe**: any error or ambiguity returns
+every 4 ticks a no-op - and crucially it **fails safe**: any error or ambiguity returns
 SKIP, never a runaway reconcile.
 
 ---
 
-## 8. Stage 4 — RECONCILE (the WordPress engine: `arb-product-sync`)
+## 8. Stage 4 - RECONCILE (the WordPress engine: `arb-product-sync`)
 
 Plugin: `wp-content/plugins/arb-product-sync/`. Core classes:
 `ARB_Warehouse_DB` (Postgres access), `ARB_Product_Sync_Engine`, the CLI, and
@@ -316,16 +316,16 @@ flowchart TB
     LIVE[("live Woo<br/>resolved by SKU")] --> DIFF
     STATE[("arb_wh_sync_state<br/>blog_id, sku, synced_hash")] --> DIFF
     DIFF{"diff by hash"}
-    DIFF --> CREATE["CREATE — desired, not in Woo"]
-    DIFF --> ADOPT["ADOPT — in Woo, untracked → take ownership + write price/stock"]
-    DIFF --> UPDATE["UPDATE — structural change → rebuild parent/variation"]
-    DIFF --> FAST["FAST-PATH — stockprice_hash only → set price/stock"]
-    DIFF --> UNCH["UNCHANGED — hash matches → skip"]
-    DIFF --> DEACT["DEACTIVATE — tracked/in-Woo but gone from desired"]
+    DIFF --> CREATE["CREATE - desired, not in Woo"]
+    DIFF --> ADOPT["ADOPT - in Woo, untracked → take ownership + write price/stock"]
+    DIFF --> UPDATE["UPDATE - structural change → rebuild parent/variation"]
+    DIFF --> FAST["FAST-PATH - stockprice_hash only → set price/stock"]
+    DIFF --> UNCH["UNCHANGED - hash matches → skip"]
+    DIFF --> DEACT["DEACTIVATE - tracked/in-Woo but gone from desired"]
 ```
 
 - **Sync-state `arb_wh_sync_state`** = `(blog_id, sku, fdm4_store, style_code, synced_hash)`
-  — **no `woo_id`**. The Woo post ID is resolved **live by SKU each run** (status-filtered,
+  - **no `woo_id`**. The Woo post ID is resolved **live by SKU each run** (status-filtered,
   self-healing; a trashed product is never adopted). Blog IDs drift across dev/stg/prod,
   so nothing env-specific is stored in the warehouse.
 - **Hooks suspended** during bulk writes (GLA / HubSpot / Avatax / fanout) so a reconcile
@@ -338,15 +338,15 @@ flowchart TB
 
 | # | change | effect |
 |---|--------|--------|
-| **#1** | `filter_unretired()` — batch-skip SKUs already retired in Woo | killed deactivation churn (blog 1: 14,987 → 0 ops/run) |
+| **#1** | `filter_unretired()` - batch-skip SKUs already retired in Woo | killed deactivation churn (blog 1: 14,987 → 0 ops/run) |
 | **#2** | attribute-repair scoped to **changed-this-run** parents on routine runs; **all** parents only on `--deep` | routine runs stop re-touching the whole catalog |
-| **#3** | `batch_deactivate()` — set-based meta/post/lookup/visibility writes | first-pass deactivation no longer per-product |
+| **#3** | `batch_deactivate()` - set-based meta/post/lookup/visibility writes | first-pass deactivation no longer per-product |
 
 `run-parallel` is a `proc_open` worker pool (`--concurrency` default 4, **cap 8**), each
 child a full `wp arb_product_sync sync` for one store. `--deep` runs Sundays 04:xx only.
 
 > **Dropped:** "#42" (a SQL parent-price rollup to replace `WC_Product_Variable::sync`)
-> was deliberately **not** built — hourly cadence makes per-parent sync cost negligible,
+> was deliberately **not** built - hourly cadence makes per-parent sync cost negligible,
 > and the multi-currency price-math risk wasn't worth it.
 
 ---
@@ -367,7 +367,7 @@ flowchart TB
     end
     subgraph DB["WooCommerce can't corrupt the warehouse"]
         D1["connect(): SET default_transaction_read_only = on"]
-        D2["control_write(): scoped BEGIN; SET TRANSACTION READ WRITE; …; COMMIT"]
+        D2["control_write(): scoped BEGIN; SET TRANSACTION READ WRITE; ...; COMMIT"]
         D3["woo_reader GRANTed write ONLY on sync_control (+seq)"]
     end
     subgraph DANGLE["No dangling 'running' rows"]
@@ -385,32 +385,32 @@ flowchart TB
     end
 ```
 
-### 9.1 `flock -n` — no overlap (verified behaviour)
+### 9.1 `flock -n` - no overlap (verified behaviour)
 
 Both wrappers run under `flock -n <lockfile>`. Tested facts:
 
-- It's a **kernel fd-lock**, not a PID file — nothing to clean up manually.
+- It's a **kernel fd-lock**, not a PID file - nothing to clean up manually.
 - It **auto-frees when all holders die**, so a crash never leaves a permanent lock.
 - **Orphaned children inherit the open fd**, so even if the wrapper is killed mid-run, the
   still-running child keeps the lock → the next tick can't overlap it.
-- The one gap — a **hung-but-alive** run holding the lock forever — is closed by the
+- The one gap - a **hung-but-alive** run holding the lock forever - is closed by the
   `timeout`/reaper below.
 
-### 9.2 `timeout` + reaper — no stuck process
+### 9.2 `timeout` + reaper - no stuck process
 
 - Warehouse pull: `timeout 3300` (55 min) **plus** a `*/10` reaper that `kill -9`s any
   `run_sync.sh`/`pull_fdm4`/`load_dump` running > 3300 s (belt-and-suspenders for child
   processes). The reaper awk uses `[r]un_sync`-style bracket tricks to avoid matching its
   own `ps` line.
-- Prod reconcile: `timeout 14400` (4 h) in the cron line **is** the reaper — a wedged
+- Prod reconcile: `timeout 14400` (4 h) in the cron line **is** the reaper - a wedged
   reconcile self-terminates, and `flock` means the next tick simply waits.
 
 ### 9.3 Warehouse can't be corrupted by WordPress
 
 The WP Postgres connection is **read-only by default** (`SET default_transaction_read_only
 = on`). The **only** write path is `ARB_Warehouse_DB::control_write()`, which wraps each
-write in `BEGIN; SET TRANSACTION READ WRITE; …; COMMIT`. The `woo_reader` role is GRANTed
-write **only** on `woo.sync_control` and its sequence — the data tables
+write in `BEGIN; SET TRANSACTION READ WRITE; ...; COMMIT`. The `woo_reader` role is GRANTed
+write **only** on `woo.sync_control` and its sequence - the data tables
 (`store_product_state`, `fdm4.*`) are physically un-writable from WP. (Verified: an
 unscoped INSERT against a data table is rejected with "cannot execute INSERT in a
 read-only transaction.")
@@ -418,13 +418,13 @@ read-only transaction.")
 ### 9.4 No dangling control rows
 
 `run_sync.sh` traps `EXIT/TERM/INT` → `mark_interrupted` flips a still-`running` row to
-`failed` (idempotent — a normal success/failure already set the final status). `SIGKILL`
+`failed` (idempotent - a normal success/failure already set the final status). `SIGKILL`
 can't be trapped, so the **daily prune** (`17 5 * * *`) is the backstop: fail any
 `running` row older than 6 h, and delete control rows older than 30 days.
 
 ### 9.5 Fail safe, not loud
 
-- `sync-gate` returns **SKIP** on any error or uncertainty — the system idles rather than
+- `sync-gate` returns **SKIP** on any error or uncertainty - the system idles rather than
   runs amok.
 - If `run-parallel` exits non-zero, `arb-hourly-reconcile.sh` **does not** call
   `sync-record-full`, so the env's watermark stays behind → the **next** pull re-triggers
@@ -435,7 +435,7 @@ can't be trapped, so the **daily prune** (`17 5 * * *`) is the backstop: fail an
 ### 9.6 Old feed is fenced off
 
 The `arb-wc-api-emergency-block` mu-plugin blocks `/wc/v[123]/products/` REST writes
-(catches `/products/<id>` and `/variations/batch` — FDM4's real write path), toggled by
+(catches `/products/<id>` and `/variations/batch` - FDM4's real write path), toggled by
 `touch`/`rm wp-content/.wc-api-blocked`. FDM4's product feed is also paused on their side.
 Bare `GET /wc/v3/products` is *not* blocked (reads still work).
 
@@ -443,7 +443,7 @@ Bare `GET /wc/v3/products` is *not* blocked (reads still work).
 
 ## 10. Automation / cadence (the actual crons)
 
-### Warehouse box `3.20.17.84` — root crontab
+### Warehouse box `3.20.17.84` - root crontab
 ```cron
 # Hourly live FDM4 pull → load → transform (≈7.5 min). flock = no overlap, timeout = hard cap.
 0 * * * *   /usr/bin/flock -n /tmp/fdm4-pull.lock /usr/bin/timeout 3300 /bin/bash /opt/fdm4-extractor/run_sync.sh >> /opt/fdm4-extractor/run_sync.log 2>&1
@@ -455,7 +455,7 @@ Bare `GET /wc/v3/products` is *not* blocked (reads still work).
 17 5 * * *  sudo -u postgres psql -d arb_warehouse -tAc "UPDATE woo.sync_control SET status='failed', error=COALESCE(error,'stale running') WHERE status='running' AND started_at < now()-interval '6 hours'; DELETE FROM woo.sync_control WHERE requested_at < now()-interval '30 days'" >/dev/null 2>&1
 ```
 
-### Production WP `3.18.173.225` — **www-data** crontab
+### Production WP `3.18.173.225` - **www-data** crontab
 ```cron
 # Gated full reconcile every 15 min. flock = no overlap, timeout 14400 (4h) = reaper.
 */15 * * * * /usr/bin/flock -n /var/www/arborwear/wp-content/private-logs/.product-sync.lock /usr/bin/timeout 14400 /bin/bash /usr/local/bin/arb-hourly-reconcile.sh >> /var/www/arborwear/wp-content/private-logs/hourly-reconcile.log 2>&1
@@ -469,7 +469,7 @@ Bare `GET /wc/v3/products` is *not* blocked (reads still work).
 4. On success → `sync-record-full` (writes the `woo-full/production` watermark).
 5. On failure → log + **don't** record (so the next pull retries).
 
-### Log management — `/etc/logrotate.d/arb-sync` (both boxes)
+### Log management - `/etc/logrotate.d/arb-sync` (both boxes)
 `weekly`, `rotate 4`, `compress`, `missingok`, `notifempty`, `copytruncate` on
 `hourly-reconcile.log` + `product-sync-baseline.log`.
 
@@ -482,10 +482,10 @@ gantt
     section Warehouse
     Pull then Load then Transform (~7.5m)   :w1, 00:00, 8m
     section Prod reconcile (gated, every 15m)
-    tick 00 — gate SKIP (no new pull yet)   :crit,   00:00, 1m
-    tick 15 — gate RUN reconcile (~71s)     :active, 00:15, 2m
-    tick 30 — gate SKIP                     :crit,   00:30, 1m
-    tick 45 — gate SKIP                     :crit,   00:45, 1m
+    tick 00 - gate SKIP (no new pull yet)   :crit,   00:00, 1m
+    tick 15 - gate RUN reconcile (~71s)     :active, 00:15, 2m
+    tick 30 - gate SKIP                     :crit,   00:30, 1m
+    tick 45 - gate SKIP                     :crit,   00:45, 1m
 ```
 
 ---
@@ -497,7 +497,7 @@ gantt
 env: production · last pull: vNNN (rows) · last reconcile: vNNN · in-progress rows
 VERDICT: IN SYNC | LAGGING | PULL STALE | STUCK | NO PULL
 ```
-> Do **not** use `pgrep -f` to check if a run is active — it self-matches the grep command
+> Do **not** use `pgrep -f` to check if a run is active - it self-matches the grep command
 > and reports false positives. Use `sync-status` (reads the control table) instead.
 
 **Control table at a glance** (on the warehouse):
@@ -528,9 +528,9 @@ Store Sync Map admin page gates each store.
   retail.** Store-specific/contract pricing is delivered through the per-store
   `storeData.customPrice` field (network-wide, **12,939 / 13,156 = 98%** of products carry
   a real non-zero customPrice). When FDM4 ships `customPrice = 0` for a product, the
-  transform correctly falls back to `item.retail-price` — which is usually *not* the
+  transform correctly falls back to `item.retail-price` - which is usually *not* the
   store's intended price. `fdm4.price-list` (a single `price-categ` with a 10-slot
-  `sale-price` *level* array) is FDM4-internal and **not read** — it's the source FDM4
+  `sale-price` *level* array) is FDM4-internal and **not read** - it's the source FDM4
   uses to compute the customPrice it writes into storeData, not a storefront channel.
   *Confirmed root cause of the 820510-D1D / 820511-D1D @ bartlett issue: those are 2 of
   only 3 bartlett products (out of 342) shipped with `customPrice = 0`, so Woo shows the
@@ -539,11 +539,11 @@ Store Sync Map admin page gates each store.
   hourly pull + reconcile then carries it through with no code change.*
 - **Empty `storeData color[]` → no variations.** If FDM4's per-store `storeData` lists no
   colours for a style, the transform produces no variations and the product won't appear
-  for that store (FDM4-config gap on their side, not ours — e.g. 103011 / 102230).
-- **Hourly full-table pull** hits FDM4 24×/day over the NAT — watch FDM4-side load.
-- **Live NAT creds are temporary** — a permanent dedicated read-only FDM4 account is still
+  for that store (FDM4-config gap on their side, not ours - e.g. 103011 / 102230).
+- **Hourly full-table pull** hits FDM4 24×/day over the NAT - watch FDM4-side load.
+- **Live NAT creds are temporary** - a permanent dedicated read-only FDM4 account is still
   needed; FDM4 was tightening the NAT port range, so re-validate periodically.
-- **Catalog must be pinned per blog** in the Store Sync Map — a store with multiple
+- **Catalog must be pinned per blog** in the Store Sync Map - a store with multiple
   catalogs (real + demo/clone) needs the right one selected or it syncs demo prices.
 
 ---
@@ -552,9 +552,9 @@ Store Sync Map admin page gates each store.
 
 | Path | Role |
 |------|------|
-| `db-test/pull_fdm4.py` | Stage 1 — JDBC pull → CSV |
-| `db-test/infra/load_dump.py` | Stage 2 — CSV → `fdm4.*` + calls transform |
-| `db-test/sql/woo_transform.sql` | Stage 3 — `woo.refresh_product_state()` desired-state |
+| `db-test/pull_fdm4.py` | Stage 1 - JDBC pull → CSV |
+| `db-test/infra/load_dump.py` | Stage 2 - CSV → `fdm4.*` + calls transform |
+| `db-test/sql/woo_transform.sql` | Stage 3 - `woo.refresh_product_state()` desired-state |
 | `db-test/sql/sync_control.sql` | `woo.sync_control` DDL + grants |
 | `db-test/infra/run_sync.sh` | Warehouse orchestrator (pull→load→transform + control rows + trap) |
 | `/usr/local/bin/arb-hourly-reconcile.sh` | Prod orchestrator (gate→reconcile→record) |

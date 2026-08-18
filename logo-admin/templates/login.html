@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#183b2d">
+  <title>Sign in · Arborwear Warehouse Operations</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v={{ asset_version }}">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card" aria-labelledby="login-title">
+      <div class="brand-mark brand-mark--large" aria-hidden="true">A</div>
+      <p class="eyebrow">Arborwear</p>
+      <h1 id="login-title">Warehouse Operations</h1>
+      <p class="auth-intro">Manage store logos and pricing using your WordPress account.</p>
+
+      {% if error %}
+      <div class="notice notice--error" role="alert">
+        <span class="notice__icon" aria-hidden="true">!</span>
+        <div><strong>Sign-in failed</strong><br>{{ error }}</div>
+      </div>
+      {% endif %}
+
+      <form class="stack" action="/login" method="post" autocomplete="on">
+        {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% endif %}
+        <label class="field">
+          <span class="field__label">WordPress username</span>
+          <input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+        </label>
+        <label class="field">
+          <span class="field__label">WordPress password</span>
+          <input name="password" type="password" autocomplete="current-password" required>
+          <span class="field__help">Sign in with your normal WordPress username and password.</span>
+        </label>
+        <button class="button button--primary button--wide" type="submit">Sign in</button>
+      </form>
+
+      <div class="security-note">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5.1 3.4 9.7 8 11 4.6-1.3 8-5.9 8-11V5l-8-3Zm0 5a3 3 0 0 1 1 5.8V16h-2v-3.2A3 3 0 0 1 12 7Z"/></svg>
+        <p>Your credentials are sent only to WordPress for validation and are never stored by this app. Sessions expire within eight hours.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

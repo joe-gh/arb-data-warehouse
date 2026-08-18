@@ -1,0 +1,38 @@
+[Unit]
+Description=Arborwear Warehouse Logo Admin
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arb-logo-admin
+Group=arb-logo-admin
+WorkingDirectory=/opt/arb-logo-admin
+EnvironmentFile=/etc/arb-logo-admin.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/arb-logo-admin-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8010 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillSignal=SIGINT
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/arb-logo-admin/uploads /var/lib/arb-logo-admin/agent-uploads
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

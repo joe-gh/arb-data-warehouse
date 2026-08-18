@@ -25,3 +25,10 @@ __pycache__/
 
 # --- os ---
 .DS_Store
+._*
+
+# --- editor/backup scratch ---
+*.bak
+*.bak.*
+*.bak-*
+.pytest_cache/
