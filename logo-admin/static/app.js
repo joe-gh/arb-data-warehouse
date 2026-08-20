@@ -971,7 +971,9 @@
 
   async function openAssignment(color, position, assignment, optionRow = 1) {
     resetAssignmentForm();
-    await ensureVocab();
+    // Open the dialog immediately; the vocabulary fetch fills in behind it so
+    // the first click doesn't appear to do nothing while /api/vocab loads.
+    const vocabReady = ensureVocab();
     state.editing = { color, position, assignment, optionRow };
     const editing = Boolean(assignment);
     els.assignmentTitle.textContent = editing ? "Edit logo" : "Add logo";
@@ -994,8 +996,9 @@
       els.softRemove.hidden = !bool(assignment.active, true);
     }
     if (!editing) els.nameOverride.value = "";
-    populateBackgroundOptions(editing ? text(assignment.background) : "");
     openDialog(els.assignmentDialog);
+    await vocabReady;
+    populateBackgroundOptions(editing ? text(assignment.background) : "");
     if (editing && assignment.design_id) {
       await loadDesignDetail(text(assignment.design_id), {
         design_id: assignment.design_id,
@@ -1017,6 +1020,10 @@
       };
     } catch (error) {
       state.vocab = { placements: [], backgrounds: [] };
+      if (!ensureVocab.warned) {
+        ensureVocab.warned = true;
+        toast("Couldn't load the placement list - placements may appear empty. Reload the page to retry.", "error");
+      }
     }
     return state.vocab;
   }
@@ -1038,7 +1045,7 @@
     const matches = vocab.placements.filter((item) => !q || text(item.location).toLowerCase().includes(q));
     els.placementVocabOptions.replaceChildren();
     if (!matches.length) {
-      showEmptyOption(els.placementVocabOptions, q ? "No matching placements - free text is fine" : "No placements yet");
+      showEmptyOption(els.placementVocabOptions, q ? "No matching placements - you can type a new one" : "No placements yet");
     } else {
       matches.slice(0, 60).forEach((item) => {
         const uses = Number(item.uses || 0);
@@ -1142,6 +1149,22 @@
       const value = text(selectedValue);
       if (!Array.from(els.scheme.options).some((option) => option.value === value)) els.scheme.add(new Option(`Scheme ${value}`, value));
       els.scheme.value = value;
+    }
+    // Every real option disabled means this design has no usable colorway -
+    // say so next to the field instead of letting Save fail with the
+    // browser's generic "please select an item" message.
+    const usable = Array.from(els.scheme.options).some((o) => o.value && !o.disabled);
+    let note = document.getElementById("scheme-empty-note");
+    if (!usable) {
+      if (!note) {
+        note = document.createElement("p");
+        note.id = "scheme-empty-note";
+        note.className = "muted text-small";
+        els.scheme.insertAdjacentElement("afterend", note);
+      }
+      note.textContent = "This design has no color scheme with art on file in FDM4, so it can't be assigned yet. Pick a different design, or ask FDM4 to add the art.";
+    } else if (note) {
+      note.remove();
     }
   }
 
@@ -1525,6 +1548,22 @@
     } finally { mirrorRunning = false; }
   }
 
+  const RESULT_STAT_LABELS = {
+    processed: "rows processed",
+    downloaded: "images downloaded",
+    reused: "images already mirrored",
+    repointed_assignments: "image links updated",
+    failed: "failed",
+    remaining: "remaining",
+    misses: "rows needing attention",
+    created: "created",
+    updated: "updated",
+    skipped: "skipped",
+    upserted: "rows written",
+    stores: "stores",
+    assignments: "assignments",
+  };
+
   function renderResult(container, result, title) {
     const stats = result.stats && typeof result.stats === "object" ? result.stats : result;
     const entries = Object.entries(stats).filter(([, value]) => typeof value === "number" || typeof value === "boolean");
@@ -1536,7 +1575,7 @@
         <span class="notice__icon" aria-hidden="true">${missCount ? "!" : "✓"}</span>
         <div><strong>${escapeHtml(title)}</strong><br>${missCount ? `${missCount} row${missCount === 1 ? " needs" : "s need"} attention and ${missCount === 1 ? "was" : "were"} added to the import punch list.` : "No unresolved rows were reported."}</div>
       </div>
-      <div class="result-summary">${entries.map(([key, value]) => `<div class="stat"><strong>${escapeHtml(value)}</strong><small>${escapeHtml(key.replaceAll("_", " "))}</small></div>`).join("")}</div>
+      <div class="result-summary">${entries.map(([key, value]) => `<div class="stat"><strong>${escapeHtml(value)}</strong><small>${escapeHtml(RESULT_STAT_LABELS[key] || key.replaceAll("_", " "))}</small></div>`).join("")}</div>
       ${errors.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Row</th><th>Reason</th><th>Detail</th></tr></thead><tbody>${errors.map((item, index) => `<tr><td>${escapeHtml(item.row ?? item.line ?? index + 1)}</td><td>${escapeHtml(item.reason ?? item.error ?? "Unresolved")}</td><td>${escapeHtml(item.detail ?? item.message ?? "")}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
   }
 
@@ -3134,9 +3173,13 @@
                 const selectedLogo = $("#bulk-selected-logo");
                 selectedLogo.textContent = `Logo code: ${variantCode} · Color scheme: ${schemeId}`;
                 selectedLogo.hidden = false;
-                // Auto-set light/dark class default from variant code suffix.
+                // Auto-set light/dark class default from variant code suffix,
+                // but never overwrite a choice the user already made.
                 const cls = /BK/i.test(schemeId) ? "light" : /WH/i.test(schemeId) ? "dark" : null;
-                if (cls) $("#bulk-class").value = cls;
+                if (cls && !bulkClassTouched) {
+                  $("#bulk-class").value = cls;
+                  selectedLogo.textContent += ` · Target set to ${cls} garments (change it below if needed)`;
+                }
               },
             });
           });
@@ -3159,6 +3202,45 @@
     } catch (error) {
       showEmptyOption(list, error.message);
     }
+  }
+
+  let bulkClassTouched = false;
+  let bulkPlacementWired = false;
+
+  function renderBulkPlacementOptions(query = "") {
+    const input = $("#bulk-placement");
+    const list = $("#bulk-placement-options");
+    if (!input || !list) return;
+    const vocab = state.vocab || { placements: [] };
+    const q = query.trim().toLowerCase();
+    const matches = (vocab.placements || []).filter((item) => !q || text(item.location).toLowerCase().includes(q));
+    list.replaceChildren();
+    if (!matches.length) {
+      showEmptyOption(list, q ? "No matching placements - you can type a new one" : "No placements yet");
+    } else {
+      matches.slice(0, 60).forEach((item) => {
+        appendOption(list, {
+          title: text(item.location),
+          onSelect: () => {
+            input.value = text(item.location);
+            setOptionsOpen(input, list, false);
+          },
+        });
+      });
+    }
+    setOptionsOpen(input, list, true);
+  }
+
+  function wireBulkPlacement() {
+    if (bulkPlacementWired) return;
+    const input = $("#bulk-placement");
+    const list = $("#bulk-placement-options");
+    if (!input || !list) return;
+    bulkPlacementWired = true;
+    input.addEventListener("input", () => renderBulkPlacementOptions(input.value));
+    input.addEventListener("focus", () => renderBulkPlacementOptions(input.value));
+    input.addEventListener("blur", () => setTimeout(() => setOptionsOpen(input, list, false), 200));
+    bindListKeyboard(input, list);
   }
 
   async function bulkPreview() {
@@ -3302,6 +3384,7 @@
     $("#bulk-selected-logo").textContent = "";
     document.querySelector('input[name="bulk-target"][value="light_dark"]').checked = true;
     $("#bulk-class").value = "dark";
+    bulkClassTouched = false;
     document.querySelector("#bulk-preview-table tbody").replaceChildren();
     $("#bulk-preview-table-wrap").hidden = true;
     $("#bulk-preview-summary").textContent = "";
@@ -3309,18 +3392,10 @@
     $("#bulk-apply-btn").disabled = true;
     panel.hidden = false;
     await loadBulkHistory();
-    // Populate placement dropdown from vocab
-    const vocab = await ensureVocab();
-    const placementSel = $("#bulk-placement");
-    const currentVal = placementSel.value;
-    placementSel.replaceChildren(new Option("Choose a placement...", ""));
-    (vocab.placements || []).forEach((item) => {
-      const loc = text(item.location);
-      if (loc) placementSel.add(new Option(loc, loc));
-    });
-    if (currentVal && Array.from(placementSel.options).some((o) => o.value === currentVal)) {
-      placementSel.value = currentVal;
-    }
+    // Placement is the same searchable combobox as the assignment dialog,
+    // reading the shared vocabulary; the field keeps its last value.
+    await ensureVocab();
+    wireBulkPlacement();
     // Populate the color checkbox list from /api/colors (store-specific).
     // A filterable tick-list replaces the old Ctrl/Cmd-click multi-select,
     // which quietly lost selections for anyone unfamiliar with the shortcut.
@@ -3362,6 +3437,15 @@
   function wireEvents() {
     els.storeSearch.addEventListener("input", () => renderStoreOptions(els.storeSearch.value));
     els.storeSearch.addEventListener("focus", () => renderStoreOptions(els.storeSearch.value));
+    els.storeSearch.addEventListener("blur", () => setTimeout(() => {
+      // Typed-over text without a new pick: restore the active store's label
+      // so the field never disagrees with the workspace below it.
+      setOptionsOpen(els.storeSearch, els.storeOptions, false);
+      if (!state.store) return;
+      const rec = storeByCode(state.store);
+      const label = rec ? storeInputLabel(rec) : state.store;
+      if (els.storeSearch.value !== label) els.storeSearch.value = label;
+    }, 220));
     bindListKeyboard(els.storeSearch, els.storeOptions);
     els.styleSearch.addEventListener("input", debounce(() => searchStyles(els.styleSearch.value)));
     els.styleActiveOnly.addEventListener("change", () => {
@@ -3459,7 +3543,10 @@
       };
       loadAudit(true);
     });
-    els.auditMore.addEventListener("click", () => loadAudit(false));
+    els.auditMore.addEventListener("click", async () => {
+      setBusy(els.auditMore, true, "Loading...");
+      try { await loadAudit(false); } finally { setBusy(els.auditMore, false); }
+    });
     $("#sync-style-button").addEventListener("click", () => sync("style"));
     $("#sync-store-button").addEventListener("click", () => sync("store"));
 
@@ -3483,6 +3570,7 @@
     $("#bulk-apply-open").addEventListener("click", openBulkApplyPanel);
     $("#bulk-apply-close").addEventListener("click", () => { $("#bulk-apply-panel").hidden = true; });
     $("#bulk-preview-btn").addEventListener("click", bulkPreview);
+    $("#bulk-class")?.addEventListener("change", () => { bulkClassTouched = true; });
     $("#bulk-colors-filter")?.addEventListener("input", () => {
       const q = $("#bulk-colors-filter").value.trim().toLowerCase();
       $$("#bulk-colors-list .bulk-color-option").forEach((label) => {
@@ -3545,7 +3633,15 @@
   }
 
   async function ensureStores() {
-    if (!state.stores.length) { try { await loadStores(); } catch { /* picker shows loading */ } }
+    if (!state.stores.length) {
+      try { await loadStores(); }
+      catch {
+        if (!ensureStores.warned) {
+          ensureStores.warned = true;
+          toast("Couldn't load the store list - store pickers may look empty. Reload the page to retry.", "error");
+        }
+      }
+    }
   }
 
   async function loadPricing() {
@@ -3569,6 +3665,7 @@
   }
 
   let tierRows = [];
+  let tierListTruncated = false;
   const tierSort = { key: "store", dir: "asc" };
 
   function renderTierAssignments() {
@@ -3584,28 +3681,36 @@
     };
     const keyFn = keyFns[tierSort.key] || keyFns.store;
     rows.sort((a, b) => { const ka = keyFn(a), kb = keyFn(b); return (ka < kb ? -1 : ka > kb ? 1 : 0) * (tierSort.dir === "desc" ? -1 : 1); });
-    const arrow = (k) => (tierSort.key === k ? (tierSort.dir === "desc" ? " ▼" : " ▲") : "");
-    box.innerHTML = `<table class="data-table"><thead><tr><th data-tsort="store" title="Sort">Store${arrow("store")}</th><th data-tsort="tier" title="Sort">Tier${arrow("tier")}</th><th>Note</th><th data-tsort="updated" title="Sort">Updated${arrow("updated")}</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr>
+    const arrow = (k) => (tierSort.key === k ? (tierSort.dir === "desc" ? " ▼" : " ▲") : " ↕");
+    const ariaSort = (k) => (tierSort.key === k ? (tierSort.dir === "desc" ? "descending" : "ascending") : "none");
+    const sortTh = (k, label) => `<th data-tsort="${k}" role="button" tabindex="0" aria-sort="${ariaSort(k)}" title="Sort by ${label.toLowerCase()}">${label}${arrow(k)}</th>`;
+    box.innerHTML = `<table class="data-table"><thead><tr>${sortTh("store", "Store")}${sortTh("tier", "Level")}<th>Note</th>${sortTh("updated", "Updated")}<th></th></tr></thead><tbody>${rows.map((r) => `<tr>
         <td><strong>${escapeHtml(text(r.display_name, r.fdm4_store))}</strong><br><code>${escapeHtml(r.fdm4_store)}</code></td>
         <td>${escapeHtml(r.tier_name)}</td>
         <td>${escapeHtml(text(r.note))}</td>
         <td>${escapeHtml(formatDate(r.updated_at))}</td>
-        <td><button class="tier-remove" type="button" data-store="${escapeHtml(r.fdm4_store)}">Remove</button></td>
-      </tr>`).join("")}</tbody></table>`;
+        <td><button class="button button--ghost button--small tier-remove" type="button" data-store="${escapeHtml(r.fdm4_store)}">Remove</button></td>
+      </tr>`).join("")}</tbody></table>${tierListTruncated ? '<p class="muted" style="padding:.4rem .2rem 0">Showing the first 500 stores - use the filter to narrow the list.</p>' : ""}`;
     $$(".tier-remove", box).forEach((b) => b.addEventListener("click", () => removeTier(b.dataset.store, b)));
-    $$("th[data-tsort]", box).forEach((th) => th.addEventListener("click", () => {
-      const k = th.dataset.tsort;
-      if (tierSort.key === k) { tierSort.dir = tierSort.dir === "asc" ? "desc" : "asc"; }
-      else { tierSort.key = k; tierSort.dir = "asc"; }
-      renderTierAssignments();
-    }));
+    $$("th[data-tsort]", box).forEach((th) => {
+      const toggle = () => {
+        const k = th.dataset.tsort;
+        if (tierSort.key === k) { tierSort.dir = tierSort.dir === "asc" ? "desc" : "asc"; }
+        else { tierSort.key = k; tierSort.dir = "asc"; }
+        renderTierAssignments();
+      };
+      th.addEventListener("click", toggle);
+      th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    });
   }
 
   async function loadAssignments() {
     const box = $("#tier-assignments");
     box.innerHTML = '<div class="grid-empty">Loading...</div>';
     try {
-      tierRows = envelope(await api("/api/pricing/store-tiers"), "assignments");
+      const resp = await api("/api/pricing/store-tiers");
+      tierRows = envelope(resp, "assignments");
+      tierListTruncated = resp?.truncated === true;
       renderTierAssignments();
     } catch (e) { renderErrorState(box, friendlyLoadError("the store pricing levels", e), loadAssignments); }
   }
@@ -3626,7 +3731,10 @@
     if (!hiddenEl || !searchEl || hiddenEl.value || searchEl.value) return;
     if (!state.store) return;
     hiddenEl.value = state.store;
-    searchEl.value = `${storeDisplayFor(state.store)} (${state.store})`;
+    const rec = storeByCode(state.store);
+    // Same label the combobox writes on pick, so the field never shows the
+    // same store two different ways.
+    searchEl.value = rec ? `${storeDisplay(rec)} (${storeMeta(rec)})` : `${storeDisplayFor(state.store)} (${state.store})`;
   }
 
   async function saveTier(event) {
@@ -3710,7 +3818,7 @@
       $("#names-pager").hidden = true;
       return;
     }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(state.store ? state.store : text(r.fdm4_store))}">
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(state.store ? state.store : text(r.fdm4_store))}" data-fdm4desc="${escapeHtml(text(r.fdm4_description))}" data-override="${r.store_specific && state.store ? "1" : ""}">
         <td><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code title="FDM4 design number">D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted" title="FDM4 artwork number">art ${escapeHtml(r.art_id)}</small>` : ""}</td>
         <td><code>${escapeHtml(r.color_scheme_id)}</code></td>
         <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name"></td>
@@ -3724,7 +3832,7 @@
     $$(".name-input", box).forEach((inp) => inp.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); const tr = inp.closest("tr"); saveName(tr, $(".name-save", tr)); }
     }));
-    $$(".name-repull", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); repullName(tr.dataset.design, b); }));
+    $$(".name-repull", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); repullName(tr.dataset.design, b, tr.dataset.fdm4desc || "", tr.dataset.override === "1"); }));
     const start = namesState.offset + 1, end = namesState.offset + rows.length;
     $("#names-range").textContent = `${start}-${end} of ${namesState.total}`;
     $("#names-prev").disabled = namesState.offset === 0;
@@ -3760,8 +3868,10 @@
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
   }
 
-  async function repullName(design, button) {
-    const accepted = await confirmAction({ title: "Refresh from FDM4?", message: `Refresh design D${design}'s name(s) from FDM4's current description. Names you've edited by hand are kept.`, actionLabel: "Refresh", danger: false });
+  async function repullName(design, button, fdm4Desc = "", hasOverride = false) {
+    const descLine = fdm4Desc ? ` FDM4 currently calls it "${fdm4Desc}".` : "";
+    const overrideLine = hasOverride ? " This refreshes the shared name; this store's own custom name still wins here." : "";
+    const accepted = await confirmAction({ title: "Refresh from FDM4?", message: `Refresh design D${design}'s name(s) from FDM4's current description.${descLine} Names you've edited by hand are kept.${overrideLine}`, actionLabel: "Refresh", danger: false });
     if (!accepted) return;
     setBusy(button, true, "Refreshing...");
     try {
@@ -3789,10 +3899,12 @@
       colorsState.total = resp.total ?? colors.length;
       const s = resp.summary || {};
       tb.replaceChildren();
-      // Sort indicators on headers.
+      // Sort indicators on headers (aria-sort for screen readers, glyph for eyes).
       $$("#color-table thead th[data-sort]").forEach((th) => {
-        const base = th.textContent.replace(/ [▲▼]$/, "");
-        th.textContent = th.dataset.sort === colorsState.sort ? `${base} ${colorsState.dir === "desc" ? "▼" : "▲"}` : base;
+        const base = th.textContent.replace(/ [▲▼↕]$/, "");
+        const isActive = th.dataset.sort === colorsState.sort;
+        th.textContent = isActive ? `${base} ${colorsState.dir === "desc" ? "▼" : "▲"}` : `${base} ↕`;
+        th.setAttribute("aria-sort", isActive ? (colorsState.dir === "desc" ? "descending" : "ascending") : "none");
       });
       const sourceLabel = (v) => (v === "ai" ? "AI guess" : v === "manual" ? "Set by staff" : text(v));
       if (!colors.length) {
@@ -3829,7 +3941,8 @@
         tb.append(tr);
       });
       document.getElementById("color-summary").textContent =
-        `${colorsState.total} colors - ${s.light ?? 0} light / ${s.dark ?? 0} dark / ${s.both ?? 0} both - ${s.review ?? 0} need review`;
+        `${colorsState.total} colors - ${s.light ?? 0} light / ${s.dark ?? 0} dark / ${s.both ?? 0} both - ${s.review ?? 0} need review`
+        + (resp.truncated ? " - too many results to count exactly, narrow your search" : "");
       const pager = $("#color-pager");
       if (colorsState.total > colorsState.limit) {
         pager.hidden = false;
@@ -4342,12 +4455,13 @@
       const cmp = va < vb ? -1 : va > vb ? 1 : 0;
       return mixState.dir === "desc" ? -cmp : cmp;
     });
-    const arrow = (key) => (mixState.sort === key ? (mixState.dir === "desc" ? " ▼" : " ▲") : "");
+    const arrow = (key) => (mixState.sort === key ? (mixState.dir === "desc" ? " ▼" : " ▲") : " ↕");
+    const ariaSort = (key) => (mixState.sort === key ? (mixState.dir === "desc" ? "descending" : "ascending") : "none");
     const sourceLabel = (s) => (s === "import" ? "Imported from FDM4" : s === "manual" ? "Added by hand" : text(s));
     const multiPage = mixState.total > mixState.limit;
     list.innerHTML = `<table class="data-table"><thead><tr>
       <th><input type="checkbox" class="mix-select-all" aria-label="Select all styles on this page"></th>
-      <th data-msort="style">Style${arrow("style")}</th><th>Product</th><th>Colors</th><th>How added</th><th>Added</th><th data-msort="products" title="${multiPage ? "Sorts this page only" : "Sort"}">Products live${arrow("products")}</th><th></th>
+      <th data-msort="style" role="button" tabindex="0" aria-sort="${ariaSort("style")}" title="Sort by style">Style${arrow("style")}</th><th>Product</th><th>Colors</th><th>How added</th><th>Added</th><th data-msort="products" role="button" tabindex="0" aria-sort="${ariaSort("products")}" title="${multiPage ? "Sorts this page only" : "Sort"}">Products live${arrow("products")}</th><th></th>
     </tr></thead><tbody>${rows.map((r) => `<tr data-style="${escapeHtml(r.style_code)}">
       <td><input type="checkbox" class="mix-row-check" aria-label="Select style ${escapeHtml(r.style_code)}"${mixState.selected.has(r.style_code) ? " checked" : ""}></td>
       <td><code>${escapeHtml(r.style_code)}</code></td>
@@ -4358,12 +4472,16 @@
       <td>${Number(r.products_live) || 0}</td>
       <td><button type="button" class="button button--ghost button--small mix-edit">Edit</button> <button type="button" class="button button--danger-ghost button--small mix-remove">Remove</button></td>
     </tr>`).join("")}</tbody></table>`;
-    $$("th[data-msort]", list).forEach((th) => th.addEventListener("click", () => {
-      const key = th.dataset.msort;
-      if (mixState.sort === key) mixState.dir = mixState.dir === "asc" ? "desc" : "asc";
-      else { mixState.sort = key; mixState.dir = "asc"; }
-      renderMixTable(box);
-    }));
+    $$("th[data-msort]", list).forEach((th) => {
+      const toggle = () => {
+        const key = th.dataset.msort;
+        if (mixState.sort === key) mixState.dir = mixState.dir === "asc" ? "desc" : "asc";
+        else { mixState.sort = key; mixState.dir = "asc"; }
+        renderMixTable(box);
+      };
+      th.addEventListener("click", toggle);
+      th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    });
     const selectAll = $(".mix-select-all", list);
     selectAll.checked = rows.every((r) => mixState.selected.has(r.style_code));
     selectAll.addEventListener("change", () => {
@@ -4513,7 +4631,8 @@
 
   async function openMixStyleEditor(styleCode) {
     const dialog = $("#mix-style-dialog");
-    $("#mix-style-title").textContent = `Style ${styleCode}`;
+    const row = mixState.styles.find((r) => r.style_code === styleCode);
+    $("#mix-style-title").textContent = row && text(row.name) ? `Style ${styleCode} - ${text(row.name)}` : `Style ${styleCode}`;
     const body = $("#mix-style-colors");
     body.innerHTML = '<div class="grid-empty">Loading...</div>';
     $("#mix-style-warning").hidden = true;
@@ -4539,7 +4658,7 @@
       renderMixStyleColors();
       syncMixEditorState();
     } catch (e) {
-      body.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`;
+      renderErrorState(body, friendlyLoadError("this style's colors", e), () => openMixStyleEditor(styleCode));
     }
   }
 
@@ -4770,13 +4889,14 @@
     }
     box.innerHTML = `<table class="data-table"><thead><tr><th>Rule</th><th>Status</th><th>Priority</th><th>Targets</th><th>Effect</th><th>Schedule</th><th></th></tr></thead><tbody>${rules.map((r) => `<tr data-id="${r.rule_id}">
       <td><strong>${escapeHtml(r.name)}</strong>${r.note ? `<br><small class="muted">${escapeHtml(r.note)}</small>` : ""}</td>
-      <td><button class="chip ${r.active ? "dark" : ""} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be turned on" : "Click to turn this rule on or off"}" aria-pressed="${r.active ? "true" : "false"}">${r.active ? "On" : "Off"}</button>${r.stackable ? '<br><small class="muted">combinable</small>' : ""}</td>
+      <td><span class="chip ${r.active ? "dark" : ""}">${r.active ? "On" : "Off"}</span>${r.stackable ? '<br><small class="muted">combinable</small>' : ""}</td>
       <td>${r.priority}</td>
       <td>${escapeHtml(prTargetSummary(r))}</td>
       <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">never below $${Number(r.floor_price).toFixed(2)}</small>` : ""}</td>
       <td>${r.effective_from || r.effective_until ? `${escapeHtml(text(r.effective_from, "..."))} → ${escapeHtml(text(r.effective_until, "..."))}` : '<span class="muted">always</span>'}</td>
       <td class="name-actions">
         <button class="button button--small button--secondary pr-preview" type="button">Preview</button>
+        <button class="button button--small ${r.active ? "button--ghost" : "button--primary"} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be turned on" : ""}">${r.active ? "Turn off" : "Turn on"}</button>
         <button class="button button--small button--ghost pr-edit" type="button">Edit</button>
         <button class="button button--small button--ghost pr-delete" type="button">Delete</button>
       </td></tr>`).join("")}</tbody></table>`;
@@ -5089,12 +5209,18 @@
   });
   $("#color-review-only").addEventListener("change", () => { colorsState.offset = 0; loadColors(); });
   $("#color-class-filter").addEventListener("change", () => { colorsState.offset = 0; loadColors(); });
-  $$("#color-table thead th[data-sort]").forEach((th) => th.addEventListener("click", () => {
-    const field = th.dataset.sort;
-    if (colorsState.sort === field) { colorsState.dir = colorsState.dir === "asc" ? "desc" : "asc"; }
-    else { colorsState.sort = field; colorsState.dir = "asc"; }
-    colorsState.offset = 0; loadColors();
-  }));
+  $$("#color-table thead th[data-sort]").forEach((th) => {
+    th.setAttribute("role", "button");
+    th.setAttribute("tabindex", "0");
+    const toggle = () => {
+      const field = th.dataset.sort;
+      if (colorsState.sort === field) { colorsState.dir = colorsState.dir === "asc" ? "desc" : "asc"; }
+      else { colorsState.sort = field; colorsState.dir = "asc"; }
+      colorsState.offset = 0; loadColors();
+    };
+    th.addEventListener("click", toggle);
+    th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+  });
   $("#color-prev").addEventListener("click", () => { if (colorsState.offset > 0) { colorsState.offset = Math.max(0, colorsState.offset - colorsState.limit); loadColors(); } });
   $("#color-next").addEventListener("click", () => { colorsState.offset += colorsState.limit; loadColors(); });
 
@@ -5159,8 +5285,9 @@
 
   function healthRunChip(status) {
     const s = text(status);
-    const cls = s === "success" ? "chip both" : (s === "running" || s === "requested") ? "chip light" : "chip health-chip--bad";
-    return `<span class="${cls}">${escapeHtml(s || "unknown")}</span>`;
+    const cls = s === "success" ? "chip health-chip--ok" : (s === "running" || s === "requested") ? "chip health-chip--pending" : "chip health-chip--bad";
+    const label = s === "success" ? "ok" : (s === "running" ? "running" : (s === "requested" ? "queued" : s || "unknown"));
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
   }
 
   function healthStat(label, value, sub, tone) {
@@ -5213,12 +5340,15 @@
 
     const trend = $("#health-trend");
     trend.replaceChildren();
-    const durations = runs.slice().reverse().map((r) => Number(r.duration_s || 0));
-    const maxDur = Math.max(1, ...durations);
-    durations.forEach((d) => {
+    const ordered = runs.slice().reverse();
+    const maxDur = Math.max(1, ...ordered.map((r) => Number(r.duration_s || 0)));
+    ordered.forEach((r) => {
+      const d = Number(r.duration_s || 0);
       const bar = document.createElement("span");
       bar.className = "health-trend__bar";
-      bar.style.height = `${Math.max(8, Math.round((d / maxDur) * 100))}%`;
+      bar.style.height = d > 0 ? `${Math.max(8, Math.round((d / maxDur) * 100))}%` : "2%";
+      const mins = Math.floor(d / 60);
+      bar.title = `${mins}m ${String(d % 60).padStart(2, "0")}s - ${formatDate(r.started_at)}`;
       trend.appendChild(bar);
     });
 

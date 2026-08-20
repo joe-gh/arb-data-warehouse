@@ -3534,6 +3534,8 @@ def health_overview(user: Dict[str, str] = Depends(require_user)):
             "SELECT rule_id, left(name, 120) AS name FROM woo.price_rule WHERE active ORDER BY priority, rule_id LIMIT 20"
         )
         rule_rows = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT count(*) AS n FROM woo.price_rule WHERE active")
+        active_rule_count = int(cursor.fetchone()["n"])
         cursor.execute(
             """
             SELECT count(DISTINCT fdm4_store) AS stores,
@@ -3551,7 +3553,7 @@ def health_overview(user: Dict[str, str] = Depends(require_user)):
         cursor.execute("SELECT count(*) AS n FROM woo.store_pricing_tier")
         tiers = int(cursor.fetchone()["n"] or 0)
         out["features"] = {
-            "price_rules": {"active": len(rule_rows), "rules": rule_rows},
+            "price_rules": {"active": active_rule_count, "rules": rule_rows},
             "sync_blocks": blocks,
             "mix_stores": mix_rows,
             "tier_assignments": tiers,

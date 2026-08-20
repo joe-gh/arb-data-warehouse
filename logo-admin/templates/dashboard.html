@@ -267,11 +267,12 @@
             </div>
           </fieldset>
 
-          <label class="field">
-            <span class="field__label">Placement</span>
-            <select id="bulk-placement"><option value="">Loading...</option></select>
+          <div class="field combobox">
+            <label class="field__label" for="bulk-placement">Placement</label>
+            <input id="bulk-placement" type="text" autocomplete="off" placeholder="Type or pick a placement..." aria-autocomplete="list" aria-controls="bulk-placement-options" aria-expanded="false">
+            <div id="bulk-placement-options" class="combobox__options" role="listbox" hidden></div>
             <span class="field__help">The placement written into every affected assignment.</span>
-          </label>
+          </div>
 
           <div class="inline-row">
             <button type="button" id="bulk-preview-btn" class="button button--secondary">Preview affected products</button>

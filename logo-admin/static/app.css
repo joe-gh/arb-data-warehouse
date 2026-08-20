@@ -642,3 +642,12 @@ button.chip:hover, label.chip:hover { border-color: var(--forest-700); }
 .bulk-colors-list .bulk-color-option { min-height: 1.6rem; white-space: normal; font-weight: 550; }
 .bulk-colors-list .bulk-color-option[hidden] { display: none; }
 #bulk-colors-filter { margin-top: .35rem; }
+
+/* Health run-status chips: dedicated classes so restyling logo chips can't
+   silently recolor pipeline statuses. */
+.chip.health-chip--ok { border-color: #2f6b4f; background: #e6eee9; color: #2f6b4f; }
+.chip.health-chip--pending { border-color: #8a7a2f; background: #f4efdc; color: #6f6326; }
+
+/* Sortable table headers: show they're interactive. */
+th[data-tsort], th[data-msort], #color-table th[data-sort] { cursor: pointer; user-select: none; }
+th[data-tsort]:focus-visible, th[data-msort]:focus-visible, #color-table th[data-sort]:focus-visible { outline: 2px solid var(--forest-700, #2f6b4f); outline-offset: -2px; }
