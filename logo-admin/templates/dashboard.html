@@ -35,7 +35,7 @@
           <a id="export-link" class="main-nav__item" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
           <button id="import-button" class="main-nav__item" type="button">Import Assignments <span class="badge badge--writes">Writes</span><small>Overwrites the assignments listed in the CSV</small></button>
           <button id="reports-button" class="main-nav__item" type="button">Import Punch List<small>Review unresolved rows (read-only)</small></button>
-          <button id="legacy-import-button" class="main-nav__item" type="button">Import Legacy Sheets <span class="badge badge--writes">Writes</span><small>Updates every store present in the NDJSON file</small></button>
+          <button id="legacy-import-button" class="main-nav__item" type="button">Import Legacy Sheets <span class="badge badge--writes">Writes</span><small>Updates every store included in the export file</small></button>
           <button id="legacy-images-button" class="main-nav__item" type="button">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
         </div>
       </div>
@@ -46,7 +46,7 @@
           <button class="main-nav__item" type="button" data-view="prices">Price Rules</button>
           <button class="main-nav__item" type="button" data-view="blocks">Sync Blocks</button>
           <button class="main-nav__item" type="button" data-view="mix">Product Mix</button>
-          <button class="main-nav__item" type="button" data-view="stock">Fake Inventory<small>Force fake or real stock per style</small></button>
+          <button class="main-nav__item" type="button" data-view="stock">Fake Inventory<small>Show styles as always in stock, or use real stock</small></button>
         </div>
       </div>
     </nav>
@@ -81,7 +81,7 @@
         <div class="dashboard__head">
           <p class="eyebrow">Overview</p>
           <h1>Warehouse Operations</h1>
-          <p class="muted">Manage store merchandising that projects into WooCommerce through the warehouse.</p>
+          <p class="muted">Manage each store's logos, prices, and product lineup. Changes publish to the store websites automatically every hour.</p>
         </div>
         <div class="dashboard__cards">
           <button class="dash-card" type="button" data-view="logo">
@@ -92,17 +92,17 @@
           <button class="dash-card" type="button" data-view="names">
             <span class="dash-card__eyebrow">Logos</span>
             <span class="dash-card__title">Logo Names</span>
-            <span class="dash-card__desc">Edit the name shoppers see for each logo, or re-pull the latest description from FDM4.</span>
+            <span class="dash-card__desc">Edit the name shoppers see for each logo, or refresh it from FDM4's description.</span>
           </button>
           <button class="dash-card" type="button" data-view="colors">
             <span class="dash-card__eyebrow">Logos</span>
             <span class="dash-card__title">Logo Colors</span>
-            <span class="dash-card__desc">Classify garment colors as light, dark, or both so bulk apply picks the right logo variant.</span>
+            <span class="dash-card__desc">Mark garment colors light or dark so Bulk Apply picks the black or white version of the logo.</span>
           </button>
           <button class="dash-card" type="button" data-view="pricing">
             <span class="dash-card__eyebrow">Store</span>
             <span class="dash-card__title">Store Pricing Levels</span>
-            <span class="dash-card__desc">Configure price tiers and assign a store a fallback tier for when FDM4's catalog price is missing.</span>
+            <span class="dash-card__desc">Choose which backup price list a store uses when FDM4 sends no price for an item.</span>
           </button>
           <button class="dash-card" type="button" data-view="prices">
             <span class="dash-card__eyebrow">Store</span>
@@ -112,17 +112,22 @@
           <button class="dash-card" type="button" data-view="blocks">
             <span class="dash-card__eyebrow">Store</span>
             <span class="dash-card__title">Sync Blocks</span>
-            <span class="dash-card__desc">Freeze whole stores or specific products so the hourly sync leaves them exactly as they are.</span>
+            <span class="dash-card__desc">Freeze whole stores, just their prices, or specific products so the hourly update leaves them exactly as they are.</span>
           </button>
           <button class="dash-card" type="button" data-view="mix">
             <span class="dash-card__eyebrow">Store</span>
             <span class="dash-card__title">Product Mix</span>
             <span class="dash-card__desc">Control exactly which products each store carries - or let FDM4 decide.</span>
           </button>
+          <button class="dash-card" type="button" data-view="stock">
+            <span class="dash-card__eyebrow">Store</span>
+            <span class="dash-card__title">Fake Inventory</span>
+            <span class="dash-card__desc">Make specific styles always show as in stock (third-party goods we can always order), or force real stock counts.</span>
+          </button>
           <button class="dash-card" type="button" data-view="health">
             <span class="dash-card__eyebrow">System</span>
             <span class="dash-card__title">Health</span>
-            <span class="dash-card__desc">Pipeline runs, sync freshness, and feature status at a glance.</span>
+            <span class="dash-card__desc">Check that data pulls and store updates are running normally.</span>
           </button>
         </div>
       </div>
@@ -208,8 +213,8 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10V4l5 5-5 5v-3H7V7Zm10 10H7v3l-5-5 5-5v3h10v4Z"/></svg>
               Sync style
             </button>
-            <button id="sync-store-button" class="button button--primary button--icon-only" type="button" title="Sync the entire store to {{ wp_target_host }}" aria-label="Sync the entire store">
-              <span aria-hidden="true">•••</span>
+            <button id="sync-store-button" class="button button--primary" type="button" title="Sync the entire store to {{ wp_target_host }}" aria-label="Sync the entire store">
+              Sync store
             </button>
           </div>
         </div>
@@ -255,8 +260,9 @@
                 Specific garment colors
               </label>
               <div class="choice-indent">
-                <select id="bulk-colors" multiple size="6" class="select-multi"></select>
-                <small class="muted select-hint">Hold Ctrl/Cmd to select multiple.</small>
+                <input id="bulk-colors-filter" type="search" placeholder="Type to filter colors..." aria-label="Filter garment colors" autocomplete="off">
+                <div id="bulk-colors-list" class="bulk-colors-list" role="group" aria-label="Garment colors"><span class="muted">Loading colors...</span></div>
+                <small class="muted select-hint"><span id="bulk-colors-count">0</span> selected - tick every color this logo should apply to.</small>
               </div>
             </div>
           </fieldset>
@@ -304,7 +310,7 @@
 
       <aside id="ownership-warning" class="notice notice--warning" role="status" hidden>
         <span class="notice__icon" aria-hidden="true">!</span>
-        <div><strong>This store still runs on the legacy logo sheets.</strong> Your edits save durably to the warehouse, but WordPress will refuse Sync until this store is explicitly switched to the warehouse-driven logo system.</div>
+        <div><strong>This store still runs on the legacy logo sheets.</strong> Your edits are saved safely here, but they will not reach the website until an administrator switches this store to the new logo system.</div>
       </aside>
 
       <section class="card grid-card" aria-labelledby="grid-title">
@@ -330,12 +336,12 @@
         <div class="pricing__head">
           <p class="eyebrow">Store</p>
           <h1>Store Pricing Levels</h1>
-          <p class="muted">FDM4's published price always wins. When a store's catalog price is blank, its assigned tier fills the gap from the price list. Stores that already price correctly are never affected.</p>
+          <p class="muted">The price from FDM4 always wins. When FDM4 sends no price for an item, the store's assigned pricing level fills the gap from the price list. Stores that already price correctly are never affected. Changes take effect within the hour.</p>
         </div>
 
         <div class="pricing__cols">
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Assign</p><h3>Set a store's tier</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Assign</p><h3>Set a store's pricing level</h3></div></div>
             <form id="tier-form" class="tier-form">
               <div class="field combobox">
                 <label class="field__label" for="tier-store-search">Store</label>
@@ -346,21 +352,21 @@
                 <input id="tier-store-code" type="hidden">
                 <div id="tier-store-options" class="combobox__options" role="listbox" hidden></div>
               </div>
-              <label class="field"><span class="field__label">Tier</span><select id="tier-select" required><option value="">Choose a tier...</option></select><span class="field__help">Which price-list level to use when FDM4's catalog price is blank. MSRP = no override.</span></label>
-              <label class="field"><span class="field__label">Note</span><input id="tier-note" placeholder="Optional - why this override exists"></label>
-              <button class="button button--primary" type="submit">Save assignment</button>
+              <label class="field"><span class="field__label">Pricing level</span><select id="tier-select" required><option value="">Choose a pricing level...</option></select><span class="field__help">Used when FDM4 sends no price. MSRP = full retail price, same as having no level set.</span></label>
+              <label class="field"><span class="field__label">Note</span><input id="tier-note" maxlength="500" placeholder="Optional - why this store gets special pricing"></label>
+              <button class="button button--primary" type="submit">Save pricing level</button>
             </form>
           </section>
 
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Reference</p><h3>Available tiers</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Reference</p><h3>Available pricing levels</h3></div></div>
             <div id="tier-list" class="table-wrap" aria-live="polite"></div>
           </section>
         </div>
 
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Configured</p><h3>Store assignments</h3></div></div>
-          <div class="table-toolbar"><input id="tier-filter" type="search" placeholder="Filter by store, tier, or note..." aria-label="Filter tier assignments"></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Configured</p><h3>Store pricing levels</h3></div></div>
+          <div class="table-toolbar"><input id="tier-filter" type="search" placeholder="Filter by store, level, or note..." aria-label="Filter store pricing levels"></div>
           <div id="tier-assignments" class="table-wrap" aria-live="polite"></div>
         </section>
       </div>
@@ -372,7 +378,7 @@
         <div class="pricing__head">
           <p class="eyebrow">Colors review</p>
           <h1>Light / dark classification</h1>
-          <p class="muted">Review and correct the AI-assigned light/dark classification for each garment color. Click the chip to flip it; the change is saved immediately and marked manual.</p>
+          <p class="muted">Is each garment color light or dark? Dark garments get the white logo, light garments get the black logo - this is what Bulk Apply uses. An AI made the first guess; click a chip to cycle light → dark → both. Changes save immediately.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -383,7 +389,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5Zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14Z"/></svg>
               <input id="color-search" type="search" placeholder="Search color name or code..." autocomplete="off">
             </div>
-            <label class="field--checkbox"><input id="color-review-only" type="checkbox"> Needs review only</label>
+            <label class="field--checkbox" title="Only AI guesses that are less than 70% sure"><input id="color-review-only" type="checkbox"> Needs review only</label>
             <select id="color-class-filter" class="field__select" aria-label="Class filter">
               <option value="">All classes</option>
               <option value="light">Light</option>
@@ -393,7 +399,7 @@
             <span id="color-summary" class="muted"></span>
           </div>
           <div class="table-wrap">
-            <table id="color-table" class="data-table"><thead><tr><th data-sort="name" title="Sort">Color</th><th data-sort="code" title="Sort">Code</th><th data-sort="styles" title="Sort">Styles</th><th data-sort="class" title="Sort">Class</th><th data-sort="source" title="Sort">Source</th><th data-sort="confidence" title="Sort">Conf</th></tr></thead><tbody></tbody></table>
+            <table id="color-table" class="data-table"><thead><tr><th data-sort="name" title="Sort">Color</th><th data-sort="code" title="Sort">Code</th><th data-sort="styles" title="Sort">Styles</th><th data-sort="class" title="Sort">Light or dark</th><th data-sort="source" title="Sort">Who set it</th><th data-sort="confidence" title="Sort">Confidence</th></tr></thead><tbody></tbody></table>
           </div>
           <div id="color-pager" class="pager" hidden>
             <button id="color-prev" class="button button--ghost button--small" type="button">Previous</button>
@@ -410,7 +416,7 @@
         <div class="pricing__head">
           <p class="eyebrow">Pricing</p>
           <h1>Price rules</h1>
-          <p class="muted">Arborwear-managed pricing outside FDM4. Rules are checked lowest priority number first; the first match wins (unless a rule is marked combinable). Exact values, never rounded; rules apply on the hourly warehouse refresh. <strong>Preview is required before activating.</strong></p>
+          <p class="muted">Price overrides Arborwear controls directly (not from FDM4). Rules are checked in order (1 first); the first match wins unless a rule is marked combinable. Changes reach the store websites within the hour. <strong>Preview is required before a rule can be turned on.</strong></p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -441,26 +447,26 @@
         <div class="pricing__head">
           <p class="eyebrow">Product sync</p>
           <h1>Fake inventory</h1>
-          <p class="muted">Third-party styles (any non-Arborwear mill) automatically sell with fake stock of 99,999 - the sync re-asserts it every pass. Entries here override that default per style: FAKE forces fake stock on a style the automatic rule treats as real, REAL forces true FDM4 inventory on a style it would fake. Changes reach stores on the next hourly sync.</p>
+          <p class="muted">Third-party brands (anything not made by Arborwear) automatically show as always in stock - shoppers can always order them, and the hourly update keeps it that way. Entries here are exceptions to that rule for a single style: show a style as always in stock, or show its real warehouse count. Changes reach the store websites within the hour.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">New</p><h3>Add an override</h3></div>
+            <div><p class="eyebrow">New</p><h3>Add an exception</h3></div>
           </div>
           <div class="card__body">
             <div class="form-row">
               <label class="field"><span class="field__label">Style #</span><input id="so-style" type="text" maxlength="100" placeholder="e.g. 820202"></label>
-              <label class="field"><span class="field__label">Force</span><select id="so-mode"><option value="real">REAL - use true FDM4 inventory</option><option value="fake">FAKE - always in stock (99,999)</option></select></label>
-              <label class="field"><span class="field__label">Reason (shown in the list)</span><input id="so-note" type="text" maxlength="1000" placeholder="Why the override?"></label>
+              <label class="field"><span class="field__label">Show stock as</span><select id="so-mode"><option value="real">Real - the actual warehouse stock count</option><option value="fake">Always in stock - shoppers can always order</option></select></label>
+              <label class="field"><span class="field__label">Reason (shown in the list)</span><input id="so-note" type="text" maxlength="1000" placeholder="Why this exception?"></label>
             </div>
-            <div class="form-row"><button id="so-add" class="button button--primary" type="button">Add override</button></div>
+            <div class="form-row"><button id="so-add" class="button button--primary" type="button">Add exception</button></div>
           </div>
         </section>
         <section class="card">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Active</p><h3>Current overrides</h3></div>
+            <div><p class="eyebrow">Existing</p><h3>Current exceptions</h3></div>
           </div>
-          <div class="table-toolbar"><input id="so-search" type="search" placeholder="Filter by style or reason..." aria-label="Filter overrides"></div>
+          <div class="table-toolbar"><input id="so-search" type="search" placeholder="Filter by style, product, brand, or reason..." aria-label="Filter exceptions"></div>
           <div id="so-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
         </section>
       </div>
@@ -471,30 +477,30 @@
         <div class="pricing__head">
           <p class="eyebrow">Product sync</p>
           <h1>Sync blocks</h1>
-          <p class="muted">Freeze whole stores or specific products from the hourly product sync. Blocked items are skipped completely - no price, stock, or structure updates, and they are never deactivated. They stay exactly as they are in Woo until unblocked.</p>
+          <p class="muted">Freeze whole stores, just their prices, or specific products so the hourly update leaves them alone. Frozen items are skipped completely - no price, stock, or product-detail changes, and they are never hidden or removed. Everything stays exactly as it is until you turn the freeze off.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">New</p><h3>Add a block</h3></div>
+            <div><p class="eyebrow">New</p><h3>Add a freeze</h3></div>
           </div>
           <div class="card__body">
             <div class="form-row">
               <div class="field combobox"><span class="field__label">Store</span><input id="sb-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="sb-store-options" aria-expanded="false"><input type="hidden" id="sb-store"><div id="sb-store-options" class="combobox__options" role="listbox" hidden></div></div>
-              <label class="field--checkbox"><input id="sb-whole" type="checkbox"> Block the ENTIRE store</label>
-              <label class="field--checkbox"><input id="sb-pricing-only" type="checkbox" disabled> Pricing only<small>Stock, status, and new styles still sync; existing prices are never touched.</small></label>
+              <label class="field--checkbox"><input id="sb-whole" type="checkbox"> Freeze the ENTIRE store</label>
+              <label class="field--checkbox has-help"><input id="sb-pricing-only" type="checkbox" disabled> <span>Freeze prices only<small>Stock, product visibility, and new products still update; existing prices are never touched.</small></span></label>
             </div>
             <div class="form-row">
-              <label class="field"><span class="field__label">Or specific style #s (newline / comma separated)</span><textarea id="sb-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
+              <label class="field"><span class="field__label">Or specific style #s (one per line, or separated by commas)</span><textarea id="sb-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
               <label class="field"><span class="field__label">Reason (shown in the list)</span><input id="sb-note" type="text" maxlength="1000" placeholder="Why is this frozen?"></label>
             </div>
-            <div class="form-row"><button id="sb-add" class="button button--primary" type="button">Add block</button></div>
+            <div class="form-row"><button id="sb-add" class="button button--primary" type="button">Add freeze</button></div>
           </div>
         </section>
         <section class="card">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Active</p><h3>Current blocks</h3></div>
+            <div><p class="eyebrow">Existing</p><h3>Current freezes</h3></div>
           </div>
-          <div class="table-toolbar"><input id="sb-search" type="search" placeholder="Filter by store, style, or reason..." aria-label="Filter sync blocks"></div>
+          <div class="table-toolbar"><input id="sb-search" type="search" placeholder="Filter by store, style, or reason..." aria-label="Filter freezes"></div>
           <div id="sb-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
         </section>
       </div>
@@ -515,7 +521,7 @@
           <div class="card__body">
             <div class="form-row">
               <div class="field combobox field--md"><span class="field__label">Store</span><input id="mix-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="mix-store-options" aria-expanded="false"><input type="hidden" id="mix-store"><div id="mix-store-options" class="combobox__options" role="listbox" hidden></div></div>
-              <div class="field field--grow"><span class="field__label">Stores with a mix override</span><div id="mix-enrolled" class="chip-row chip-row--flush"><span class="muted">Loading...</span></div></div>
+              <div class="field field--grow"><span class="field__label">Stores with a custom product list</span><div id="mix-enrolled" class="chip-row chip-row--flush"><span class="muted">Loading...</span></div></div>
             </div>
           </div>
         </section>
@@ -529,7 +535,7 @@
         <div class="pricing__head">
           <p class="eyebrow">Logo names</p>
           <h1>Customer-facing logo names</h1>
-          <p class="muted">This is the name shoppers see for each logo. It's seeded from FDM4's description; edit it here, or re-pull the latest from FDM4. Changes appear on the storefront after the store's next logo sync.</p>
+          <p class="muted">This is the name shoppers see for each logo. It starts out as FDM4's description; edit it here, or refresh it from FDM4. Changes appear on the storefront after the store's next logo sync.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -538,8 +544,8 @@
           <div class="card__body">
             <p id="names-context" class="muted" role="status"></p>
             <div class="form-row">
-              <label class="field combobox"><span class="field__label">Store</span><input id="names-store-search" type="search" placeholder="All stores - global names" autocomplete="off" aria-autocomplete="list" aria-controls="names-store-options" aria-expanded="false"><input type="hidden" id="names-store"><div id="names-store-options" class="combobox__options" role="listbox" hidden></div></label>
-              <label class="field"><span class="field__label">Show</span><select id="names-filter"><option value="">All names</option><option value="store">Store-overridden only</option><option value="global">Global default only</option><option value="unnamed">Unnamed only</option></select></label>
+              <label class="field combobox"><span class="field__label">Store</span><input id="names-store-search" type="search" placeholder="All stores - shared names" autocomplete="off" aria-autocomplete="list" aria-controls="names-store-options" aria-expanded="false"><input type="hidden" id="names-store"><div id="names-store-options" class="combobox__options" role="listbox" hidden></div></label>
+              <label class="field"><span class="field__label">Show</span><select id="names-filter"><option value="">All names</option><option value="store">Store-specific names only</option><option value="global">Shared names only</option><option value="unnamed">Unnamed only (pick a store)</option></select></label>
               <div class="field field--grow">
                 <span class="field__label">Search</span>
                 <div class="input-with-icon">
@@ -565,12 +571,12 @@
         <div class="health__head">
           <p class="eyebrow">System</p>
           <h1>Health</h1>
-          <p class="muted">Pipeline, projection, and feature status at a glance. Refreshes every minute while this view is open.</p>
+          <p class="muted">Is everything running? Data pulls from FDM4, product updates, and active settings at a glance. Refreshes every minute while this view is open.</p>
         </div>
         <div id="health-stats" class="health-stats" aria-live="polite"><div class="grid-empty">Loading...</div></div>
         <section class="card">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Pipeline</p><h3>Recent pull runs</h3></div>
+            <div><p class="eyebrow">Data pulls</p><h3>Recent data pulls from FDM4</h3></div>
             <div class="health-trend" id="health-trend" title="Run durations, oldest to newest" aria-hidden="true"></div>
           </div>
           <div id="health-runs" class="health-table-wrap"><div class="grid-empty">Loading...</div></div>
@@ -581,7 +587,7 @@
             <div id="health-rules" class="health-card-body"></div>
           </section>
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Sync</p><h3>Sync blocks</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Sync</p><h3>Sync freezes</h3></div></div>
             <div id="health-blocks" class="health-card-body"></div>
           </section>
           <section class="card">
@@ -589,11 +595,11 @@
             <div id="health-mix" class="health-card-body"></div>
           </section>
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Content</p><h3>PIM mirror</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Content</p><h3>Product content feed</h3></div></div>
             <div id="health-pim" class="health-card-body"></div>
           </section>
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Consumers</p><h3>Feeds</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Connected</p><h3>Connected systems</h3></div></div>
             <div id="health-feeds" class="health-card-body"></div>
           </section>
         </div>
@@ -714,7 +720,7 @@
           <label class="field"><span class="field__label">Cost override</span><span class="currency-input"><span>$</span><input id="assignment-cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Automatic"></span><span class="field__help">Leave blank to use the warehouse-derived price.</span></label>
           <label class="field"><span class="field__label">Sort order</span><input id="assignment-sort" type="number" step="1" value="0"><span class="field__help">Display-order tie-breaker; leave 0 unless you need to reorder.</span></label>
           <label class="check-row"><input id="assignment-optional" type="checkbox"><span><strong>Optional logo</strong><small>Customer may omit this logo.</small></span></label>
-          <label class="check-row"><input id="assignment-active" type="checkbox" checked><span><strong>Active</strong><small>Include in the next reconcile.</small></span></label>
+          <label class="check-row"><input id="assignment-active" type="checkbox" checked><span><strong>Active</strong><small>Show on the website after the next sync.</small></span></label>
         </section>
 
         <section class="form-section form-section--full" aria-labelledby="image-heading">
@@ -773,7 +779,7 @@
     <form id="legacy-form" method="dialog">
       <div class="dialog__header"><div><p class="eyebrow">Legacy migration</p><h2 id="legacy-title">Import legacy logo sheets</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
       <div class="dialog__body stack">
-        <p class="muted">Upload the NDJSON produced by <code>wp arb_product_sync logo-export-current</code>. Re-running is safe: rows are upserted, misses go to the punch list, and edits made in this app are preserved unless you choose to overwrite them.</p>
+        <p class="muted">Upload the logo-sheet export file (.ndjson) from your administrator. Running it twice is safe: existing rows are updated, not duplicated; rows that can't be matched go to the Import Punch List; and edits made in this app are preserved unless you choose to overwrite them.</p>
         <label class="field"><span class="field__label">NDJSON export</span><input id="legacy-file" type="file" accept=".ndjson,.jsonl,.json,text/plain,application/x-ndjson" required></label>
         <label class="check-row"><input id="legacy-overwrite" type="checkbox"><span><strong>Overwrite manual edits</strong><small>Default preserves assignments edited in this app since the last import.</small></span></label>
         <div id="legacy-results"></div>
@@ -842,8 +848,8 @@
   <dialog id="mix-style-dialog" class="dialog" aria-labelledby="mix-style-title">
     <div class="dialog__header"><div><p class="eyebrow">Product mix</p><h2 id="mix-style-title">Edit style</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
     <div class="dialog__body">
-      <label class="field--checkbox"><input id="mix-style-all-colors" type="checkbox"> Follow FDM4 - include every color channel, current and future</label>
-      <p class="muted mix-style-hint">Or untick the box above to curate: only ticked color channels are carried, and new FDM4 colors stay out until you add them. Inside an included color you can exclude specific sizes.</p>
+      <label class="field--checkbox"><input id="mix-style-all-colors" type="checkbox"> Follow FDM4 - include every color, current and future</label>
+      <p class="muted mix-style-hint">Or untick the box above to curate: only ticked colors are sold on the store, and new FDM4 colors stay out until you add them. Inside an included color you can exclude specific sizes.</p>
       <div id="mix-style-colors" class="stack stack--tight"></div>
       <div id="mix-style-warning" class="notice notice--warning notice--tight" hidden></div>
       <p class="muted mix-style-hint">Changes reach the store on the next hourly sync (&le; ~1h15).</p>
@@ -889,7 +895,7 @@
   </dialog>
 
   <dialog id="sync-dialog" class="dialog" aria-labelledby="sync-title">
-    <div class="dialog__header"><div><p class="eyebrow">WordPress reconcile</p><h2 id="sync-title">Sync results</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
+    <div class="dialog__header"><div><p class="eyebrow">Website sync</p><h2 id="sync-title">Sync results</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
     <div id="sync-results" class="dialog__body"></div>
     <div class="dialog__footer"><span></span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>

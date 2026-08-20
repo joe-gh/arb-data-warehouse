@@ -630,3 +630,15 @@ button.chip:hover, label.chip:hover { border-color: var(--forest-700); }
 .health-list li { overflow-wrap: anywhere; }
 .health-updated { font-size: .72rem; text-align: right; }
 .chip.health-chip--bad { border-color: var(--red-700); background: var(--red-100); color: var(--red-700); }
+
+/* Checkbox labels with helper text must wrap instead of overflowing the row
+   (the Sync Blocks "Pricing only" label was one long non-wrapping line). */
+.field--checkbox small { display: block; white-space: normal; font-weight: 450; color: #5b6660; }
+.field--checkbox.has-help { white-space: normal; align-items: flex-start; }
+.field--checkbox input:disabled + span, .field--checkbox:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+
+/* Bulk Apply garment-color tick list (replaces the Ctrl/Cmd multi-select). */
+.bulk-colors-list { max-height: 230px; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 10px; border: 1px solid #d6ded9; border-radius: 10px; padding: .5rem .65rem; margin-top: .4rem; background: #fff; }
+.bulk-colors-list .bulk-color-option { min-height: 1.6rem; white-space: normal; font-weight: 550; }
+.bulk-colors-list .bulk-color-option[hidden] { display: none; }
+#bulk-colors-filter { margin-top: .35rem; }

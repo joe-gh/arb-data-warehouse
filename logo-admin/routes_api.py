@@ -877,7 +877,9 @@ def import_assignments(
     settings = get_settings()
     raw = file.file.read(settings.max_upload_bytes + 1)
     if len(raw) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="CSV exceeds MAX_UPLOAD_BYTES")
+        raise HTTPException(
+            status_code=413,
+            detail=f"This file is too large (limit: {settings.max_upload_bytes // (1024 * 1024)} MB)")
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -1298,7 +1300,7 @@ def save_sync_block(body: SyncBlockBody, user: Dict[str, str] = Depends(require_
     if body.whole_store and styles:
         raise HTTPException(
             status_code=400,
-            detail="Choose whole-store OR specific styles, not both")
+            detail="Untick 'entire store' if you are listing specific style numbers")
     if not body.whole_store and not styles:
         raise HTTPException(status_code=400, detail="Choose whole-store or provide at least one style")
     note = body.note.strip()
@@ -1919,7 +1921,7 @@ def _mix_registry(cursor, store: str, *, required: bool = True):
     if required and (row is None or not row["active"]):
         raise HTTPException(
             status_code=404,
-            detail=f"{store} has no active product-mix override")
+            detail=f"{store} is not using a custom product list")
     return row
 
 
@@ -2213,7 +2215,7 @@ def disable_mix_store(
         if not cursor.fetchone():
             raise HTTPException(
                 status_code=404,
-                detail=f"{store} has no active product-mix override")
+                detail=f"{store} is not using a custom product list")
     return {"ok": True}
 
 
@@ -2809,7 +2811,7 @@ def logo_names(
                 f"""
                 SELECT dn.design_id, dn.color_scheme_id, dn.name, dn.source,
                        dn.locked, dn.uses, dn.fdm4_description, dn.updated_at,
-                       dn.updated_by, la.logo_code, la.n_assign,
+                       dn.updated_by, dn.fdm4_store, la.logo_code, la.n_assign,
                        (SELECT btrim(dp.art_id) FROM fdm4.design_pool dp
                          WHERE btrim(dp.design_id) = dn.design_id
                            AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
@@ -2979,7 +2981,9 @@ def upload_image(
     settings = get_settings()
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="Image exceeds MAX_UPLOAD_BYTES")
+        raise HTTPException(
+            status_code=413,
+            detail=f"This image is too large (limit: {settings.max_upload_bytes // (1024 * 1024)} MB)")
     detected = _detect_image(data)
     if detected is None:
         raise HTTPException(

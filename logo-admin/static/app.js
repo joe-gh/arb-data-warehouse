@@ -134,7 +134,15 @@
 
   function errorMessage(payload, fallback) {
     const detail = payload?.detail ?? payload?.error ?? payload?.message;
-    if (Array.isArray(detail)) return detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item) => {
+          const field = Array.isArray(item.loc) ? item.loc[item.loc.length - 1] : "";
+          const msg = item.msg || JSON.stringify(item);
+          return field && field !== "body" ? `${field}: ${msg}` : msg;
+        })
+        .join("; ");
+    }
     if (typeof detail === "object" && detail) return detail.message || JSON.stringify(detail);
     return text(detail, fallback);
   }
@@ -160,7 +168,10 @@
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("json") ? await response.json() : await response.text();
     if (!response.ok) {
-      const error = new Error(errorMessage(payload, `Request failed (${response.status})`));
+      const fallback = response.status >= 500
+        ? "Something went wrong on the server. Please try again."
+        : `The request could not be completed (error ${response.status}).`;
+      const error = new Error(errorMessage(payload, fallback));
       error.status = response.status;
       error.payload = payload;
       throw error;
@@ -204,7 +215,35 @@
     close.addEventListener("click", () => node.remove());
     node.append(content, close);
     els.toastRegion.append(node);
-    window.setTimeout(() => node.remove(), 6500);
+    // Errors stay until dismissed so staff can read what went wrong;
+    // successes auto-hide.
+    if (type !== "error") window.setTimeout(() => node.remove(), 6500);
+  }
+
+  // Standard list error state: friendly message + a working Retry button.
+  function renderErrorState(container, message, retryFn) {
+    if (!container) return;
+    container.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "grid-empty";
+    const line = document.createElement("div");
+    line.textContent = message;
+    wrap.append(line);
+    if (retryFn) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "button button--ghost button--small";
+      retry.style.marginTop = "8px";
+      retry.textContent = "Try again";
+      retry.addEventListener("click", () => retryFn());
+      wrap.append(retry);
+    }
+    container.append(wrap);
+  }
+
+  function friendlyLoadError(what, error) {
+    const raw = text(error?.message, "");
+    return `Couldn't load ${what}. ${raw ? raw + " " : ""}Check your connection and try again.`;
   }
 
   function openDialog(dialog) {
@@ -512,6 +551,22 @@
     els.empty.hidden = false;
     els.workspace.hidden = true;
     els.ownershipWarning.hidden = true;
+    // A Bulk Apply preview belongs to the store it was built for - clear it so
+    // a stale preview can't be applied against the newly selected store.
+    const bulkPanel = $("#bulk-apply-panel");
+    if (bulkPanel && !bulkPanel.hidden) {
+      bulkPanel.hidden = true;
+      const tbody = document.querySelector("#bulk-preview-table tbody");
+      if (tbody) tbody.replaceChildren();
+      const wrap = $("#bulk-preview-table-wrap");
+      if (wrap) wrap.hidden = true;
+      const summary = $("#bulk-preview-summary");
+      if (summary) summary.textContent = "";
+      const result = $("#bulk-result");
+      if (result) result.textContent = "";
+      const bulkApplyBtn = $("#bulk-apply-btn");
+      if (bulkApplyBtn) bulkApplyBtn.disabled = true;
+    }
     setOptionsOpen(els.styleSearch, els.styleOptions, false);
     updateUrl();
     if (document.body.dataset.view === "names") { namesState.offset = 0; loadNames(); }
@@ -530,7 +585,9 @@
     window.localStorage.setItem("logoAdminStore", store);
     els.selectionStatus.textContent = `Loading styles for ${storeDisplayFor(store)}...`;
     await searchStyles("");
-    els.selectionStatus.textContent = `${state.styles.length} style${state.styles.length === 1 ? "" : "s"} found for ${store}.`;
+    els.selectionStatus.textContent = state.styles.length === 0 && els.styleAssignedOnly?.checked
+      ? `No styles with logos yet for ${storeDisplayFor(store)} - untick "Assigned only" to browse the full catalog.`
+      : `${state.styles.length} style${state.styles.length === 1 ? "" : "s"} found for ${storeDisplayFor(store)}.`;
   }
 
   async function searchStyles(query, target = "main") {
@@ -785,7 +842,7 @@
           clear.className = "clear-color";
           clear.textContent = `Clear color (${colorAssignments.length})`;
           clear.title = `Permanently delete every logo assignment on ${colorName(color)}`;
-          clear.addEventListener("click", () => clearColor(color, colorAssignments.length));
+          clear.addEventListener("click", (e) => clearColor(color, colorAssignments.length, e.currentTarget));
           label.append(clear);
         }
         addRow.append(label);
@@ -799,14 +856,15 @@
     });
   }
 
-  async function clearColor(color, count) {
+  async function clearColor(color, count, btn = null) {
     const accepted = await confirmAction({
       title: `Clear all rows for ${colorName(color)}?`,
-      message: `This permanently deletes ${count} logo assignment${count === 1 ? "" : "s"} on ${colorName(color)} (${colorCode(color)}) from the warehouse. The next sync removes them from WordPress. Every deletion is recorded in the Activity log.`,
+      message: `This permanently deletes ${count} logo assignment${count === 1 ? "" : "s"} on ${colorName(color)} (${colorCode(color)}) from the warehouse. The next sync removes them from the website. Every deletion is recorded in the Activity log.`,
       actionLabel: "Delete all rows",
       danger: true,
     });
     if (!accepted) return;
+    if (btn) setBusy(btn, true, "Deleting...");
     try {
       const params = new URLSearchParams({
         fdm4_store: state.store,
@@ -820,7 +878,7 @@
       await refreshStyle();
     } catch (error) {
       toast(error.message, "error");
-    }
+    } finally { if (btn) setBusy(btn, false); }
   }
 
   // Legacy sheet semantics: lb-black = the logo renders on a dark garment
@@ -1192,8 +1250,8 @@
           ? "This removes the entire selectable logo row, including positions 2 and 3, and cannot be undone."
           : "This removes the warehouse assignment and cannot be undone. The next sync will remove it from WordPress.")
         : (state.editing.position === 1
-          ? "This deactivates the entire selectable logo row, including positions 2 and 3."
-          : "The assignment stays in the warehouse but will be omitted from the next WordPress reconcile."),
+          ? "This turns off the entire selectable logo row, including positions 2 and 3."
+          : "The logo is kept here but will be removed from the website the next time this store is synced."),
       actionLabel: hard ? "Delete permanently" : "Deactivate",
       danger: true,
     });
@@ -1206,6 +1264,8 @@
       option_row: String(state.editing.optionRow ?? 1),
       hard: String(hard),
     });
+    const busyBtn = hard ? els.hardRemove : els.softRemove;
+    if (busyBtn) setBusy(busyBtn, true, hard ? "Deleting..." : "Deactivating...");
     try {
       await api(`/api/assignments?${params}`, { method: "DELETE" });
       closeDialog(els.assignmentDialog);
@@ -1213,19 +1273,21 @@
       await refreshStyle();
     } catch (error) {
       toast(error.message, "error");
-    }
+    } finally { if (busyBtn) setBusy(busyBtn, false); }
   }
 
   async function applyAllColors() {
     const assignment = state.editing?.assignment;
     if (!assignment) return;
+    const totalColors = (state.detail?.colors || []).length;
     const accepted = await confirmAction({
       title: "Apply to every garment color?",
-      message: `Copy ${text(assignment.logo_code, "this logo")} (row ${state.editing.optionRow ?? 1}, position ${state.editing.position}) to every available color. Occupied slots are preserved.`,
+      message: `Copy ${text(assignment.logo_code, "this logo")} (row ${state.editing.optionRow ?? 1}, position ${state.editing.position}) to ${totalColors ? `all ${totalColors} available colors` : "every available color"}. Occupied slots are preserved.`,
       actionLabel: "Apply to all colors",
       danger: false,
     });
     if (!accepted) return;
+    if (els.applyColors) setBusy(els.applyColors, true, "Applying...");
     try {
       const result = await api("/api/apply-all-colors", {
         method: "POST",
@@ -1245,7 +1307,7 @@
       await refreshStyle();
     } catch (error) {
       toast(error.message, "error");
-    }
+    } finally { if (els.applyColors) setBusy(els.applyColors, false); }
   }
 
   async function uploadImage() {
@@ -1324,6 +1386,14 @@
     if (!source) {
       toast("Choose a source style from the search results.", "error");
       return;
+    }
+    if (els.copyOverwrite.checked) {
+      const ok = await confirmAction({
+        title: "Overwrite existing logos?",
+        message: `Copying ${source} onto ${state.style} with "Overwrite occupied positions" checked replaces any logo already set on matching positions. This cannot be undone.`,
+        actionLabel: "Copy and overwrite",
+      });
+      if (!ok) return;
     }
     const submit = $("button[type='submit']", els.copyForm);
     setBusy(submit, true, "Copying...");
@@ -1410,7 +1480,14 @@
     }
   }
 
+  let mirrorRunning = false;
+
   async function mirrorLegacyImages() {
+    if (mirrorRunning) {
+      toast("Image mirroring is already running - wait for it to finish.", "error");
+      openDialog(els.importDialog);
+      return;
+    }
     const accepted = await confirmAction({
       title: "Mirror legacy images for ALL stores?",
       message: "This is a global migration, not a page. It copies every legacy sheet image into the warehouse and rewrites the image link on every store's logo assignments - tens of thousands of rows across all stores at once, no matter which store is selected. It is safe to re-run (already-mirrored images are skipped), and storefronts only change when a store is next synced.",
@@ -1418,6 +1495,7 @@
       danger: true,
     });
     if (!accepted) return;
+    mirrorRunning = true;
     els.importResults.innerHTML = '<p><span class="spinner" aria-hidden="true"></span> Mirroring legacy images into the warehouse...</p>';
     openDialog(els.importDialog);
     const totals = { processed: 0, downloaded: 0, reused: 0, repointed_assignments: 0, failed: 0 };
@@ -1437,12 +1515,14 @@
         if (remaining !== -1 && nowRemaining >= remaining) { remaining = nowRemaining; break; }
         remaining = nowRemaining;
       }
-      renderResult(els.importResults, { ...totals, remaining: Math.max(remaining, 0), misses: totals.failed }, "Legacy image mirror finished");
-      toast("Legacy image mirroring finished.");
+      const leftover = Math.max(remaining, 0);
+      renderResult(els.importResults, { ...totals, remaining: leftover, misses: totals.failed },
+        leftover ? `Legacy image mirror stopped early - ${leftover} image(s) remaining, run it again to continue` : "Legacy image mirror finished");
+      toast(leftover ? `Image mirroring stopped early - ${leftover} remaining. Run it again to continue.` : "Legacy image mirroring finished.");
       if (state.style) await refreshStyle();
     } catch (error) {
       els.importResults.innerHTML = `<div class="notice notice--error" role="alert"><span class="notice__icon">!</span><div><strong>Image mirroring failed</strong><br>${escapeHtml(error.message)}</div></div>`;
-    }
+    } finally { mirrorRunning = false; }
   }
 
   function renderResult(container, result, title) {
@@ -1607,28 +1687,31 @@
     if (!state.store) return;
     const styleScope = scope === "style" ? [state.style] : [];
     const button = scope === "style" ? $("#sync-style-button") : $("#sync-store-button");
+    const sibling = scope === "style" ? $("#sync-store-button") : $("#sync-style-button");
     if (scope === "store") {
       const accepted = await confirmAction({
-        title: `Sync all of ${state.store}?`,
-        message: `This rebuilds the design map and reconciles every in-scope style for this store on ${wpTargetHost()}.`,
+        title: `Sync all of ${storeDisplayFor(state.store)}?`,
+        message: `This pushes every configured style's logo setup for this store to ${wpTargetHost()}. It can take a few minutes.`,
         actionLabel: "Sync entire store",
         danger: false,
       });
       if (!accepted) return;
     }
     setBusy(button, true, "Syncing...");
+    if (sibling) sibling.disabled = true;
     try {
       const result = await api("/api/sync", { method: "POST", body: { store: state.store, styles: styleScope } });
       renderSyncResult(result, scope);
       openDialog(els.syncDialog);
       els.ownershipWarning.hidden = result.owned !== false;
       const errors = Number(result.stats?.errors ?? result.reconcile?.stats?.errors ?? 0);
-      toast(errors ? `Reconcile on ${wpTargetHost()} completed with ${errors} error${errors === 1 ? "" : "s"}.` : `Reconcile on ${wpTargetHost()} completed.`, errors ? "error" : "success");
+      toast(errors ? `Sync finished, but ${errors} product${errors === 1 ? "" : "s"} could not be updated on the website.` : "Sync to the website finished.", errors ? "error" : "success");
     } catch (error) {
       els.syncResults.innerHTML = `<div class="notice notice--error"><span class="notice__icon">!</span><div><strong>Sync failed</strong><br>${escapeHtml(error.message)}</div></div>`;
       openDialog(els.syncDialog);
     } finally {
       setBusy(button, false);
+      if (sibling) sibling.disabled = false;
     }
   }
 
@@ -1643,11 +1726,23 @@
     const numeric = Object.entries(stats).filter(([, value]) => typeof value === "number");
     const errorCount = Number(stats.errors ?? 0);
     const ownership = errorCount > 0
-      ? `<div class="notice notice--warning"><span class="notice__icon">!</span><div><strong>Sync completed with errors</strong><br>${escapeHtml(errorCount)} product projection${errorCount === 1 ? "" : "s"} failed. Review WordPress logs before relying on this result.</div></div>`
+      ? `<div class="notice notice--warning"><span class="notice__icon">!</span><div><strong>Sync finished with errors</strong><br>${escapeHtml(errorCount)} product${errorCount === 1 ? "" : "s"} could not be updated on the website. Try syncing again, or contact an administrator with this store and style.</div></div>`
       : result.owned === false
-      ? '<div class="notice notice--warning"><span class="notice__icon">!</span><div><strong>Unsafe legacy WordPress response</strong><br>This target accepted a sync without warehouse ownership. Do not rely on the result; deploy the ownership-enforcing broker before retrying.</div></div>'
-      : `<div class="notice notice--success"><span class="notice__icon">✓</span><div><strong>Sync completed</strong><br>${escapeHtml(wpTargetHost())} accepted the reconcile request.</div></div>`;
-    els.syncResults.innerHTML = `${ownership}<p>Scope: <strong>${escapeHtml(scope === "style" ? `${state.store} / ${state.style}` : `${state.store} / all in-scope styles`)}</strong></p><div class="result-summary">${numeric.map(([key, value]) => `<div class="stat"><strong>${escapeHtml(value)}</strong><small>${escapeHtml(key.replaceAll("_", " "))}</small></div>`).join("") || '<p class="muted">No numeric stats were returned.</p>'}</div>`;
+      ? '<div class="notice notice--warning"><span class="notice__icon">!</span><div><strong>This store is not on the new logo system yet</strong><br>The website accepted the sync anyway, so the result cannot be trusted. Ask an administrator to switch this store over before relying on it.</div></div>'
+      : `<div class="notice notice--success"><span class="notice__icon">✓</span><div><strong>Sync finished</strong><br>${escapeHtml(wpTargetHost())} accepted the update.</div></div>`;
+    // Friendly labels for the stat keys the sync returns; anything unknown
+    // falls back to the de-underscored key.
+    const STAT_LABELS = {
+      applied: "products updated",
+      skipped_manual: "skipped (hand-managed)",
+      errors: "errors",
+      design_map_rows: "design lookup rows",
+      logo_rows_on_product: "logo rows on this product",
+      repointed_assignments: "image links updated",
+      styles: "styles",
+      would_change: "would change",
+    };
+    els.syncResults.innerHTML = `${ownership}<p>Scope: <strong>${escapeHtml(scope === "style" ? `${storeDisplayFor(state.store)} / ${state.style}` : `${storeDisplayFor(state.store)} / all configured styles`)}</strong></p><div class="result-summary">${numeric.map(([key, value]) => `<div class="stat"><strong>${escapeHtml(value)}</strong><small>${escapeHtml(STAT_LABELS[key] || key.replaceAll("_", " "))}</small></div>`).join("") || '<p class="muted">No numeric stats were returned.</p>'}</div>`;
   }
 
   // ===== Allowlisted in-app assistant =====
@@ -3078,7 +3173,7 @@
       color_scheme: logoScheme,
       target: targetMode === "light_dark"
         ? { mode: "light_dark", class: $("#bulk-class").value }
-        : { mode: "colors", color_codes: Array.from($("#bulk-colors").selectedOptions).map((o) => o.value) },
+        : { mode: "colors", color_codes: bulkSelectedColors() },
     };
     const previewBtn = $("#bulk-preview-btn");
     setBusy(previewBtn, true, "Previewing...");
@@ -3123,6 +3218,13 @@
     if (!rows.length) { toast("No rows selected.", "error"); return; }
     const placement = $("#bulk-placement").value;
     if (!placement) { toast("Choose a placement first.", "error"); return; }
+    const ok = await confirmAction({
+      title: "Apply this logo?",
+      message: `Apply ${$("#bulk-logo-code").value}/${$("#bulk-logo-scheme").value} (${placement}) to ${rows.length} checked row${rows.length === 1 ? "" : "s"} on ${storeDisplayFor(state.store)}? You can undo this batch afterwards. Nothing reaches the website until you sync the store.`,
+      actionLabel: `Apply to ${rows.length} row${rows.length === 1 ? "" : "s"}`,
+      danger: false,
+    });
+    if (!ok) return;
     const applyBtn = $("#bulk-apply-btn");
     setBusy(applyBtn, true, "Applying...");
     try {
@@ -3138,19 +3240,21 @@
         : "";
       const resultEl = $("#bulk-result");
       resultEl.innerHTML = `Applied ${escapeHtml(String(res.applied))}.${escapeHtml(warn)} Sync this store to push live. <button type="button" id="bulk-undo-btn" class="button button--ghost button--small">Undo</button>`;
-      $("#bulk-undo-btn").addEventListener("click", () => bulkUndo(res.batch_id));
-      applyBtn.disabled = true;
+      $("#bulk-undo-btn").addEventListener("click", (e) => bulkUndo(res.batch_id, e.currentTarget));
       await loadBulkHistory();
       toast(`Bulk apply complete - ${res.applied} assignment${res.applied === 1 ? "" : "s"} written.`);
     } catch (error) {
       toast(error.message, "error");
     } finally {
       setBusy(applyBtn, false);
+      // setBusy re-enables unconditionally; keep Apply disabled after a
+      // success so the same checked rows can't be double-applied.
+      if ($("#bulk-undo-btn")) applyBtn.disabled = true;
     }
   }
 
-  async function bulkUndo(batchId) {
-    const undoBtn = $("#bulk-undo-btn");
+  async function bulkUndo(batchId, button = null) {
+    const undoBtn = button || $("#bulk-undo-btn");
     if (undoBtn) setBusy(undoBtn, true, "Undoing...");
     try {
       const res = await api("/api/bulk-apply/undo", { method: "POST", body: { batch_id: batchId } });
@@ -3178,10 +3282,10 @@
       }
       box.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>Logo</th><th>Rows</th><th>Actor</th><th>Status</th></tr></thead><tbody>${batches.map((batch) => `<tr><td>${escapeHtml(formatDate(batch.created_at))}</td><td><code>${escapeHtml(batch.logo_code)}-${escapeHtml(batch.color_scheme)}</code><br><small>${escapeHtml(batch.placement)}</small></td><td>${escapeHtml(batch.applied)}</td><td>${escapeHtml(batch.created_by)}</td><td>${batch.undone_at ? `Undone ${escapeHtml(formatDate(batch.undone_at))}` : `<button type="button" class="button button--ghost button--small bulk-history-undo" data-batch="${escapeHtml(batch.batch_id)}">Undo</button>`}</td></tr>`).join("")}</tbody></table></div>`;
       $$(".bulk-history-undo", box).forEach((button) => {
-        button.addEventListener("click", () => bulkUndo(Number(button.dataset.batch)));
+        button.addEventListener("click", () => bulkUndo(Number(button.dataset.batch), button));
       });
     } catch (error) {
-      box.textContent = error.message;
+      box.innerHTML = `<div class="grid-empty">${escapeHtml(friendlyLoadError("the bulk history", error))}</div>`;
     }
   }
 
@@ -3217,22 +3321,42 @@
     if (currentVal && Array.from(placementSel.options).some((o) => o.value === currentVal)) {
       placementSel.value = currentVal;
     }
-    // Populate colors multi-select from /api/colors (store-specific)
+    // Populate the color checkbox list from /api/colors (store-specific).
+    // A filterable tick-list replaces the old Ctrl/Cmd-click multi-select,
+    // which quietly lost selections for anyone unfamiliar with the shortcut.
+    const colorList = $("#bulk-colors-list");
     try {
-      const colorSel = $("#bulk-colors");
-      const selectedBefore = new Set(Array.from(colorSel.selectedOptions).map((o) => o.value));
+      const selectedBefore = new Set(bulkSelectedColors());
       const params = new URLSearchParams({ limit: "500" });
       if (state.store) params.set("store", state.store);
       const { colors } = await api(`/api/colors?${params}`);
-      colorSel.replaceChildren();
+      colorList.replaceChildren();
       colors.forEach((c) => {
-        const opt = new Option(`${c.color_name} (${c.color_code}) - ${c.light_dark}`, c.color_code);
-        opt.selected = selectedBefore.has(c.color_code);
-        colorSel.add(opt);
+        const label = document.createElement("label");
+        label.className = "field--checkbox bulk-color-option";
+        label.dataset.haystack = `${c.color_name} ${c.color_code} ${c.light_dark}`.toLowerCase();
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = c.color_code;
+        cb.checked = selectedBefore.has(c.color_code);
+        cb.addEventListener("change", updateBulkColorsCount);
+        label.append(cb, document.createTextNode(` ${c.color_name} (${c.color_code}) - ${c.light_dark}`));
+        colorList.append(label);
       });
+      if (!colors.length) colorList.innerHTML = '<span class="muted">No colors found for this store.</span>';
+      updateBulkColorsCount();
     } catch {
-      // Colors tab not available - leave the select empty; operator can still use light/dark mode.
+      colorList.innerHTML = '<span class="muted">Couldn\'t load the color list - you can still target by light/dark.</span>';
     }
+  }
+
+  function bulkSelectedColors() {
+    return $$("#bulk-colors-list input[type='checkbox']").filter((cb) => cb.checked).map((cb) => cb.value);
+  }
+
+  function updateBulkColorsCount() {
+    const el = $("#bulk-colors-count");
+    if (el) el.textContent = String(bulkSelectedColors().length);
   }
 
   function wireEvents() {
@@ -3252,9 +3376,15 @@
     });
     bindListKeyboard(els.styleSearch, els.styleOptions);
 
-    $("#refresh-button").addEventListener("click", async () => {
-      if (state.style) await refreshStyle(); else if (state.store) await searchStyles(els.styleSearch.value); else await loadStores();
-      toast("Warehouse data refreshed.");
+    $("#refresh-button").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      setBusy(btn, true, "");
+      try {
+        if (state.style) await refreshStyle(); else if (state.store) await searchStyles(els.styleSearch.value); else await loadStores();
+        toast("Warehouse data refreshed.");
+      } catch (error) {
+        toast(friendlyLoadError("fresh warehouse data", error), "error");
+      } finally { setBusy(btn, false); }
     });
     els.settingsForm.addEventListener("submit", saveSettings);
     els.storeSettingsButton.addEventListener("click", openStoreSettings);
@@ -3262,13 +3392,21 @@
       els.styleActive.indeterminate = false;
       if (!state.store || !state.style) return;
       const active = els.styleActive.checked;
+      const count = (state.detail?.assignments || []).length;
+      const ok = await confirmAction(active
+        ? { title: "Turn on every logo on this style?", message: `All ${count || "its"} logo assignment${count === 1 ? "" : "s"} on style ${state.style} will show on the website after the next sync of this store.`, actionLabel: "Turn all on", danger: false }
+        : { title: "Turn off every logo on this style?", message: `All ${count || "its"} logo assignment${count === 1 ? "" : "s"} on style ${state.style} will disappear from the website after the next sync of this store. Nothing is deleted - you can turn them back on.`, actionLabel: "Turn all off" });
+      if (!ok) {
+        els.styleActive.checked = !active;
+        return;
+      }
       els.styleActive.disabled = true;
       try {
         await api("/api/style-active", {
           method: "POST",
           body: { store: state.store, style: state.style, active },
         });
-        toast(`All assignments on this style ${active ? "activated" : "deactivated"}.`);
+        toast(`All logo assignments on this style are now ${active ? "on" : "off"}. Sync the store to update the website.`);
         await refreshStyle();
       } catch (error) {
         toast(error.message, "error");
@@ -3345,6 +3483,12 @@
     $("#bulk-apply-open").addEventListener("click", openBulkApplyPanel);
     $("#bulk-apply-close").addEventListener("click", () => { $("#bulk-apply-panel").hidden = true; });
     $("#bulk-preview-btn").addEventListener("click", bulkPreview);
+    $("#bulk-colors-filter")?.addEventListener("input", () => {
+      const q = $("#bulk-colors-filter").value.trim().toLowerCase();
+      $$("#bulk-colors-list .bulk-color-option").forEach((label) => {
+        label.hidden = q !== "" && !(label.dataset.haystack || "").includes(q);
+      });
+    });
     $("#bulk-apply-btn").addEventListener("click", bulkApply);
     $("#bulk-all").addEventListener("change", (event) => {
       // Only toggle rows the current filter leaves visible.
@@ -3412,14 +3556,16 @@
   }
 
   async function loadTiers() {
+    $("#tier-list").innerHTML = '<div class="grid-empty">Loading...</div>';
     try {
       const tiers = envelope(await api("/api/pricing/tiers"), "tiers");
       state.tiers = tiers;
       const sel = $("#tier-select");
-      sel.replaceChildren(new Option("Choose a tier...", ""));
-      tiers.forEach((t) => sel.add(new Option(t.tier_name + (t.is_msrp ? " (no override)" : ""), t.tier_name)));
-      $("#tier-list").innerHTML = `<table class="data-table"><thead><tr><th>Tier</th><th>Price level</th><th>Fills blanks?</th></tr></thead><tbody>${tiers.map((t) => `<tr><td>${escapeHtml(t.tier_name)}</td><td><code>${escapeHtml(t.price_levels_key)}</code></td><td>${t.is_msrp ? "No (MSRP = retail)" : "Yes"}</td></tr>`).join("")}</tbody></table>`;
-    } catch (e) { $("#tier-list").innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+      sel.replaceChildren(new Option("Choose a pricing level...", ""));
+      tiers.forEach((t) => sel.add(new Option(t.tier_name + (t.is_msrp ? " (same as no level - full retail)" : ""), t.tier_name)));
+      if (!tiers.length) { $("#tier-list").innerHTML = '<div class="grid-empty">No pricing levels are defined yet.</div>'; return; }
+      $("#tier-list").innerHTML = `<table class="data-table"><thead><tr><th>Pricing level</th><th>Used when FDM4 sends no price?</th></tr></thead><tbody>${tiers.map((t) => `<tr><td>${escapeHtml(t.tier_name)}</td><td>${t.is_msrp ? "No - full retail price (MSRP)" : "Yes"}</td></tr>`).join("")}</tbody></table>`;
+    } catch (e) { renderErrorState($("#tier-list"), friendlyLoadError("the pricing levels", e), loadTiers); }
   }
 
   let tierRows = [];
@@ -3427,7 +3573,7 @@
 
   function renderTierAssignments() {
     const box = $("#tier-assignments");
-    if (!tierRows.length) { box.innerHTML = '<div class="grid-empty">No stores are on a fallback tier. Stores that already price correctly do not need one.</div>'; return; }
+    if (!tierRows.length) { box.innerHTML = '<div class="grid-empty">No stores are on a backup pricing level. Stores that already price correctly do not need one.</div>'; return; }
     const q = ($("#tier-filter")?.value || "").trim().toLowerCase();
     const rows = tierRows.filter((r) => !q || `${text(r.display_name, r.fdm4_store)} ${r.fdm4_store} ${r.tier_name} ${text(r.note)}`.toLowerCase().includes(q));
     if (!rows.length) { box.innerHTML = '<div class="grid-empty">No tier assignments match that filter.</div>'; return; }
@@ -3446,7 +3592,7 @@
         <td>${escapeHtml(formatDate(r.updated_at))}</td>
         <td><button class="tier-remove" type="button" data-store="${escapeHtml(r.fdm4_store)}">Remove</button></td>
       </tr>`).join("")}</tbody></table>`;
-    $$(".tier-remove", box).forEach((b) => b.addEventListener("click", () => removeTier(b.dataset.store)));
+    $$(".tier-remove", box).forEach((b) => b.addEventListener("click", () => removeTier(b.dataset.store, b)));
     $$("th[data-tsort]", box).forEach((th) => th.addEventListener("click", () => {
       const k = th.dataset.tsort;
       if (tierSort.key === k) { tierSort.dir = tierSort.dir === "asc" ? "desc" : "asc"; }
@@ -3457,17 +3603,19 @@
 
   async function loadAssignments() {
     const box = $("#tier-assignments");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
     try {
       tierRows = envelope(await api("/api/pricing/store-tiers"), "assignments");
       renderTierAssignments();
-    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+    } catch (e) { renderErrorState(box, friendlyLoadError("the store pricing levels", e), loadAssignments); }
   }
 
-  async function removeTier(store) {
-    const accepted = await confirmAction({ title: "Remove tier assignment?", message: `Remove the fallback tier for ${storeDisplayFor(store)}? Its price reverts to MSRP wherever the FDM4 catalog price stays blank.`, actionLabel: "Remove", danger: true });
+  async function removeTier(store, btn = null) {
+    const accepted = await confirmAction({ title: "Remove this pricing level?", message: `Remove the backup pricing level for ${storeDisplayFor(store)}? Items with no price from FDM4 will go back to full retail price (MSRP) within the hour.`, actionLabel: "Remove", danger: true });
     if (!accepted) return;
-    try { await api(`/api/pricing/store-tier?${new URLSearchParams({ fdm4_store: store })}`, { method: "DELETE" }); toast("Assignment removed."); loadAssignments(); }
-    catch (e) { toast(e.message, "error"); }
+    if (btn) btn.disabled = true;
+    try { await api(`/api/pricing/store-tier?${new URLSearchParams({ fdm4_store: store })}`, { method: "DELETE" }); toast("Pricing level removed."); loadAssignments(); }
+    catch (e) { if (btn) btn.disabled = false; toast(e.message, "error"); }
   }
 
   // Prefill a single-store FORM field (tier assignment, sync-block creation)
@@ -3486,12 +3634,23 @@
     const store = $("#tier-store-code").value.trim();
     const tier = $("#tier-select").value;
     if (!store) { toast("Choose a store.", "error"); return; }
-    if (!tier) { toast("Choose a tier.", "error"); return; }
+    if (!tier) { toast("Choose a pricing level.", "error"); return; }
+    const existing = tierRows.find((r) => r.fdm4_store === store);
+    const changeText = existing && existing.tier_name !== tier
+      ? `Change ${storeDisplayFor(store)} from ${existing.tier_name} to ${tier}?`
+      : `Put ${storeDisplayFor(store)} on ${tier}?`;
+    const ok = await confirmAction({
+      title: "Change this store's backup pricing?",
+      message: `${changeText} Any product FDM4 hasn't priced will use ${tier} prices across the whole store, starting within the hour.`,
+      actionLabel: "Save",
+      danger: false,
+    });
+    if (!ok) return;
     const button = $("#tier-form button[type='submit']");
     setBusy(button, true, "Saving...");
     try {
       await api("/api/pricing/store-tier", { method: "PUT", body: { fdm4_store: store, tier_name: tier, note: $("#tier-note").value.trim() } });
-      toast(`Saved: ${storeDisplayFor(store)} → ${tier}.`);
+      toast(`Saved: ${storeDisplayFor(store)} is on ${tier}. Prices update within the hour.`);
       $("#tier-form").reset(); $("#tier-store-code").value = "";
       loadAssignments();
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
@@ -3521,31 +3680,50 @@
     const context = $("#names-context");
     if (context) {
       context.textContent = state.store
-        ? `Showing only the logos used by ${storeDisplayFor(state.store)}. Name edits apply to this store only; rows marked STORE OVERRIDE have a name set just for this store.`
-        : "No store selected - showing every named logo across all stores. Edits here change the global default name.";
+        ? `Showing only the logos used by ${storeDisplayFor(state.store)}. Name edits apply to this store only; rows marked "This store only" have a name set just for this store.`
+        : "No store selected - showing every named logo across all stores. Edits to shared rows change the name on every store that doesn't have its own custom name.";
     }
+    // "Unnamed only" needs a store: unnamed logos only exist relative to a
+    // store's assignments, so the all-stores list can never show them.
+    if (!state.store && namesState.filter === "unnamed") {
+      box.innerHTML = '<div class="grid-empty">Pick a store first - "Unnamed only" lists the logos that store uses which have no name yet.</div>';
+      $("#names-pager").hidden = true;
+      return;
+    }
+    $("#names-prev").disabled = true;
+    $("#names-next").disabled = true;
     try {
       const params = new URLSearchParams({ q: namesState.q, store: state.store || "", filter: namesState.filter, limit: namesState.limit, offset: namesState.offset });
       const resp = await api(`/api/logo-names?${params}`);
       namesState.total = resp.total || 0;
       renderNames(envelope(resp, "names"));
-    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; $("#names-pager").hidden = true; }
+    } catch (e) { renderErrorState(box, friendlyLoadError("the logo names", e), loadNames); $("#names-pager").hidden = true; }
   }
 
   function renderNames(rows) {
     const box = $("#names-list");
-    if (!rows.length) { box.innerHTML = '<div class="grid-empty">No logos match that search.</div>'; $("#names-pager").hidden = true; return; }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}">
-        <td><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code>D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted">art ${escapeHtml(r.art_id)}</small>` : ""}</td>
+    if (!rows.length) {
+      const msg = namesState.q
+        ? "No logos match that search."
+        : (namesState.filter ? "No logos match this filter." : (state.store ? "This store has no logos yet." : "No logo names yet."));
+      box.innerHTML = `<div class="grid-empty">${msg}</div>`;
+      $("#names-pager").hidden = true;
+      return;
+    }
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(state.store ? state.store : text(r.fdm4_store))}">
+        <td><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code title="FDM4 design number">D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted" title="FDM4 artwork number">art ${escapeHtml(r.art_id)}</small>` : ""}</td>
         <td><code>${escapeHtml(r.color_scheme_id)}</code></td>
-        <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name"></td>
-        <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(text(r.source, "unnamed"))}</span>${r.store_specific ? '<br><span class="badge-override">STORE OVERRIDE</span>' : (state.store ? '<br><small class="muted">global default</small>' : "")}</td>
+        <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name"></td>
+        <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(text(r.source, "unnamed"))}</span>${r.store_specific ? `<br><span class="badge-override">${state.store ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (state.store ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
         <td class="name-actions">
           <button class="button button--primary button--small name-save" type="button">Save</button>
-          <button class="button button--ghost button--small name-repull" type="button" title="Re-pull the latest description from FDM4">Re-pull</button>
+          <button class="button button--ghost button--small name-repull" type="button" title="Refresh this design's name from FDM4's current description">Refresh from FDM4</button>
         </td>
       </tr>`).join("")}</tbody></table>`;
-    $$(".name-save", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); saveName(tr.dataset.design, tr.dataset.scheme, $(".name-input", tr).value, b); }));
+    $$(".name-save", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); saveName(tr, b); }));
+    $$(".name-input", box).forEach((inp) => inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); const tr = inp.closest("tr"); saveName(tr, $(".name-save", tr)); }
+    }));
     $$(".name-repull", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); repullName(tr.dataset.design, b); }));
     const start = namesState.offset + 1, end = namesState.offset + rows.length;
     $("#names-range").textContent = `${start}-${end} of ${namesState.total}`;
@@ -3554,31 +3732,48 @@
     $("#names-pager").hidden = false;
   }
 
-  async function saveName(design, scheme, name, button) {
-    name = (name || "").trim();
+  async function saveName(tr, button) {
+    const design = tr.dataset.design;
+    const scheme = tr.dataset.scheme;
+    const input = $(".name-input", tr);
+    const rowStore = tr.dataset.rowstore || "";
+    const name = (input.value || "").trim();
     if (!name) { toast("Name can't be empty.", "error"); return; }
+    if (name === (input.dataset.original || "")) {
+      toast("No change to save - the name is the same.");
+      return;
+    }
+    if (!rowStore) {
+      const ok = await confirmAction({
+        title: "Change this name on all stores?",
+        message: `"${name}" becomes the shopper-facing name on every store that doesn't have its own custom name for this logo. It also stops future FDM4 refreshes from changing it.`,
+        actionLabel: "Save for all stores",
+        danger: false,
+      });
+      if (!ok) return;
+    }
     setBusy(button, true, "Saving...");
     try {
-      await api("/api/logo-names", { method: "PUT", body: { design_id: design, color_scheme_id: scheme, name, fdm4_store: state.store || "" } });
-      toast(state.store ? `Name saved for ${state.store} only. It appears on the storefront after the next sync.` : "Global default name saved. It appears on the storefront after the next sync.");
+      await api("/api/logo-names", { method: "PUT", body: { design_id: design, color_scheme_id: scheme, name, fdm4_store: rowStore } });
+      toast(rowStore ? `Name saved for ${storeDisplayFor(rowStore)} only. It appears on the store website after the next sync.` : "Shared name saved for all stores. It appears on the store websites after the next sync.");
       loadNames();
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
   }
 
   async function repullName(design, button) {
-    const accepted = await confirmAction({ title: "Re-pull from FDM4?", message: `Refresh design D${design}'s name(s) from FDM4's current description. Names you've edited by hand are kept.`, actionLabel: "Re-pull" });
+    const accepted = await confirmAction({ title: "Refresh from FDM4?", message: `Refresh design D${design}'s name(s) from FDM4's current description. Names you've edited by hand are kept.`, actionLabel: "Refresh", danger: false });
     if (!accepted) return;
-    setBusy(button, true, "...");
+    setBusy(button, true, "Refreshing...");
     try {
       const resp = await api("/api/logo-names/repull", { method: "POST", body: { design_id: design, force: false } });
-      toast(resp.changed ? `Re-pulled ${resp.changed} name(s) from FDM4.` : "Already matches FDM4 - nothing changed.");
+      toast(resp.changed ? `Updated ${resp.changed} name(s) from FDM4.` : "Nothing changed - the name either already matches FDM4, was hand-edited (kept), or FDM4 has no description for it.");
       loadNames();
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
   }
 
   // ----- Colors review -----
 
-  const colorsState = { sort: "", dir: "asc", limit: 10, offset: 0, total: 0 };
+  const colorsState = { sort: "", dir: "asc", limit: 50, offset: 0, total: 0 };
 
   async function loadColors() {
     const q = $("#color-search").value;
@@ -3599,18 +3794,37 @@
         const base = th.textContent.replace(/ [▲▼]$/, "");
         th.textContent = th.dataset.sort === colorsState.sort ? `${base} ${colorsState.dir === "desc" ? "▼" : "▲"}` : base;
       });
+      const sourceLabel = (v) => (v === "ai" ? "AI guess" : v === "manual" ? "Set by staff" : text(v));
+      if (!colors.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = '<td colspan="6" class="grid-empty">No colors match these filters.</td>';
+        tb.append(tr);
+      }
       colors.forEach((c) => {
         const tr = document.createElement("tr");
+        const confPct = c.confidence === null || c.confidence === undefined || c.source === "manual"
+          ? "" : `${Math.round(Number(c.confidence) * 100)}%`;
         tr.innerHTML = `<td>${escapeHtml(c.color_name)}</td><td>${escapeHtml(c.color_code)}</td>
           <td>${c.style_count}</td>
           <td><button class="chip ${escapeHtml(c.light_dark)}" type="button" title="Click to cycle light → dark → both">${escapeHtml(c.light_dark)}</button></td>
-          <td>${escapeHtml(c.source)}</td><td>${c.confidence ?? ""}</td>`;
-        tr.querySelector("button").addEventListener("click", async () => {
+          <td class="color-source-cell">${escapeHtml(sourceLabel(c.source))}</td><td class="color-conf-cell">${confPct}</td>`;
+        const chip = tr.querySelector("button");
+        chip.addEventListener("click", async () => {
           const next = c.light_dark === "light" ? "dark" : (c.light_dark === "dark" ? "both" : "light");
+          chip.disabled = true;
           try {
             await api("/api/colors", { method: "PUT", body: { color_code: c.color_code, light_dark: next } });
-            loadColors();
+            // Update the row in place - a full reload re-sorts the table and
+            // shifts rows under the reviewer's cursor mid-workflow.
+            c.light_dark = next;
+            c.source = "manual";
+            c.confidence = null;
+            chip.className = `chip ${next}`;
+            chip.textContent = next;
+            tr.querySelector(".color-source-cell").textContent = "Set by staff";
+            tr.querySelector(".color-conf-cell").textContent = "";
           } catch (e) { toast(e.message, "error"); }
+          finally { chip.disabled = false; }
         });
         tb.append(tr);
       });
@@ -3629,7 +3843,8 @@
       }
     } catch (e) {
       tb.replaceChildren();
-      document.getElementById("color-summary").textContent = e.message;
+      document.getElementById("color-summary").textContent = friendlyLoadError("the colors", e);
+      $("#color-pager").hidden = true;
       toast(e.message, "error");
     }
   }
@@ -3639,6 +3854,7 @@
 
   async function loadSyncBlocks() {
     const box = $("#sb-list");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
     try {
       await ensureStores();
       attachStoreCombobox({ search: "#sb-store-search", hidden: "#sb-store", options: "#sb-store-options" });
@@ -3646,45 +3862,66 @@
       const resp = await api("/api/sync-blocks");
       sbState.blocks = resp.blocks || [];
       renderSyncBlocks();
-    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+    } catch (e) { renderErrorState(box, friendlyLoadError("the sync freezes", e), loadSyncBlocks); }
+  }
+
+  // Plain-language description of what turning a block OFF means, per scope.
+  function sbOffConsequence(b) {
+    if (b.style_code) return `Style ${b.style_code} starts updating from FDM4 again on ${storeDisplayFor(b.fdm4_store)} within the hour.`;
+    if (b.scope === "pricing") return `The hourly sync will start changing ${storeDisplayFor(b.fdm4_store)}'s prices again within the hour. Any hand-set prices will be overwritten by FDM4 prices.`;
+    return `${storeDisplayFor(b.fdm4_store)} starts syncing normally again within the hour (prices, stock, and product updates resume).`;
   }
 
   function renderSyncBlocks() {
     const box = $("#sb-list");
     const q = ($("#sb-search")?.value || "").trim().toLowerCase();
-    const rows = sbState.blocks.filter((b) => !q || `${b.fdm4_store} ${storeDisplayFor(b.fdm4_store)} ${b.style_code} ${b.note}`.toLowerCase().includes(q));
-    if (!rows.length) { box.innerHTML = '<div class="grid-empty">No sync blocks - every store and product syncs normally.</div>'; return; }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>Scope</th><th>Reason</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((b) => `<tr data-store="${escapeHtml(b.fdm4_store)}" data-style="${escapeHtml(b.style_code)}">
+    const rows = sbState.blocks.filter((b) => !q || `${b.fdm4_store} ${storeDisplayFor(b.fdm4_store)} ${b.style_code} ${text(b.note)}`.toLowerCase().includes(q));
+    if (!rows.length) {
+      box.innerHTML = sbState.blocks.length
+        ? '<div class="grid-empty">No freezes match your search.</div>'
+        : '<div class="grid-empty">No freezes - every store and product updates normally.</div>';
+      return;
+    }
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>What's frozen</th><th>Reason</th><th>On/Off</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((b) => `<tr data-store="${escapeHtml(b.fdm4_store)}" data-style="${escapeHtml(b.style_code)}">
       <td><strong>${escapeHtml(storeDisplayFor(b.fdm4_store))}</strong><br><code>${escapeHtml(b.fdm4_store)}</code></td>
-      <td>${b.style_code ? `style <code>${escapeHtml(b.style_code)}</code>` : (b.scope === "pricing" ? '<span class="chip">PRICING ONLY</span>' : '<span class="chip dark">ENTIRE STORE</span>')}</td>
+      <td>${b.style_code ? `style <code>${escapeHtml(b.style_code)}</code>` : (b.scope === "pricing" ? '<span class="chip">PRICES ONLY</span>' : '<span class="chip dark">ENTIRE STORE</span>')}</td>
       <td class="note-cell">${escapeHtml(text(b.note))}</td>
-      <td><button class="chip ${b.active ? "dark" : ""} sb-toggle" type="button" title="Click to toggle">${b.active ? "BLOCKING" : "inactive"}</button></td>
+      <td><button class="chip ${b.active ? "dark" : ""} sb-toggle" type="button" aria-pressed="${b.active ? "true" : "false"}" title="Click to turn this freeze on or off">${b.active ? (b.scope === "pricing" && !b.style_code ? "Prices frozen" : "On") : "Off"}</button></td>
       <td>${escapeHtml(formatDate(b.updated_at))}<br><small class="muted">${escapeHtml(text(b.updated_by))}</small></td>
       <td><button class="button button--small button--ghost sb-delete" type="button">Remove</button></td>
     </tr>`).join("")}</tbody></table>`;
     $$(".sb-toggle", box).forEach((btn) => btn.addEventListener("click", async () => {
       const tr = btn.closest("tr");
       const b = sbState.blocks.find((x) => x.fdm4_store === tr.dataset.store && x.style_code === tr.dataset.style);
-      if (!b) return loadSyncBlocks();
-      if (!b.active && !b.style_code) {
-        const ok = await confirmAction(b.scope === "pricing"
-          ? { title: "Re-activate pricing freeze?", message: `${storeDisplayFor(b.fdm4_store)} keeps syncing normally, but existing prices will no longer be updated by the sync.`, actionLabel: "Freeze pricing", danger: false }
-          : { title: "Re-activate entire-store block?", message: `${storeDisplayFor(b.fdm4_store)} will be completely skipped by the product sync (no price, stock, or catalog updates) until unblocked.`, actionLabel: "Block store" });
-        if (!ok) return;
+      if (!b) { toast("That row changed - reloading the list.", "error"); return loadSyncBlocks(); }
+      let ok;
+      if (b.active) {
+        ok = await confirmAction({ title: "Turn this freeze off?", message: sbOffConsequence(b), actionLabel: "Turn it off" });
+      } else if (!b.style_code) {
+        ok = await confirmAction(b.scope === "pricing"
+          ? { title: "Freeze this store's prices again?", message: `${storeDisplayFor(b.fdm4_store)} keeps updating normally (new products, stock), but the sync will stop changing its existing prices.`, actionLabel: "Freeze prices", danger: false }
+          : { title: "Freeze the entire store again?", message: `${storeDisplayFor(b.fdm4_store)} will be completely skipped by the hourly update (no price, stock, or product changes) until you turn this off.`, actionLabel: "Freeze store" });
+      } else {
+        ok = await confirmAction({ title: "Freeze this style again?", message: `Style ${b.style_code} on ${storeDisplayFor(b.fdm4_store)} will stop receiving updates from FDM4 until you turn this off.`, actionLabel: "Freeze style", danger: false });
       }
+      if (!ok) return;
+      btn.disabled = true;
       try {
         await api("/api/sync-blocks/toggle", { method: "PUT", body: { fdm4_store: b.fdm4_store, style_code: b.style_code, active: !b.active } });
-        toast(!b.active ? "Block re-activated - takes effect on the next sync pass." : "Block set inactive - normal syncing resumes on the next pass.");
+        toast(!b.active ? "Freeze turned back on - takes effect within the hour." : "Freeze turned off - normal updates resume within the hour.");
         loadSyncBlocks();
-      } catch (e) { toast(e.message, "error"); }
+      } catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
     $$(".sb-delete", box).forEach((btn) => btn.addEventListener("click", async () => {
       const tr = btn.closest("tr");
-      const label = tr.dataset.style ? `style ${tr.dataset.style}` : "the ENTIRE-STORE block";
-      const ok = await confirmAction({ title: "Remove sync block?", message: `Remove ${label} for ${storeDisplayFor(tr.dataset.store)}? It resumes normal syncing on the next pass.`, actionLabel: "Remove", danger: true });
+      const b = sbState.blocks.find((x) => x.fdm4_store === tr.dataset.store && x.style_code === tr.dataset.style);
+      const label = tr.dataset.style ? `the freeze on style ${tr.dataset.style}` : "this store freeze";
+      const consequence = b ? sbOffConsequence(b) : "Normal updates resume within the hour.";
+      const ok = await confirmAction({ title: "Remove this freeze?", message: `Remove ${label} for ${storeDisplayFor(tr.dataset.store)}? ${consequence}`, actionLabel: "Remove", danger: true });
       if (!ok) return;
-      try { await api(`/api/sync-blocks?${new URLSearchParams({ store: tr.dataset.store, style: tr.dataset.style })}`, { method: "DELETE" }); toast("Block removed."); loadSyncBlocks(); }
-      catch (e) { toast(e.message, "error"); }
+      btn.disabled = true;
+      try { await api(`/api/sync-blocks?${new URLSearchParams({ store: tr.dataset.store, style: tr.dataset.style })}`, { method: "DELETE" }); toast("Freeze removed."); loadSyncBlocks(); }
+      catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
   }
 
@@ -3692,42 +3929,54 @@
 
   async function loadStockOverrides() {
     const box = $("#so-list");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
     try {
       const resp = await api("/api/stock-overrides");
       soState.overrides = resp.overrides || [];
       renderStockOverrides();
-    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+    } catch (e) { renderErrorState(box, friendlyLoadError("the stock exceptions", e), loadStockOverrides); }
   }
 
   function renderStockOverrides() {
     const box = $("#so-list");
     const q = ($("#so-search")?.value || "").trim().toLowerCase();
-    const rows = soState.overrides.filter((o) => !q || `${o.style_code} ${o.product_name || ""} ${o.brand || ""} ${o.note}`.toLowerCase().includes(q));
-    if (!rows.length) { box.innerHTML = '<div class="grid-empty">No overrides - the automatic rule decides everything: non-Arborwear mills sell with fake stock, Arborwear styles use real FDM4 inventory.</div>'; return; }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Style</th><th>Forces</th><th>Reason</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((o) => `<tr data-style="${escapeHtml(o.style_code)}">
+    const rows = soState.overrides.filter((o) => !q || `${o.style_code} ${text(o.product_name)} ${text(o.brand)} ${text(o.note)}`.toLowerCase().includes(q));
+    if (!rows.length) {
+      box.innerHTML = soState.overrides.length
+        ? '<div class="grid-empty">No exceptions match your search.</div>'
+        : '<div class="grid-empty">No exceptions yet - the automatic rule decides everything: third-party brands show as always in stock, Arborwear styles show real warehouse stock.</div>';
+      return;
+    }
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Style</th><th>Shows as</th><th>Reason</th><th>On/Off</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((o) => `<tr data-style="${escapeHtml(o.style_code)}">
       <td><strong>${escapeHtml(o.style_code)}</strong><br><small class="muted">${escapeHtml(text(o.product_name || ""))}${o.brand ? " · " + escapeHtml(o.brand) : ""}</small></td>
-      <td>${o.mode === "fake" ? '<span class="chip dark">FAKE 99,999</span>' : '<span class="chip">REAL INVENTORY</span>'}</td>
+      <td>${o.mode === "fake" ? '<span class="chip dark">Always in stock</span>' : '<span class="chip">Real stock</span>'}</td>
       <td class="note-cell">${escapeHtml(text(o.note))}</td>
-      <td><button class="chip ${o.active ? "dark" : ""} so-toggle" type="button" title="Click to toggle">${o.active ? "ACTIVE" : "inactive"}</button></td>
+      <td><button class="chip ${o.active ? "dark" : ""} so-toggle" type="button" aria-pressed="${o.active ? "true" : "false"}" title="Click to turn this exception on or off">${o.active ? "On" : "Off (paused)"}</button></td>
       <td>${escapeHtml(formatDate(o.updated_at))}<br><small class="muted">${escapeHtml(text(o.updated_by))}</small></td>
       <td><button class="button button--small button--ghost so-delete" type="button">Remove</button></td>
     </tr>`).join("")}</tbody></table>`;
     $$(".so-toggle", box).forEach((btn) => btn.addEventListener("click", async () => {
       const tr = btn.closest("tr");
       const o = soState.overrides.find((x) => x.style_code === tr.dataset.style);
-      if (!o) return loadStockOverrides();
+      if (!o) { toast("That row changed - reloading the list.", "error"); return loadStockOverrides(); }
+      const ok = await confirmAction(o.active
+        ? { title: "Pause this exception?", message: `Style ${o.style_code} goes back to the automatic rule (always-in-stock for third-party brands, real stock for Arborwear) on the store websites within the hour.`, actionLabel: "Pause it" }
+        : { title: "Turn this exception back on?", message: `Style ${o.style_code} will show as ${o.mode === "fake" ? "always in stock (customers can always order it)" : "its real warehouse stock count"} on the store websites within the hour.`, actionLabel: "Turn it on", danger: false });
+      if (!ok) return;
+      btn.disabled = true;
       try {
         await api("/api/stock-overrides/toggle", { method: "PUT", body: { style_code: o.style_code, active: !o.active } });
-        toast(!o.active ? "Override re-activated - applies on the next sync pass." : "Override set inactive - the automatic rule takes over on the next pass.");
+        toast(!o.active ? "Exception turned back on - the stores update within the hour." : "Exception paused - the automatic rule decides again within the hour.");
         loadStockOverrides();
-      } catch (e) { toast(e.message, "error"); }
+      } catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
     $$(".so-delete", box).forEach((btn) => btn.addEventListener("click", async () => {
       const tr = btn.closest("tr");
-      const ok = await confirmAction({ title: "Remove inventory override?", message: `Style ${tr.dataset.style} goes back to the automatic rule (fake for third-party mills, real for Arborwear) on the next sync pass.`, actionLabel: "Remove", danger: true });
+      const ok = await confirmAction({ title: "Remove this exception?", message: `Style ${tr.dataset.style} goes back to the automatic rule (always-in-stock for third-party brands, real stock for Arborwear) on the store websites within the hour.`, actionLabel: "Remove", danger: true });
       if (!ok) return;
-      try { await api(`/api/stock-overrides?${new URLSearchParams({ style: tr.dataset.style })}`, { method: "DELETE" }); toast("Override removed."); loadStockOverrides(); }
-      catch (e) { toast(e.message, "error"); }
+      btn.disabled = true;
+      try { await api(`/api/stock-overrides?${new URLSearchParams({ style: tr.dataset.style })}`, { method: "DELETE" }); toast("Exception removed."); loadStockOverrides(); }
+      catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
   }
 
@@ -3735,11 +3984,25 @@
     const style = $("#so-style").value.trim();
     const mode = $("#so-mode").value;
     if (!style) { toast("Enter a style number first.", "error"); return; }
+    const existing = soState.overrides.find((o) => o.style_code.toUpperCase() === style.toUpperCase());
+    if (existing) {
+      const ok = await confirmAction({
+        title: "Replace the existing exception?",
+        message: `Style ${existing.style_code} already has an exception (${existing.mode === "fake" ? "always in stock" : "real stock"}, ${existing.active ? "on" : "paused"}). Adding again replaces it with "${mode === "fake" ? "always in stock" : "real stock"}" and turns it on.`,
+        actionLabel: "Replace it",
+      });
+      if (!ok) return;
+    } else {
+      const ok = await confirmAction(mode === "fake"
+        ? { title: "Always show this style as in stock?", message: `Customers will always be able to order style ${style} on the store websites (it will show 99,999 in stock), even if the warehouse runs out. Takes effect within the hour.`, actionLabel: "Add exception", danger: false }
+        : { title: "Show real stock for this style?", message: `Style ${style} will show its true warehouse stock count on the store websites, even if it's a third-party brand. Takes effect within the hour.`, actionLabel: "Add exception", danger: false });
+      if (!ok) return;
+    }
     const btn = $("#so-add");
     setBusy(btn, true, "Adding...");
     try {
       const resp = await api("/api/stock-overrides", { method: "PUT", body: { style_code: style, mode, note: $("#so-note").value.trim() } });
-      toast(`${resp.style_code} (${resp.product_name || "unnamed"}${resp.brand ? ", " + resp.brand : ""}) now forces ${mode === "fake" ? "fake stock" : "real inventory"} across ${resp.variants} variation(s) - applies on the next sync pass.`);
+      toast(`${resp.style_code} (${resp.product_name || "unnamed"}${resp.brand ? ", " + resp.brand : ""}) now shows ${mode === "fake" ? "as always in stock" : "its real stock"} across ${resp.variants} size/color option(s) - the stores update within the hour.`);
       $("#so-style").value = ""; $("#so-note").value = "";
       loadStockOverrides();
     } catch (e) { toast(e.message, "error"); }
@@ -3777,15 +4040,15 @@
     try {
       const resp = await api("/api/sync-blocks", { method: "PUT", body: { fdm4_store: store, whole_store: whole, styles, note: $("#sb-note").value.trim(), scope: pricingOnly ? "pricing" : "full" } });
       if (whole) {
-        toast(pricingOnly ? "Pricing frozen - the store keeps syncing, prices stay put." : "Store blocked - skipped from the next sync pass on.");
+        toast(pricingOnly ? "Prices frozen - the store keeps updating, prices stay put." : "Store frozen - it will be skipped starting with the next hourly update.");
       } else {
         const perStyle = Array.isArray(resp?.per_style) ? resp.per_style : [];
         const hits = perStyle.filter((p) => Number(p.products) > 0);
         const misses = perStyle.filter((p) => !(Number(p.products) > 0));
         const saved = Number(resp?.saved ?? styles.length);
         const detail = hits.length ? ` ${hits.map((p) => `${p.style}: ${p.products} product${Number(p.products) === 1 ? "" : "s"}`).join(", ")}.` : "";
-        toast(`${saved} style block${saved === 1 ? "" : "s"} saved.${detail}`);
-        if (misses.length) toast(`No products matched: ${misses.map((p) => p.style).join(", ")} - check the style #s.`, "error");
+        toast(`${saved} style freeze${saved === 1 ? "" : "s"} saved.${detail}`);
+        if (misses.length) toast(`These style numbers matched no products and were saved anyway: ${misses.map((p) => p.style).join(", ")}. If they are typos, remove them from the list below.`, "error");
       }
       $("#sb-styles").value = ""; $("#sb-note").value = ""; $("#sb-whole").checked = false; syncSbWhole();
       loadSyncBlocks();
@@ -3797,10 +4060,17 @@
   $("#sb-whole").addEventListener("change", syncSbWhole);
   $("#so-add").addEventListener("click", addStockOverride);
   $("#so-search").addEventListener("input", () => renderStockOverrides());
+  // Enter submits the add rows, matching what fast typists expect.
+  ["#so-style", "#so-note"].forEach((sel) => $(sel)?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addStockOverride(); }
+  }));
+  $("#sb-note")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addSyncBlock(); }
+  });
 
   // ----- Product mix -----
   const mixState = {
-    store: "", stores: [], styles: [], total: 0, summary: null,
+    store: "", stores: [], storesLoaded: false, styles: [], total: 0, summary: null,
     limit: 25, offset: 0, q: "", sort: "style", dir: "asc",
     selected: new Set(), editing: null,
   };
@@ -3825,8 +4095,14 @@
     try {
       const resp = await api("/api/product-mix/stores");
       mixState.stores = resp.stores || [];
+      mixState.storesLoaded = true;
       renderMixChips();
-    } catch (e) { if (wrap) wrap.innerHTML = `<span class="muted">${escapeHtml(e.message)}</span>`; }
+    } catch (e) {
+      // Mark the load as failed so renderMixBody doesn't misread an enrolled
+      // store as un-enrolled and offer to enroll it again.
+      mixState.storesLoaded = false;
+      if (wrap) wrap.innerHTML = `<span class="muted">${escapeHtml(friendlyLoadError("the customized-store list", e))}</span>`;
+    }
   }
 
   function renderMixChips() {
@@ -3856,6 +4132,10 @@
     const box = $("#mix-body");
     if (!box) return;
     if (!mixState.store) { box.innerHTML = '<div class="grid-empty">Pick a store to view or take control of its product mix.</div>'; return; }
+    if (!mixState.storesLoaded) {
+      renderErrorState(box, "Couldn't load the store list, so this store's status is unknown.", async () => { await mixRefreshStores(); renderMixBody(); });
+      return;
+    }
     const info = mixStoreInfo(mixState.store);
     if (!info || !info.active) return renderMixEnroll(box);
     if (info.mode === "all") return renderMixAll(box, info);
@@ -3889,7 +4169,7 @@
     setBusy(btn, true, "Enabling...");
     try {
       const resp = await api("/api/product-mix/stores", { method: "PUT", body: { fdm4_store: mixState.store, mode } });
-      toast(mode === "all" ? "Override enabled - this store follows FDM4 (all products)." : `Curated list started - imported ${Number(resp.imported) || 0} styles from FDM4.`);
+      toast(mode === "all" ? "Done - this store now follows FDM4 automatically (all products)." : `Curated list started - imported ${Number(resp.imported) || 0} styles from FDM4.`);
       await mixRefreshStores();
       renderMixBody();
     } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
@@ -3918,10 +4198,12 @@
       if (!ok) return;
     } else {
       let detail = "";
+      setBusy(btn, true, "Checking impact...");
       try {
         const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "mode", mode: "all" } });
         if (Number(p.products_restored) > 0) detail = ` About ${Number(p.products_restored)} products you removed come back on the next sync.`;
       } catch { /* preview optional - generic copy below */ }
+      setBusy(btn, false);
       const ok = await confirmAction({ title: "Follow FDM4 again?", message: `${name} goes back to carrying everything FDM4 offers, including new products, automatically.${detail}`, actionLabel: "Follow FDM4" });
       if (!ok) return;
     }
@@ -3937,16 +4219,19 @@
   async function mixDisable(btn) {
     const name = storeDisplayFor(mixState.store);
     let detail = "";
+    setBusy(btn, true, "Checking impact...");
     try {
       const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "disable" } });
       if (Number(p.products_restored) > 0) detail = ` About ${Number(p.products_restored)} removed products come back on the next sync.`;
     } catch { /* fall back to generic copy */ }
-    const ok = await confirmAction({ title: "Disable this override?", message: `${name} goes back to being fully FDM4-controlled and your curated list is deleted.${detail}`, actionLabel: "Disable override" });
+    setBusy(btn, false);
+    const ok = await confirmAction({ title: "Stop customizing this store?", message: `${name} goes back to carrying exactly what FDM4 offers it, and your custom product list is deleted.${detail}`, actionLabel: "Hand back to FDM4" });
     if (!ok) return;
-    setBusy(btn, true, "Disabling...");
+    setBusy(btn, true, "Working...");
     try {
-      await api("/api/product-mix/stores", { method: "DELETE", body: { fdm4_store: mixState.store } });
-      toast("Override disabled - the store follows FDM4 again.");
+      // The endpoint takes the store as a query parameter, not a JSON body.
+      await api(`/api/product-mix/stores?${new URLSearchParams({ store: mixState.store })}`, { method: "DELETE" });
+      toast("Done - FDM4 is back in control of this store.");
       await mixRefreshStores();
       renderMixBody();
     } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
@@ -3960,7 +4245,7 @@
         <div class="mix-actions">
           <button type="button" class="button button--ghost button--small mix-import">Import missing from FDM4</button>
           <button type="button" class="button button--ghost button--small mix-reset">Reset to FDM4</button>
-          <button type="button" class="button button--danger-ghost button--small mix-disable">Disable override</button>
+          <button type="button" class="button button--danger-ghost button--small mix-disable">Hand back to FDM4</button>
         </div>
       </div>
       <div class="mix-tiles"></div>
@@ -3982,7 +4267,7 @@
           <label class="field"><span class="field__label">Style #s (newline / comma separated)</span><textarea class="mix-add-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
           <button type="button" class="button button--primary mix-add-btn">Add styles</button>
         </div>
-        <p class="mix-bulk-note">Only products FDM4 already offers this store can be added (remove-only override). Added styles carry all their color channels - open a style to trim colors or sizes.</p>
+        <p class="mix-bulk-note">You can only add products FDM4 already offers this store. Added styles carry all their colors - open a style to trim colors or sizes.</p>
       </div>
     </section>`;
     $(".mix-search", box).addEventListener("input", debounce(() => { mixState.q = $(".mix-search", box).value.trim(); mixState.offset = 0; loadMixStyles(); }));
@@ -3996,20 +4281,28 @@
     loadMixStyles();
   }
 
+  let mixLoadSeq = 0;
+
   async function loadMixStyles() {
     const box = $("#mix-body");
     const list = box ? $(".mix-list", box) : null;
     if (!list) return;
+    const seq = ++mixLoadSeq;
+    list.innerHTML = '<div class="grid-empty">Loading...</div>';
     const params = new URLSearchParams({ store: mixState.store, q: mixState.q, limit: String(mixState.limit), offset: String(mixState.offset) });
     try {
       const resp = await api(`/api/product-mix?${params}`);
+      if (seq !== mixLoadSeq) return; // a newer request superseded this one
       mixState.styles = resp.styles || [];
       mixState.total = Number(resp.total) || 0;
       mixState.summary = resp.summary || {};
       renderMixTiles(box);
       renderMixTable(box);
       renderMixPager(box);
-    } catch (e) { list.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+    } catch (e) {
+      if (seq !== mixLoadSeq) return;
+      renderErrorState(list, friendlyLoadError("this store's product list", e), loadMixStyles);
+    }
   }
 
   function renderMixTiles(box) {
@@ -4038,7 +4331,7 @@
     const list = $(".mix-list", box);
     if (!list) return;
     if (!mixState.styles.length) {
-      list.innerHTML = `<div class="grid-empty">${mixState.q ? "No styles match the filter." : "The mix is empty - every product on this store is retired. Add styles below or import from FDM4."}</div>`;
+      list.innerHTML = `<div class="grid-empty">${mixState.q ? "No styles match the filter." : "No styles in the list yet. Add styles below or import from FDM4."}</div>`;
       syncMixSelection(box);
       return;
     }
@@ -4050,14 +4343,17 @@
       return mixState.dir === "desc" ? -cmp : cmp;
     });
     const arrow = (key) => (mixState.sort === key ? (mixState.dir === "desc" ? " ▼" : " ▲") : "");
+    const sourceLabel = (s) => (s === "import" ? "Imported from FDM4" : s === "manual" ? "Added by hand" : text(s));
+    const multiPage = mixState.total > mixState.limit;
     list.innerHTML = `<table class="data-table"><thead><tr>
       <th><input type="checkbox" class="mix-select-all" aria-label="Select all styles on this page"></th>
-      <th data-msort="style">Style${arrow("style")}</th><th>Colors</th><th>Source</th><th>Added</th><th data-msort="products">Products live${arrow("products")}</th><th></th>
+      <th data-msort="style">Style${arrow("style")}</th><th>Product</th><th>Colors</th><th>How added</th><th>Added</th><th data-msort="products" title="${multiPage ? "Sorts this page only" : "Sort"}">Products live${arrow("products")}</th><th></th>
     </tr></thead><tbody>${rows.map((r) => `<tr data-style="${escapeHtml(r.style_code)}">
       <td><input type="checkbox" class="mix-row-check" aria-label="Select style ${escapeHtml(r.style_code)}"${mixState.selected.has(r.style_code) ? " checked" : ""}></td>
       <td><code>${escapeHtml(r.style_code)}</code></td>
+      <td>${escapeHtml(text(r.name))}</td>
       <td>${escapeHtml(mixColorsSummary(r))}</td>
-      <td>${escapeHtml(text(r.source))}</td>
+      <td>${escapeHtml(sourceLabel(text(r.source)))}</td>
       <td>${escapeHtml(formatDate(r.added_at))}<br><small class="muted">${escapeHtml(text(r.added_by))}</small></td>
       <td>${Number(r.products_live) || 0}</td>
       <td><button type="button" class="button button--ghost button--small mix-edit">Edit</button> <button type="button" class="button button--danger-ghost button--small mix-remove">Remove</button></td>
@@ -4111,10 +4407,12 @@
     const name = storeDisplayFor(mixState.store);
     const plural = styles.length === 1 ? "" : "s";
     let impact = `Removing ${styles.length} style${plural} retires their products on ${name} at the next sync. Products are hidden and set out of stock - never deleted - and come back if you re-add the style.`;
+    if (btn) setBusy(btn, true, "Checking impact...");
     try {
       const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "remove", styles } });
       impact = `Removing ${Number(p.styles_affected) || styles.length} style${plural} retires ${Number(p.products_retired) || 0} products on ${name} at the next sync. Products are hidden and set out of stock - never deleted - and come back if you re-add the style.`;
     } catch { /* fall back to generic copy */ }
+    if (btn) setBusy(btn, false);
     const ok = await confirmAction({ title: "Remove from mix?", message: impact, actionLabel: "Remove" });
     if (!ok) return;
     setBusy(btn, true, "Removing...");
@@ -4139,8 +4437,8 @@
       const perStyle = Array.isArray(resp?.per_style) ? resp.per_style : [];
       const misses = perStyle.filter((p) => !(Number(p.products) > 0));
       const saved = Number(resp?.saved ?? styles.length);
-      toast(`${saved} style${saved === 1 ? "" : "s"} added - products return on the next sync.`);
-      if (misses.length) toast(`No products matched: ${misses.map((p) => p.style).join(", ")} - FDM4 doesn't offer them to this store (or check the #).`, "error");
+      toast(`${saved} style${saved === 1 ? "" : "s"} added - products appear on the store within the hour.`);
+      if (misses.length) toast(`These style numbers matched no products and were still added to the list: ${misses.map((p) => p.style).join(", ")}. FDM4 doesn't offer them to this store - if they are typos, remove them from the list.`, "error");
       ta.value = "";
       await mixRefreshStores();
       loadMixStyles();
@@ -4151,13 +4449,26 @@
     const name = storeDisplayFor(mixState.store);
     if (mode === "reset") {
       let detail = "";
+      setBusy(btn, true, "Checking impact...");
       try {
         const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "reset" } });
         const back = Number(p.products_restored) || 0;
         const gone = Number(p.products_retired) || 0;
         if (back || gone) detail = ` ${back} removed products come back${gone ? ` and ${gone} are retired` : ""} on the next sync.`;
       } catch { /* fall back to generic copy */ }
+      setBusy(btn, false);
       const ok = await confirmAction({ title: "Reset to FDM4?", message: `Wipes your edits for ${name} and matches FDM4's current mix exactly - including bringing back everything you removed.${detail}`, actionLabel: "Reset to FDM4" });
+      if (!ok) return;
+    } else {
+      const drift = Number(mixState.summary?.new_in_fdm4) || 0;
+      const ok = await confirmAction({
+        title: "Add FDM4's new styles?",
+        message: drift
+          ? `${drift} style${drift === 1 ? "" : "s"} FDM4 now offers ${name} will be added to the store's list and appear on the live website within the hour.`
+          : `Any styles FDM4 now offers ${name} that aren't in your list yet will be added and appear on the live website within the hour.`,
+        actionLabel: drift ? `Add ${drift} style${drift === 1 ? "" : "s"}` : "Add new styles",
+        danger: false,
+      });
       if (!ok) return;
     }
     setBusy(btn, true, mode === "reset" ? "Resetting..." : "Importing...");
@@ -4241,12 +4552,13 @@
       const color = text(c.color);
       const on = ed.work.all || ed.work.colors.has(color);
       const excl = ed.work.excludes[color] || new Set();
-      const sizes = (c.sizes || []).map((s) => text(s));
-      const inCount = sizes.filter((s) => !excl.has(s)).length;
+      // Sizes arrive as {code, label} objects; the code is the saved value.
+      const sizes = (c.sizes || []).map((s) => (typeof s === "object" && s ? { code: text(s.code), label: text(s.label, text(s.code)) } : { code: text(s), label: text(s) }));
+      const inCount = sizes.filter((s) => !excl.has(s.code)).length;
       const open = ed.openColors.has(color);
       return `<div class="mix-color${on ? "" : " is-off"}" data-color="${escapeHtml(color)}">
-        <label class="field--checkbox mix-color__head"><input type="checkbox" class="mix-color-inc"${on ? " checked" : ""}${ed.work.all ? " disabled" : ""} aria-label="Include color ${escapeHtml(color)}"> <strong>${escapeHtml(color)}</strong>&nbsp;<span class="muted">(${Number(c.variations) || 0} variation${Number(c.variations) === 1 ? "" : "s"})</span></label>
-        ${sizes.length ? `<details${open ? " open" : ""}><summary class="mix-size-summary">Sizes - ${inCount} of ${sizes.length} included${excl.size ? ` (${excl.size} excluded)` : ""}</summary><div class="mix-size-grid">${sizes.map((s) => `<label class="field--checkbox"><input type="checkbox" class="mix-size-inc" data-size="${escapeHtml(s)}"${excl.has(s) ? "" : " checked"}${!on || ed.work.all ? " disabled" : ""} aria-label="Include size ${escapeHtml(s)} for color ${escapeHtml(color)}"> ${escapeHtml(s)}</label>`).join("")}</div></details>` : ""}
+        <label class="field--checkbox mix-color__head"><input type="checkbox" class="mix-color-inc"${on ? " checked" : ""}${ed.work.all ? " disabled" : ""} aria-label="Include color ${escapeHtml(color)}"> <strong>${escapeHtml(color)}</strong>${c.color_name && c.color_name !== color ? `&nbsp;<span class="muted">${escapeHtml(text(c.color_name))}</span>` : ""}&nbsp;<span class="muted">(${Number(c.variations) || 0} variation${Number(c.variations) === 1 ? "" : "s"})</span></label>
+        ${sizes.length ? `<details${open ? " open" : ""}><summary class="mix-size-summary">Sizes - ${inCount} of ${sizes.length} included${excl.size ? ` (${excl.size} excluded)` : ""}</summary><div class="mix-size-grid">${sizes.map((s) => `<label class="field--checkbox"><input type="checkbox" class="mix-size-inc" data-size="${escapeHtml(s.code)}"${excl.has(s.code) ? "" : " checked"}${!on || ed.work.all ? " disabled" : ""} aria-label="Include size ${escapeHtml(s.label)} for color ${escapeHtml(color)}"> ${escapeHtml(s.label)}</label>`).join("")}</div></details>` : ""}
       </div>`;
     }).join("");
     $$(".mix-color-inc", body).forEach((cb) => cb.addEventListener("change", () => {
@@ -4427,13 +4739,16 @@
 
   async function loadPriceRules() {
     const box = $("#pr-list");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
     try {
       await ensureStores();
-      prState.dims = await api("/api/price-rules/dimensions");
+      // Dimensions failing should not hide the rules themselves.
+      try { prState.dims = await api("/api/price-rules/dimensions"); }
+      catch { prState.dims = prState.dims || null; toast("Couldn't load the brand/category lists - the New rule dialog may be limited until you reload.", "error"); }
       const resp = await api("/api/price-rules");
       prState.rules = resp.rules || [];
       renderPRList();
-    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+    } catch (e) { renderErrorState(box, friendlyLoadError("the price rules", e), loadPriceRules); }
   }
 
   function renderPRList() {
@@ -4444,15 +4759,21 @@
       if (st === "active" && !r.active) return false;
       if (st === "inactive" && r.active) return false;
       if (!q) return true;
-      return `${r.name} ${r.note} ${(r.stores || []).join(" ")} ${(r.brands || []).join(" ")} ${(r.styles || []).join(" ")} ${(r.categories || []).join(" ")}`.toLowerCase().includes(q);
+      const storeNames = (r.stores || []).map((s) => storeDisplayFor(s)).join(" ");
+      return `${r.name} ${text(r.note)} ${(r.stores || []).join(" ")} ${storeNames} ${(r.brands || []).join(" ")} ${(r.styles || []).join(" ")} ${(r.categories || []).join(" ")}`.toLowerCase().includes(q);
     });
-    if (!rules.length) { box.innerHTML = '<div class="grid-empty">No price rules yet - create one with “New rule”. Nothing changes any price until a rule is activated (after preview).</div>'; return; }
+    if (!rules.length) {
+      box.innerHTML = prState.rules.length
+        ? '<div class="grid-empty">No rules match your filter.</div>'
+        : '<div class="grid-empty">No price rules yet - create one with “New rule”. Nothing changes any price until a rule is activated (after preview).</div>';
+      return;
+    }
     box.innerHTML = `<table class="data-table"><thead><tr><th>Rule</th><th>Status</th><th>Priority</th><th>Targets</th><th>Effect</th><th>Schedule</th><th></th></tr></thead><tbody>${rules.map((r) => `<tr data-id="${r.rule_id}">
       <td><strong>${escapeHtml(r.name)}</strong>${r.note ? `<br><small class="muted">${escapeHtml(r.note)}</small>` : ""}</td>
-      <td><button class="chip ${r.active ? "dark" : ""} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be activated" : "Click to toggle"}">${r.active ? "ACTIVE" : "inactive"}</button>${r.stackable ? '<br><small class="muted">combinable</small>' : ""}</td>
+      <td><button class="chip ${r.active ? "dark" : ""} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be turned on" : "Click to turn this rule on or off"}" aria-pressed="${r.active ? "true" : "false"}">${r.active ? "On" : "Off"}</button>${r.stackable ? '<br><small class="muted">combinable</small>' : ""}</td>
       <td>${r.priority}</td>
       <td>${escapeHtml(prTargetSummary(r))}</td>
-      <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">floor $${r.floor_price}</small>` : ""}</td>
+      <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">never below $${Number(r.floor_price).toFixed(2)}</small>` : ""}</td>
       <td>${r.effective_from || r.effective_until ? `${escapeHtml(text(r.effective_from, "..."))} → ${escapeHtml(text(r.effective_until, "..."))}` : '<span class="muted">always</span>'}</td>
       <td class="name-actions">
         <button class="button button--small button--secondary pr-preview" type="button">Preview</button>
@@ -4461,11 +4782,11 @@
       </td></tr>`).join("")}</tbody></table>`;
     $$(".pr-edit", box).forEach((b) => b.addEventListener("click", () => openPREditor(prState.rules.find((r) => r.rule_id === Number(b.closest("tr").dataset.id)))));
     $$(".pr-preview", box).forEach((b) => b.addEventListener("click", () => previewPR(Number(b.closest("tr").dataset.id), b)));
-    $$(".pr-delete", box).forEach((b) => b.addEventListener("click", () => deletePR(Number(b.closest("tr").dataset.id))));
-    $$(".pr-toggle", box).forEach((b) => b.addEventListener("click", () => togglePRActive(Number(b.closest("tr").dataset.id))));
+    $$(".pr-delete", box).forEach((b) => b.addEventListener("click", () => deletePR(Number(b.closest("tr").dataset.id), b)));
+    $$(".pr-toggle", box).forEach((b) => b.addEventListener("click", () => togglePRActive(Number(b.closest("tr").dataset.id), b)));
   }
 
-  async function togglePRActive(id) {
+  async function togglePRActive(id, btn = null) {
     const r = prState.rules.find((x) => x.rule_id === id);
     if (!r) return;
     // Hard-block only the certain 409 (never previewed at all); otherwise let
@@ -4475,22 +4796,29 @@
       return;
     }
     if (!r.active) {
-      const ok = await confirmAction({ title: "Activate price rule?", message: `“${r.name}” starts changing live prices on the next hourly warehouse refresh. You previewed its impact - activate?`, actionLabel: "Activate" });
+      const ok = await confirmAction({ title: "Activate price rule?", message: `“${r.name}” starts changing live prices on the store websites within the hour. You previewed its impact - activate?`, actionLabel: "Activate" });
+      if (!ok) return;
+    } else {
+      const storeCount = (r.stores || []).length;
+      const where = storeCount ? `${storeCount} store${storeCount === 1 ? "" : "s"}` : "every store it targets";
+      const ok = await confirmAction({ title: "Turn this rule off?", message: `“${r.name}” stops applying, and prices on ${where} go back to normal within the hour.`, actionLabel: "Turn it off" });
       if (!ok) return;
     }
+    if (btn) btn.disabled = true;
     try {
       await api("/api/price-rules/toggle", { method: "PUT", body: { rule_id: id, active: !r.active } });
-      toast(!r.active ? "Rule activated - applies on the next hourly refresh." : "Rule deactivated - prices revert on the next refresh.");
+      toast(!r.active ? "Rule activated - prices change within the hour." : "Rule turned off - prices go back to normal within the hour.");
       loadPriceRules();
-    } catch (e) { toast(e.payload?.message || e.message, "error"); }
+    } catch (e) { if (btn) btn.disabled = false; toast(e.payload?.message || e.message, "error"); }
   }
 
-  async function deletePR(id) {
+  async function deletePR(id, btn = null) {
     const r = prState.rules.find((x) => x.rule_id === id);
-    const ok = await confirmAction({ title: "Delete price rule?", message: `Delete “${r?.name}”? ${r?.active ? "It is ACTIVE - prices revert on the next refresh." : ""}`, actionLabel: "Delete", danger: true });
+    const ok = await confirmAction({ title: "Delete price rule?", message: `Delete “${r?.name}”? ${r?.active ? "It is ON - prices go back to normal within the hour." : "This cannot be undone."}`, actionLabel: "Delete", danger: true });
     if (!ok) return;
+    if (btn) btn.disabled = true;
     try { await api(`/api/price-rules?rule_id=${id}`, { method: "DELETE" }); toast("Rule deleted."); loadPriceRules(); }
-    catch (e) { toast(e.message, "error"); }
+    catch (e) { if (btn) btn.disabled = false; toast(e.message, "error"); }
   }
 
   function prChip(listName, value, wrap) {
@@ -4633,37 +4961,46 @@
     const box = $("#pr-preview");
     const allPreviewButtons = $$(".pr-preview");
     allPreviewButtons.forEach((b) => { b.disabled = true; });
-    if (btn) setBusy(btn, true, "...");
-    box.innerHTML = '<div class="grid-loading"><span class="spinner" aria-hidden="true"></span> Computing impact (same engine math as the hourly refresh)...</div>';
+    if (btn) setBusy(btn, true, "Previewing...");
+    box.innerHTML = '<div class="grid-loading"><span class="spinner" aria-hidden="true"></span> Calculating exactly what will change (the same calculation the live sync uses)...</div>';
     try {
       const resp = await api("/api/price-rules/preview", { method: "POST", body: { rule_id: id, sample_limit: 200 } });
       const r = prState.rules.find((x) => x.rule_id === id);
       const recorded = resp.preview_recorded !== false;
-      if (r && recorded) prState.previewed[id] = r.updated_at;
+      if (r && recorded) { prState.previewed[id] = r.updated_at; r.last_previewed_at = r.last_previewed_at || "just now"; }
       const s = resp.summary || {};
       $("#pr-preview-title").textContent = `Preview: ${r ? r.name : `rule ${id}`}`;
       const staleWarn = recorded ? "" : '<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>Rule changed while previewing</strong> - this preview does not count; preview again before activating.</div></div>';
-      const overWarn = Number(s.above_msrp) > 0 ? `<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>${s.above_msrp} item${s.above_msrp === 1 ? "" : "s"} priced ABOVE MSRP</strong> by this rule - allowed, but double-check it's intentional.</div></div>` : "";
-      const trunc = s.truncated ? '<p class="muted">Candidate set hit the 50,000-row preview cap - totals are a floor, not exact.</p>' : "";
+      const overWarn = Number(s.above_msrp) > 0 ? `<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>${s.above_msrp} item${s.above_msrp === 1 ? "" : "s"} priced above the manufacturer's list price (MSRP)</strong> by this rule - allowed, but double-check it's intentional.</div></div>` : "";
+      const trunc = s.truncated ? '<p class="muted">Too many products to preview them all - the counts show at least this many.</p>' : "";
       const perStore = resp.per_store || [];
       const moreStores = Number(resp.store_count || 0) - perStore.length;
+      const fmtMoney = (v) => (v === null || v === undefined || v === "" ? "-" : `$${Number(v).toFixed(2)}`);
+      const zeroNote = !(resp.sample || []).length
+        ? '<div class="grid-empty">This rule currently matches no products - check its store and product targeting.</div>'
+        : "";
       box.innerHTML = `
         <div class="result-summary">
-          <div class="stat"><strong>${s.affected ?? 0}</strong><small>items affected</small></div>
+          <div class="stat"><strong>${Number(s.affected ?? 0).toLocaleString()}</strong><small>items affected</small></div>
           <div class="stat"><strong>${s.stores ?? 0}</strong><small>stores</small></div>
-          <div class="stat"><strong>${s.changed ?? 0}</strong><small>prices changed</small></div>
+          <div class="stat"><strong>${Number(s.changed ?? 0).toLocaleString()}</strong><small>prices changed</small></div>
           <div class="stat"><strong>${s.above_msrp ?? 0}</strong><small>above MSRP</small></div>
-          <div class="stat"><strong>${s.min_delta ?? "-"} / ${s.max_delta ?? "-"}</strong><small>min / max Δ$</small></div>
+          <div class="stat"><strong>${fmtMoney(s.min_delta)} / ${fmtMoney(s.max_delta)}</strong><small>biggest drop / biggest increase</small></div>
         </div>
-        ${staleWarn}${overWarn}${trunc}
-        ${perStore.length ? `<p class="muted">Per store: ${perStore.map((p) => `${escapeHtml(p.fdm4_store)} (${p.affected})`).join(" · ")}${moreStores > 0 ? ` · +${moreStores} more store${moreStores === 1 ? "" : "s"}` : ""}</p>` : ""}
-        <table class="data-table"><thead><tr><th>Store</th><th>Style</th><th>SKU</th><th>Color / size</th><th>Base</th><th>New</th><th>MSRP</th></tr></thead>
+        ${staleWarn}${overWarn}${trunc}${zeroNote}
+        ${perStore.length ? `<p class="muted">Per store: ${perStore.map((p) => `${escapeHtml(storeDisplayFor(p.fdm4_store))} (${p.affected})`).join(" · ")}${moreStores > 0 ? ` · +${moreStores} more store${moreStores === 1 ? "" : "s"}` : ""}</p>` : ""}
+        ${(resp.sample || []).length ? `<table class="data-table"><thead><tr><th>Store</th><th>Style</th><th>SKU</th><th>Color / size</th><th>Base</th><th>New</th><th>MSRP</th></tr></thead>
         <tbody>${(resp.sample || []).map((row) => `<tr${row.over_msrp ? ' class="row--over-msrp"' : ""}>
-          <td>${escapeHtml(row.fdm4_store)}</td><td><code>${escapeHtml(row.style_code)}</code></td><td><code>${escapeHtml(row.sku)}</code></td>
+          <td>${escapeHtml(storeDisplayFor(row.fdm4_store))}</td><td><code>${escapeHtml(row.style_code)}</code></td><td><code>${escapeHtml(row.sku)}</code></td>
           <td>${escapeHtml(text(row.color))} / ${escapeHtml(text(row.size))}</td>
           <td>$${row.before_price}</td><td><strong>$${row.after_price}</strong>${row.over_msrp ? " ⚠" : ""}</td><td>${row.msrp ? `$${row.msrp}` : "-"}</td></tr>`).join("")}</tbody></table>
-        <p class="muted">Base = the pre-rule FDM4/tier price; New = this rule's result. Sample shows the ${resp.sample?.length ?? 0} largest price movements.${recorded ? " Rule can now be activated from the list (this preview satisfies the requirement)." : ""}</p>`;
-    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+        <p class="muted">Base = the price before any rules; New = the price this rule produces. Sample shows the ${resp.sample?.length ?? 0} largest price movements.${recorded ? " This rule can now be turned on from the list." : ""}</p>` : ""}`;
+      if (recorded) renderPRList();
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (e) {
+      $("#pr-preview-title").textContent = "Preview";
+      renderErrorState(box, friendlyLoadError("the preview", e), () => previewPR(id, btn));
+    }
     finally {
       if (btn) setBusy(btn, false);
       allPreviewButtons.forEach((b) => { b.disabled = false; });
@@ -4736,7 +5073,14 @@
   });
   $("#names-filter").addEventListener("change", () => { namesState.filter = $("#names-filter").value; namesState.offset = 0; loadNames(); });
   $("#names-prev").addEventListener("click", () => { if (namesState.offset > 0) { namesState.offset = Math.max(0, namesState.offset - namesState.limit); loadNames(); } });
-  $("#names-next").addEventListener("click", () => { namesState.offset += namesState.limit; loadNames(); });
+  $("#names-next").addEventListener("click", () => {
+    // Clamp so a double-click can't advance past the last page into a dead
+    // empty screen with no Previous button.
+    const next = namesState.offset + namesState.limit;
+    if (namesState.total && next >= namesState.total) return;
+    namesState.offset = next;
+    loadNames();
+  });
 
   let colorSearchTimer = null;
   $("#color-search").addEventListener("input", () => {
@@ -4808,9 +5152,9 @@
     const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
     if (mins < 1) return "just now";
     if (mins < 90) return `${mins} min ago`;
-    const hours = Math.round(mins / 60);
+    const hours = Math.floor(mins / 60);
     if (hours < 48) return `${hours} h ago`;
-    return `${Math.round(hours / 24)} d ago`;
+    return `${Math.floor(hours / 24)} d ago`;
   }
 
   function healthRunChip(status) {
@@ -4830,25 +5174,41 @@
   function renderHealth(resp) {
     const runs = resp.pipeline?.runs || [];
     const latest = runs[0] || null;
-    const latestAge = latest ? healthAge(latest.finished_at || latest.started_at) : "never";
-    const ageMins = latest ? Math.round((Date.now() - new Date(latest.finished_at || latest.started_at).getTime()) / 60000) : Infinity;
+    // A run in progress is normal (the pull is hourly) - judge OK/FAILED from
+    // the most recent COMPLETED run so the tile doesn't scream during it.
+    const lastDone = runs.find((r) => r.status !== "running" && r.status !== "requested") || null;
+    const isRunning = latest && (latest.status === "running" || latest.status === "requested");
+    const judged = lastDone;
+    const judgedAge = judged ? healthAge(judged.finished_at || judged.started_at) : "never";
+    const ageMins = judged ? Math.round((Date.now() - new Date(judged.finished_at || judged.started_at).getTime()) / 60000) : Infinity;
     let pipeTone = "ok", pipeValue = "OK";
-    if (!latest || latest.status !== "success") { pipeTone = "bad"; pipeValue = latest ? text(latest.status).toUpperCase() : "NO RUNS"; }
-    else if (ageMins > 180) { pipeTone = "bad"; pipeValue = "STALE"; }
-    else if (ageMins > 75) { pipeTone = "warn"; pipeValue = "LATE"; }
+    if (!judged || judged.status !== "success") { pipeTone = "bad"; pipeValue = judged ? "FAILED" : "NO RUNS"; }
+    else if (ageMins > 180) { pipeTone = "bad"; pipeValue = "OVERDUE"; }
+    else if (ageMins > 75) { pipeTone = "warn"; pipeValue = "RUNNING BEHIND"; }
+    if (isRunning && pipeTone === "ok") { pipeValue = "RUNNING NOW"; }
+    const okCount = Number(resp.pipeline?.ok_24h ?? 0);
+    const failedCount = Number(resp.pipeline?.failed_24h ?? 0);
+    const pipeSub = judged
+      ? `last finished ${judgedAge} · ${okCount} successful pull${okCount === 1 ? "" : "s"} in 24h${failedCount ? ` · ${failedCount} failed` : ""}`
+      : "no data pulls have run yet";
     const st = resp.state || {};
     const feats = resp.features || {};
     const pim = resp.pim || {};
     const feeds = resp.feeds || {};
     const stateAgeMins = st.latest_change ? Math.round((Date.now() - new Date(st.latest_change).getTime()) / 60000) : Infinity;
+    // PIM freshness matters, not lifetime volume - a dead feed with a big
+    // historical count should warn.
+    const pimAgeH = pim.latest_event ? (Date.now() - new Date(pim.latest_event).getTime()) / 3600000 : Infinity;
+    const pimOk = pimAgeH < 48;
+    const mixCount = (feats.mix_stores || []).length;
     $("#health-stats").innerHTML = [
-      healthStat("Pipeline", pipeValue, latest ? `last run ${latestAge} · ${resp.pipeline.ok_24h}/24h ok${resp.pipeline.failed_24h ? ` · ${resp.pipeline.failed_24h} failed` : ""}` : "no pull runs recorded", pipeTone),
-      healthStat("Projection", Number(st.active_rows || 0).toLocaleString(), `active rows · changed ${healthAge(st.latest_change)} · ${Number(st.changed_24h || 0).toLocaleString()} in 24h`, stateAgeMins > 26 * 60 ? "warn" : "ok"),
-      healthStat("Price rules", String(feats.price_rules?.active ?? 0), feats.price_rules?.active ? "active - adds refresh time" : "none active", null),
-      healthStat("Sync blocks", String((feats.sync_blocks?.whole_store || 0) + (feats.sync_blocks?.styles || 0)), `${feats.sync_blocks?.whole_store || 0} whole-store · ${feats.sync_blocks?.styles || 0} styles`, null),
-      healthStat("Mix stores", String(feats.mix_stores?.length || 0), (feats.mix_stores || []).map((m) => `${m.fdm4_store} (${m.mode})`).join(", ") || "none enrolled", null),
-      healthStat("PIM mirror", Number(pim.events || 0) > 2 ? "RECEIVING" : "NO DATA", pim.latest_event ? `last event ${healthAge(pim.latest_event)} · ${Number(pim.products || 0).toLocaleString()} products` : "no ingests recorded yet", Number(pim.events || 0) > 2 ? "ok" : "warn"),
-      healthStat("Feeds", feeds.available ? String((feeds.consumers || []).length) : "-", feeds.available ? "registered consumers" : "feed registry not deployed", null),
+      healthStat("Data pull from FDM4", pipeValue, pipeSub, pipeTone),
+      healthStat("Product data", st.latest_change ? `Updated ${healthAge(st.latest_change)}` : "No data", `${Number(st.active_rows || 0).toLocaleString()} live records · ${Number(st.changed_24h || 0).toLocaleString()} changed in 24h`, stateAgeMins > 26 * 60 ? "warn" : "ok"),
+      healthStat("Price rules", String(feats.price_rules?.active ?? 0), feats.price_rules?.active ? "active - hourly update takes a bit longer" : "none active", null),
+      healthStat("Sync freezes", String((feats.sync_blocks?.whole_store || 0) + (feats.sync_blocks?.styles || 0)), `${feats.sync_blocks?.whole_store || 0} whole-store · ${feats.sync_blocks?.styles || 0} styles`, null),
+      healthStat("Custom product lineups", String(mixCount), mixCount ? `${mixCount} store${mixCount === 1 ? "" : "s"} with a custom list` : "none - all stores follow FDM4", null),
+      healthStat("Product content feed", pim.latest_event ? (pimOk ? "Receiving updates" : "No recent updates") : "No updates yet", pim.latest_event ? `last update ${healthAge(pim.latest_event)} · ${Number(pim.products || 0).toLocaleString()} products` : "no updates received yet", pim.latest_event && pimOk ? "ok" : "warn"),
+      healthStat("Connected systems", feeds.available ? String((feeds.consumers || []).length) : "-", feeds.available ? "systems reading our data" : "not set up yet", null),
     ].join("");
 
     const trend = $("#health-trend");
@@ -4863,15 +5223,14 @@
     });
 
     $("#health-runs").innerHTML = runs.length ? `<table class="data-table"><thead><tr>
-      <th>Started</th><th>Status</th><th>Duration</th><th>Rows</th><th>Version</th><th>Note</th>
+      <th>Started</th><th>Status</th><th>Duration</th><th>Rows</th><th>Note</th>
     </tr></thead><tbody>${runs.map((r) => `<tr>
       <td>${escapeHtml(formatDate(r.started_at))}</td>
       <td>${healthRunChip(r.status)}</td>
       <td>${r.duration_s != null ? `${Math.floor(r.duration_s / 60)}m ${String(r.duration_s % 60).padStart(2, "0")}s` : "-"}</td>
       <td>${r.rows_loaded != null ? Number(r.rows_loaded).toLocaleString() : "-"}</td>
-      <td>${r.refresh_version != null ? escapeHtml(String(r.refresh_version)) : "-"}</td>
       <td class="health-note">${escapeHtml(r.error || r.note || "")}</td>
-    </tr>`).join("")}</tbody></table>` : '<div class="grid-empty">No pull runs recorded.</div>';
+    </tr>`).join("")}</tbody></table>` : '<div class="grid-empty">No data pulls have run yet.</div>';
 
     const rules = feats.price_rules?.rules || [];
     $("#health-rules").innerHTML = rules.length
@@ -4879,33 +5238,44 @@
       : '<div class="grid-empty">No active price rules.</div>';
     const blocks = feats.sync_blocks || {};
     $("#health-blocks").innerHTML = (blocks.whole_store || blocks.styles)
-      ? `<ul class="health-list"><li>${escapeHtml(String(blocks.stores || 0))} store(s) affected</li><li>${escapeHtml(String(blocks.whole_store || 0))} whole-store block(s)</li><li>${escapeHtml(String(blocks.styles || 0))} style block(s)</li></ul>`
-      : '<div class="grid-empty">No active sync blocks.</div>';
+      ? `<ul class="health-list"><li>${escapeHtml(String(blocks.stores || 0))} store(s) affected</li><li>${escapeHtml(String(blocks.whole_store || 0))} whole-store freeze(s)</li><li>${escapeHtml(String(blocks.styles || 0))} style freeze(s)</li></ul>`
+      : '<div class="grid-empty">No active sync freezes.</div>';
     const mixStores = feats.mix_stores || [];
     $("#health-mix").innerHTML = mixStores.length
       ? `<ul class="health-list">${mixStores.map((m) => `<li>${escapeHtml(storeDisplayFor(m.fdm4_store))} (${escapeHtml(m.fdm4_store)}) - <strong>${escapeHtml(m.mode === "all" ? "all products" : "curated list")}</strong></li>`).join("")}</ul>`
-      : '<div class="grid-empty">No stores enrolled.</div>';
+      : '<div class="grid-empty">No stores with a custom lineup.</div>';
     $("#health-pim").innerHTML = `<ul class="health-list">
-      <li>${Number(pim.events || 0).toLocaleString()} ingest event(s)</li>
+      <li>${Number(pim.events || 0).toLocaleString()} update(s) received</li>
       <li>Latest: ${escapeHtml(pim.latest_event ? healthAge(pim.latest_event) : "never")}</li>
-      <li>${Number(pim.products || 0).toLocaleString()} enriched product(s)</li>
+      <li>${Number(pim.products || 0).toLocaleString()} product(s) with extra content</li>
     </ul>`;
     const consumers = feeds.consumers || [];
     $("#health-feeds").innerHTML = !feeds.available
-      ? '<div class="grid-empty">Feed registry not deployed yet.</div>'
+      ? '<div class="grid-empty">Not set up yet.</div>'
       : consumers.length
-        ? `<ul class="health-list">${consumers.map((c) => `<li><strong>${escapeHtml(c.name)}</strong>${c.active ? "" : " (inactive)"} - ping ${escapeHtml(healthAge(c.last_ping_at))}${c.last_ping_status ? ` (${escapeHtml(c.last_ping_status)})` : ""} · pull ${escapeHtml(healthAge(c.last_pull_at))}${c.last_pull_version != null ? ` @ v${escapeHtml(String(c.last_pull_version))}` : ""}</li>`).join("")}</ul>`
-        : '<div class="grid-empty">No consumers registered.</div>';
+        ? `<ul class="health-list">${consumers.map((c) => `<li><strong>${escapeHtml(c.name)}</strong>${c.active ? "" : " (inactive)"} - checked in ${escapeHtml(healthAge(c.last_ping_at))}${c.last_ping_status ? ` (${escapeHtml(c.last_ping_status)})` : ""} · last downloaded data ${escapeHtml(healthAge(c.last_pull_at))}</li>`).join("")}</ul>`
+        : '<div class="grid-empty">No systems connected yet.</div>';
     $("#health-updated").textContent = `Updated ${new Date().toLocaleTimeString()} - refreshes every minute while open.`;
   }
 
+  const HEALTH_BOXES = ["#health-stats", "#health-runs", "#health-rules", "#health-blocks", "#health-mix", "#health-pim", "#health-feeds"];
+
   async function loadHealth(quiet = false) {
-    if (!quiet) $("#health-stats").innerHTML = '<div class="grid-empty">Loading...</div>';
+    if (!quiet) HEALTH_BOXES.forEach((sel) => { const el = $(sel); if (el) el.innerHTML = '<div class="grid-empty">Loading...</div>'; });
     try {
       const resp = await api("/api/health/overview");
       renderHealth(resp);
     } catch (e) {
-      if (!quiet) $("#health-stats").innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`;
+      if (!quiet) {
+        renderErrorState($("#health-stats"), "Couldn't load system status. Check your connection and press Try again.", () => loadHealth());
+        HEALTH_BOXES.slice(1).forEach((sel) => { const el = $(sel); if (el) el.innerHTML = '<div class="grid-empty">Unavailable</div>'; });
+        $("#health-updated").textContent = "";
+      } else {
+        const stamp = $("#health-updated");
+        if (stamp && !stamp.textContent.includes("refresh failed")) {
+          stamp.textContent += " (last refresh failed - showing older numbers, retrying)";
+        }
+      }
     }
   }
 
