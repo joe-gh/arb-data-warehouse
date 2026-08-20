@@ -61,3 +61,12 @@ tables. Each stage self-heals if the previous one hasn't run yet
 
 `/etc/logrotate.d/arb-sync` on both boxes: `weekly`, `rotate 4`, `compress`,
 `copytruncate` on the run/reconcile logs.
+
+## PIM (Sales Layer) content pull (root crontab, added 2026-08-20)
+
+    25 * * * *  flock -n /tmp/pim-pull.lock timeout 1500 bash -c '. /opt/fdm4-extractor/pim.env; export PIM_API_KEY; sudo -E -u postgres /opt/fdm4-extractor/venv/bin/python /opt/fdm4-extractor/pull_pim.py' >> /opt/fdm4-extractor/pull_pim.log
+    40 3 * * 0  same with --full (weekly deletion reconciliation)
+
+Key lives in root-only /opt/fdm4-extractor/pim.env. Log rotated weekly via
+/etc/logrotate.d/arb-pim-pull. Landing tables pim.api_* are isolated: nothing
+downstream reads them until the projection wiring step.
