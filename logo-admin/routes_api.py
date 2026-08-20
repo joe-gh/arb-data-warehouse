@@ -1254,6 +1254,10 @@ class SyncBlockBody(BaseModel):
     whole_store: bool = False
     styles: List[str] = []
     note: str = Field(default="", max_length=1000)
+    # 'full' skips the store entirely; 'pricing' lets the sync run (creates,
+    # stock, status) but never writes a price to an existing variation.
+    # Only meaningful for whole-store blocks; style rows are always full.
+    scope: str = Field(default="full", pattern="^(full|pricing)$")
 
 
 class SyncBlockToggleBody(BaseModel):
@@ -1268,7 +1272,7 @@ def sync_blocks(user: Dict[str, str] = Depends(require_user)):
     with database.cursor() as cursor:
         cursor.execute(
             """
-            SELECT fdm4_store, style_code, note, active, updated_at, updated_by
+            SELECT fdm4_store, style_code, note, active, scope, updated_at, updated_by
               FROM woo.sync_exclusion ORDER BY fdm4_store, style_code
             """
         )
@@ -1294,16 +1298,17 @@ def save_sync_block(body: SyncBlockBody, user: Dict[str, str] = Depends(require_
         cursor.execute("SELECT 1 FROM woo.store_catalog WHERE fdm4_store = %s LIMIT 1", (store,))
         if not cursor.fetchone():
             raise HTTPException(status_code=400, detail=f"Unknown store code: {store}")
+        scope = body.scope if body.whole_store else "full"
         for style in rows:
             cursor.execute(
                 """
-                INSERT INTO woo.sync_exclusion (fdm4_store, style_code, note, active, updated_by)
-                VALUES (%s, %s, %s, true, %s)
+                INSERT INTO woo.sync_exclusion (fdm4_store, style_code, note, active, scope, updated_by)
+                VALUES (%s, %s, %s, true, %s, %s)
                 ON CONFLICT (fdm4_store, style_code) DO UPDATE SET
-                    note = EXCLUDED.note, active = true, updated_at = now(),
-                    updated_by = EXCLUDED.updated_by
+                    note = EXCLUDED.note, active = true, scope = EXCLUDED.scope,
+                    updated_at = now(), updated_by = EXCLUDED.updated_by
                 """,
-                (store, style, note, user["user_login"]),
+                (store, style, note, scope, user["user_login"]),
             )
         # Tell the caller what each style actually freezes right now - a style
         # matching zero products is almost always a typo.

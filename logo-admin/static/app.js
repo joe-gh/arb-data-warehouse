@@ -3655,7 +3655,7 @@
     if (!rows.length) { box.innerHTML = '<div class="grid-empty">No sync blocks - every store and product syncs normally.</div>'; return; }
     box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>Scope</th><th>Reason</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((b) => `<tr data-store="${escapeHtml(b.fdm4_store)}" data-style="${escapeHtml(b.style_code)}">
       <td><strong>${escapeHtml(storeDisplayFor(b.fdm4_store))}</strong><br><code>${escapeHtml(b.fdm4_store)}</code></td>
-      <td>${b.style_code ? `style <code>${escapeHtml(b.style_code)}</code>` : '<span class="chip dark">ENTIRE STORE</span>'}</td>
+      <td>${b.style_code ? `style <code>${escapeHtml(b.style_code)}</code>` : (b.scope === "pricing" ? '<span class="chip">PRICING ONLY</span>' : '<span class="chip dark">ENTIRE STORE</span>')}</td>
       <td class="note-cell">${escapeHtml(text(b.note))}</td>
       <td><button class="chip ${b.active ? "dark" : ""} sb-toggle" type="button" title="Click to toggle">${b.active ? "BLOCKING" : "inactive"}</button></td>
       <td>${escapeHtml(formatDate(b.updated_at))}<br><small class="muted">${escapeHtml(text(b.updated_by))}</small></td>
@@ -3666,7 +3666,9 @@
       const b = sbState.blocks.find((x) => x.fdm4_store === tr.dataset.store && x.style_code === tr.dataset.style);
       if (!b) return loadSyncBlocks();
       if (!b.active && !b.style_code) {
-        const ok = await confirmAction({ title: "Re-activate entire-store block?", message: `${storeDisplayFor(b.fdm4_store)} will be completely skipped by the product sync (no price, stock, or catalog updates) until unblocked.`, actionLabel: "Block store" });
+        const ok = await confirmAction(b.scope === "pricing"
+          ? { title: "Re-activate pricing freeze?", message: `${storeDisplayFor(b.fdm4_store)} keeps syncing normally, but existing prices will no longer be updated by the sync.`, actionLabel: "Freeze pricing", danger: false }
+          : { title: "Re-activate entire-store block?", message: `${storeDisplayFor(b.fdm4_store)} will be completely skipped by the product sync (no price, stock, or catalog updates) until unblocked.`, actionLabel: "Block store" });
         if (!ok) return;
       }
       try {
@@ -3690,6 +3692,11 @@
     const ta = $("#sb-styles");
     ta.disabled = whole;
     ta.closest(".field")?.classList.toggle("is-disabled", whole);
+    const pricing = $("#sb-pricing-only");
+    if (pricing) {
+      pricing.disabled = !whole;
+      if (!whole) pricing.checked = false;
+    }
   }
 
   async function addSyncBlock() {
@@ -3700,15 +3707,18 @@
     if (!store) { toast("Pick a store first.", "error"); return; }
     if (!whole && !styles.length) { toast("Tick “entire store” or paste at least one style #.", "error"); return; }
     const btn = $("#sb-add");
+    const pricingOnly = whole && $("#sb-pricing-only")?.checked;
     if (whole) {
-      const ok = await confirmAction({ title: "Block the entire store?", message: `${storeDisplayFor(store)} will be completely skipped by the product sync (no price, stock, or catalog updates) until unblocked.`, actionLabel: "Block store" });
+      const ok = await confirmAction(pricingOnly
+        ? { title: "Freeze pricing for the entire store?", message: `${storeDisplayFor(store)} keeps syncing normally (new styles, stock, status), but the sync will never change an existing product's price. New products still get their initial FDM4 price.`, actionLabel: "Freeze pricing", danger: false }
+        : { title: "Block the entire store?", message: `${storeDisplayFor(store)} will be completely skipped by the product sync (no price, stock, or catalog updates) until unblocked.`, actionLabel: "Block store" });
       if (!ok) return;
     }
     setBusy(btn, true, "Adding...");
     try {
-      const resp = await api("/api/sync-blocks", { method: "PUT", body: { fdm4_store: store, whole_store: whole, styles, note: $("#sb-note").value.trim() } });
+      const resp = await api("/api/sync-blocks", { method: "PUT", body: { fdm4_store: store, whole_store: whole, styles, note: $("#sb-note").value.trim(), scope: pricingOnly ? "pricing" : "full" } });
       if (whole) {
-        toast("Store blocked - skipped from the next sync pass on.");
+        toast(pricingOnly ? "Pricing frozen - the store keeps syncing, prices stay put." : "Store blocked - skipped from the next sync pass on.");
       } else {
         const perStyle = Array.isArray(resp?.per_style) ? resp.per_style : [];
         const hits = perStyle.filter((p) => Number(p.products) > 0);
