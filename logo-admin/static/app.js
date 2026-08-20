@@ -3376,7 +3376,7 @@
   }
 
   // ===== Warehouse Operations: view switching + pricing management =====
-  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "health"];
+  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "health"];
   function switchView(name) {
     if (!VIEWS.includes(name)) name = "dashboard";
     VIEWS.forEach((v) => { const el = $(`#view-${v}`); if (el) el.hidden = v !== name; });
@@ -3395,6 +3395,7 @@
     if (name === "prices") loadPriceRules();
     if (name === "blocks") loadSyncBlocks();
     if (name === "mix") loadProductMix();
+    if (name === "stock") loadStockOverrides();
     if (name === "health") loadHealth();
     healthTimerSync(name);
   }
@@ -3687,6 +3688,64 @@
     }));
   }
 
+  const soState = { overrides: [] };
+
+  async function loadStockOverrides() {
+    const box = $("#so-list");
+    try {
+      const resp = await api("/api/stock-overrides");
+      soState.overrides = resp.overrides || [];
+      renderStockOverrides();
+    } catch (e) { box.innerHTML = `<div class="grid-empty">${escapeHtml(e.message)}</div>`; }
+  }
+
+  function renderStockOverrides() {
+    const box = $("#so-list");
+    const q = ($("#so-search")?.value || "").trim().toLowerCase();
+    const rows = soState.overrides.filter((o) => !q || `${o.style_code} ${o.product_name || ""} ${o.brand || ""} ${o.note}`.toLowerCase().includes(q));
+    if (!rows.length) { box.innerHTML = '<div class="grid-empty">No overrides - the automatic rule decides everything: non-Arborwear mills sell with fake stock, Arborwear styles use real FDM4 inventory.</div>'; return; }
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Style</th><th>Forces</th><th>Reason</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((o) => `<tr data-style="${escapeHtml(o.style_code)}">
+      <td><strong>${escapeHtml(o.style_code)}</strong><br><small class="muted">${escapeHtml(text(o.product_name || ""))}${o.brand ? " · " + escapeHtml(o.brand) : ""}</small></td>
+      <td>${o.mode === "fake" ? '<span class="chip dark">FAKE 99,999</span>' : '<span class="chip">REAL INVENTORY</span>'}</td>
+      <td class="note-cell">${escapeHtml(text(o.note))}</td>
+      <td><button class="chip ${o.active ? "dark" : ""} so-toggle" type="button" title="Click to toggle">${o.active ? "ACTIVE" : "inactive"}</button></td>
+      <td>${escapeHtml(formatDate(o.updated_at))}<br><small class="muted">${escapeHtml(text(o.updated_by))}</small></td>
+      <td><button class="button button--small button--ghost so-delete" type="button">Remove</button></td>
+    </tr>`).join("")}</tbody></table>`;
+    $$(".so-toggle", box).forEach((btn) => btn.addEventListener("click", async () => {
+      const tr = btn.closest("tr");
+      const o = soState.overrides.find((x) => x.style_code === tr.dataset.style);
+      if (!o) return loadStockOverrides();
+      try {
+        await api("/api/stock-overrides/toggle", { method: "PUT", body: { style_code: o.style_code, active: !o.active } });
+        toast(!o.active ? "Override re-activated - applies on the next sync pass." : "Override set inactive - the automatic rule takes over on the next pass.");
+        loadStockOverrides();
+      } catch (e) { toast(e.message, "error"); }
+    }));
+    $$(".so-delete", box).forEach((btn) => btn.addEventListener("click", async () => {
+      const tr = btn.closest("tr");
+      const ok = await confirmAction({ title: "Remove inventory override?", message: `Style ${tr.dataset.style} goes back to the automatic rule (fake for third-party mills, real for Arborwear) on the next sync pass.`, actionLabel: "Remove", danger: true });
+      if (!ok) return;
+      try { await api(`/api/stock-overrides?${new URLSearchParams({ style: tr.dataset.style })}`, { method: "DELETE" }); toast("Override removed."); loadStockOverrides(); }
+      catch (e) { toast(e.message, "error"); }
+    }));
+  }
+
+  async function addStockOverride() {
+    const style = $("#so-style").value.trim();
+    const mode = $("#so-mode").value;
+    if (!style) { toast("Enter a style number first.", "error"); return; }
+    const btn = $("#so-add");
+    setBusy(btn, true, "Adding...");
+    try {
+      const resp = await api("/api/stock-overrides", { method: "PUT", body: { style_code: style, mode, note: $("#so-note").value.trim() } });
+      toast(`${resp.style_code} (${resp.product_name || "unnamed"}${resp.brand ? ", " + resp.brand : ""}) now forces ${mode === "fake" ? "fake stock" : "real inventory"} across ${resp.variants} variation(s) - applies on the next sync pass.`);
+      $("#so-style").value = ""; $("#so-note").value = "";
+      loadStockOverrides();
+    } catch (e) { toast(e.message, "error"); }
+    finally { setBusy(btn, false); }
+  }
+
   function syncSbWhole() {
     const whole = $("#sb-whole").checked;
     const ta = $("#sb-styles");
@@ -3736,6 +3795,8 @@
   $("#sb-add").addEventListener("click", addSyncBlock);
   $("#sb-search").addEventListener("input", () => renderSyncBlocks());
   $("#sb-whole").addEventListener("change", syncSbWhole);
+  $("#so-add").addEventListener("click", addStockOverride);
+  $("#so-search").addEventListener("input", () => renderStockOverrides());
 
   // ----- Product mix -----
   const mixState = {

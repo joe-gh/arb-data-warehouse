@@ -39,13 +39,14 @@
           <button id="legacy-images-button" class="main-nav__item" type="button">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
         </div>
       </div>
-      <div class="main-nav__group" data-group="pricing,prices,blocks,mix">
+      <div class="main-nav__group" data-group="pricing,prices,blocks,mix,stock">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-store">Store<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu" id="nav-menu-store" hidden>
           <button class="main-nav__item" type="button" data-view="pricing">Store Pricing Levels</button>
           <button class="main-nav__item" type="button" data-view="prices">Price Rules</button>
           <button class="main-nav__item" type="button" data-view="blocks">Sync Blocks</button>
           <button class="main-nav__item" type="button" data-view="mix">Product Mix</button>
+          <button class="main-nav__item" type="button" data-view="stock">Fake Inventory<small>Force fake or real stock per style</small></button>
         </div>
       </div>
     </nav>
@@ -435,6 +436,36 @@
     </section>
 
     <!-- Sync blocks -->
+    <section id="view-stock" class="view" hidden aria-label="Fake inventory">
+      <div class="pricing">
+        <div class="pricing__head">
+          <p class="eyebrow">Product sync</p>
+          <h1>Fake inventory</h1>
+          <p class="muted">Third-party styles (any non-Arborwear mill) automatically sell with fake stock of 99,999 - the sync re-asserts it every pass. Entries here override that default per style: FAKE forces fake stock on a style the automatic rule treats as real, REAL forces true FDM4 inventory on a style it would fake. Changes reach stores on the next hourly sync.</p>
+        </div>
+        <section class="card">
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">New</p><h3>Add an override</h3></div>
+          </div>
+          <div class="card__body">
+            <div class="form-row">
+              <label class="field"><span class="field__label">Style #</span><input id="so-style" type="text" maxlength="100" placeholder="e.g. 820202"></label>
+              <label class="field"><span class="field__label">Force</span><select id="so-mode"><option value="real">REAL - use true FDM4 inventory</option><option value="fake">FAKE - always in stock (99,999)</option></select></label>
+              <label class="field"><span class="field__label">Reason (shown in the list)</span><input id="so-note" type="text" maxlength="1000" placeholder="Why the override?"></label>
+            </div>
+            <div class="form-row"><button id="so-add" class="button button--primary" type="button">Add override</button></div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Active</p><h3>Current overrides</h3></div>
+          </div>
+          <div class="table-toolbar"><input id="so-search" type="search" placeholder="Filter by style or reason..." aria-label="Filter overrides"></div>
+          <div id="so-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
+        </section>
+      </div>
+    </section>
+
     <section id="view-blocks" class="view" hidden aria-label="Sync blocks">
       <div class="pricing">
         <div class="pricing__head">

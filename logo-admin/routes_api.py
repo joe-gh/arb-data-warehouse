@@ -1260,6 +1260,17 @@ class SyncBlockBody(BaseModel):
     scope: str = Field(default="full", pattern="^(full|pricing)$")
 
 
+class StockOverrideBody(BaseModel):
+    style_code: str = Field(min_length=1, max_length=100)
+    mode: str = Field(pattern="^(fake|real)$")
+    note: str = Field(default="", max_length=1000)
+
+
+class StockOverrideToggleBody(BaseModel):
+    style_code: str = Field(min_length=1, max_length=100)
+    active: bool
+
+
 class SyncBlockToggleBody(BaseModel):
     fdm4_store: str = Field(min_length=1, max_length=100)
     style_code: str = Field(default="", max_length=100)
@@ -1327,6 +1338,85 @@ def save_sync_block(body: SyncBlockBody, user: Dict[str, str] = Depends(require_
             counts = {r["style"]: r["products"] for r in cursor.fetchall()}
             per_style = [{"style": s, "products": counts.get(s, 0)} for s in styles]
     return {"ok": True, "saved": len(rows), "per_style": per_style}
+
+
+@router.get("/stock-overrides")
+def stock_overrides(user: Dict[str, str] = Depends(require_user)):
+    del user
+    with database.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT o.style_code, o.mode, o.note, o.active, o.updated_at, o.updated_by,
+                   (SELECT max(s.brand) FROM woo.store_product_state s
+                     WHERE upper(btrim(s.style_code)) = upper(btrim(o.style_code))
+                       AND s.kind = 'parent') AS brand,
+                   (SELECT max(s.name) FROM woo.store_product_state s
+                     WHERE upper(btrim(s.style_code)) = upper(btrim(o.style_code))
+                       AND s.kind = 'parent') AS product_name
+              FROM woo.stock_override o ORDER BY o.style_code
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+    return {"overrides": rows}
+
+
+@router.put("/stock-overrides")
+def save_stock_override(body: StockOverrideBody, user: Dict[str, str] = Depends(require_csrf)):
+    style = " ".join(body.style_code.split()).upper()
+    note = body.note.strip()
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute(
+            """
+            SELECT max(brand) AS brand, max(name) AS product_name,
+                   count(*) FILTER (WHERE kind = 'variation' AND is_active) AS variants
+              FROM woo.store_product_state
+             WHERE upper(btrim(style_code)) = %s
+            """,
+            (style,),
+        )
+        info = cursor.fetchone()
+        if not info or not info["variants"]:
+            raise HTTPException(status_code=400, detail=f"Style {style} has no active variations in the warehouse - check the style number")
+        cursor.execute(
+            """
+            INSERT INTO woo.stock_override (style_code, mode, note, active, updated_by)
+            VALUES (%s, %s, %s, true, %s)
+            ON CONFLICT (style_code) DO UPDATE SET
+                mode = EXCLUDED.mode, note = EXCLUDED.note, active = true,
+                updated_at = now(), updated_by = EXCLUDED.updated_by
+            """,
+            (style, body.mode, note, user["user_login"]),
+        )
+    return {
+        "ok": True,
+        "style_code": style,
+        "brand": info["brand"] or "",
+        "product_name": info["product_name"] or "",
+        "variants": int(info["variants"]),
+    }
+
+
+@router.put("/stock-overrides/toggle")
+def toggle_stock_override(body: StockOverrideToggleBody, user: Dict[str, str] = Depends(require_csrf)):
+    style = " ".join(body.style_code.split()).upper()
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute(
+            "UPDATE woo.stock_override SET active = %s, updated_at = now(), updated_by = %s WHERE style_code = %s",
+            (body.active, user["user_login"], style),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Override not found")
+    return {"ok": True}
+
+
+@router.delete("/stock-overrides")
+def delete_stock_override(style: str, user: Dict[str, str] = Depends(require_csrf)):
+    style = " ".join(style.split()).upper()
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute("DELETE FROM woo.stock_override WHERE style_code = %s", (style,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Override not found")
+    return {"ok": True}
 
 
 @router.put("/sync-blocks/toggle")
