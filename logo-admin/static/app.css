@@ -560,7 +560,6 @@ button.chip:hover, label.chip:hover { border-color: var(--forest-700); }
 .pr-note-field { margin-top: .9rem; }
 
 /* Bulk-apply panel (previously inline-styled) */
-#bulk-apply-panel { margin: 1rem 0; }
 .fieldset-plain { border: 0; padding: 0; margin: 0; }
 .choice-stack { display: flex; flex-direction: column; gap: .5rem; margin-top: .4rem; }
 .choice-row { display: flex; align-items: center; gap: .5rem; }
@@ -679,9 +678,9 @@ th[data-tsort]:focus-visible, th[data-msort]:focus-visible, #color-table th[data
 .dash-section-head p { margin: 0; font-size: .8rem; }
 
 /* Bulk apply dialog: numbered steps, tidy target choices. */
-.bulk-step { border-top: 1px solid #e7ece8; padding-top: .9rem; }
+.bulk-step { display: grid; gap: .75rem; border-top: 1px solid #e7ece8; padding-top: .9rem; }
 .bulk-step:first-child { border-top: 0; padding-top: 0; }
-.bulk-step__label { margin: 0 0 .6rem; font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--forest-700); }
+.bulk-step__label { margin: 0; font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--forest-700); }
 .choice-option { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; font-size: .86rem; cursor: pointer; user-select: none; }
 .choice-row .choice-option { flex: 0 0 auto; }
 .bulk-preview-scroll { max-height: 340px; overflow-y: auto; }

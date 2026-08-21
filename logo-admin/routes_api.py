@@ -597,10 +597,11 @@ def style_detail(
 def designs(
     q: str = Query("", max_length=100),
     store: Optional[str] = Query(None, max_length=100),
+    used_only: bool = Query(False),
     user: Dict[str, str] = Depends(require_user),
 ):
     del user
-    return _read_service(read_queries.search_designs, q=q, store=store)
+    return _read_service(read_queries.search_designs, q=q, store=store, used_only=used_only)
 
 
 @router.get("/vocab")

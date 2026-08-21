@@ -3187,16 +3187,20 @@
     const sequence = ++bulkState.requestSequence;
     const list = $("#bulk-logo-options");
     const input = $("#bulk-logo-search");
-    showEmptyOption(list, query.trim() ? "Searching..." : "Loading designs...");
+    showEmptyOption(list, query.trim() ? "Searching..." : "Loading this store's logos...");
     setOptionsOpen(input, list, true);
     try {
       const params = new URLSearchParams({ q: query.trim() });
       if (state.store) params.set("store", state.store);
+      if (!query.trim()) params.set("used_only", "true");
       const payload = await api(`/api/designs?${params}`);
       if (sequence !== bulkState.requestSequence) return;
       const designs = envelope(payload, "designs");
       list.replaceChildren();
-      if (!designs.length) { showEmptyOption(list, "No matching designs"); return; }
+      if (!designs.length) {
+        showEmptyOption(list, query.trim() ? "No matching designs" : "This store has no logos yet - type to search all designs");
+        return;
+      }
       designs.forEach((design) => {
         const id = text(design.design_id ?? design.id);
         const code = designCode(design);

@@ -458,6 +458,7 @@ def search_designs(
     *,
     q: str = "",
     store: Optional[str] = None,
+    used_only: bool = False,
 ) -> dict:
     q = _optional(q, "q")
     store_value = _optional(store, "store")
@@ -476,12 +477,18 @@ def search_designs(
                      AND dnx.name ILIKE %(pattern)s ESCAPE '\\'
               ) )"""
     if not q:
-        where = (
-            "(COALESCE(u.uses, 0) > 0 OR "
-            "btrim(d.cust_number) IN (SELECT cn FROM store_custs))"
-            if store_value
-            else "COALESCE(g.uses, 0) > 0"
-        )
+        if used_only and store_value:
+            # Bulk Apply's browse list: exactly the designs this store already
+            # uses. The customer expansion below drags in every design owned
+            # by shared art customers, which reads as "all stores' logos".
+            where = "COALESCE(u.uses, 0) > 0"
+        else:
+            where = (
+                "(COALESCE(u.uses, 0) > 0 OR "
+                "btrim(d.cust_number) IN (SELECT cn FROM store_custs))"
+                if store_value
+                else "COALESCE(g.uses, 0) > 0"
+            )
     rows, truncated, byte_truncated = _bounded_query(
         cursor,
         f"""
