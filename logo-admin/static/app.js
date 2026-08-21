@@ -4234,7 +4234,7 @@
     }));
   }
 
-  const soState = { overrides: [], total: 0, limit: 50, offset: 0, brands: [], bTotal: 0, bLimit: 50, bOffset: 0 };
+  const soState = { overrides: [], total: 0, limit: 5, offset: 0, brands: [], bTotal: 0, bLimit: 5, bOffset: 0 };
 
   async function loadBrandRules() {
     const box = $("#bs-list");
@@ -4488,6 +4488,8 @@
     soState.offset = next;
     loadStockOverrides();
   });
+  $("#bs-pagesize")?.addEventListener("change", () => { soState.bLimit = Number($("#bs-pagesize").value) || 5; soState.bOffset = 0; loadBrandRules(); });
+  $("#so-pagesize")?.addEventListener("change", () => { soState.limit = Number($("#so-pagesize").value) || 5; soState.offset = 0; loadStockOverrides(); });
   $("#bs-search")?.addEventListener("input", debounce(() => { soState.bOffset = 0; loadBrandRules(); }));
   $("#bs-mode")?.addEventListener("change", () => { soState.bOffset = 0; loadBrandRules(); });
   $("#bs-prev")?.addEventListener("click", () => { if (soState.bOffset > 0) { soState.bOffset = Math.max(0, soState.bOffset - soState.bLimit); loadBrandRules(); } });
