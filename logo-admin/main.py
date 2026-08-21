@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2 import DatabaseError, InterfaceError, OperationalError
 from psycopg2.pool import PoolError
@@ -31,6 +32,11 @@ app = FastAPI(
 )
 
 app.mount("/static", StaticFiles(directory=base_dir / "static"), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(base_dir / "static" / "favicon.ico", media_type="image/x-icon")
 app.mount(
     "/logo-media",
     StaticFiles(directory=settings.upload_dir, check_dir=False),
