@@ -83,7 +83,7 @@ h3 { margin-bottom: .25rem; font-size: 1.02rem; line-height: 1.3; }
 input, select, textarea { width: 100%; min-height: 2.75rem; padding: .62rem .75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: none; background: var(--white); transition: border-color .15s, box-shadow .15s; }
 input:hover, select:hover, textarea:hover { border-color: #91a097; }
 input:focus, select:focus, textarea:focus { border-color: var(--forest-700); box-shadow: var(--focus); }
-input[type="checkbox"] { width: auto; min-height: 0; }
+input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; padding: 0; accent-color: var(--forest-700); }
 input[type="search"]::-webkit-search-cancel-button { opacity: .65; }
 .input-with-icon { position: relative; }
 .input-with-icon svg { position: absolute; top: 50%; left: .75rem; width: 1rem; height: 1rem; fill: var(--ink-soft); transform: translateY(-50%); pointer-events: none; }
@@ -681,3 +681,12 @@ th[data-tsort]:focus-visible, th[data-msort]:focus-visible, #color-table th[data
 .dash-section-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; margin-bottom: .8rem; border-bottom: 1px solid #e2e8e3; padding-bottom: .45rem; }
 .dash-section-head h2 { margin: 0; font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--forest-700); }
 .dash-section-head p { margin: 0; font-size: .8rem; }
+
+/* Bulk apply dialog: numbered steps, tidy target choices. */
+.bulk-step { border-top: 1px solid #e7ece8; padding-top: .9rem; }
+.bulk-step:first-child { border-top: 0; padding-top: 0; }
+.bulk-step__label { margin: 0 0 .6rem; font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--forest-700); }
+.choice-option { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; font-size: .86rem; cursor: pointer; user-select: none; }
+.choice-row .choice-option { flex: 0 0 auto; }
+.bulk-preview-scroll { max-height: 340px; overflow-y: auto; }
+#bulk-apply-panel .picked-note { margin-top: .2rem; }

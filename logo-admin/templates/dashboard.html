@@ -218,8 +218,8 @@
             <span>Style active</span>
             <span class="switch"><input id="style-active" type="checkbox"><span></span></span>
           </label>
-          <button id="bulk-apply-open" class="button button--secondary" type="button" title="Apply one logo variant to many garment colors at once">
-            Bulk apply
+          <button id="bulk-apply-open" class="button button--secondary" type="button" title="Apply one logo across the WHOLE store at once - not just this product">
+            Bulk apply (store-wide)
           </button>
           <button id="copy-style-button" class="button button--secondary" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V3h13v13h-5v5H3V8h5Zm2 0h6v6h3V5h-9v3Zm4 2H5v9h9v-9Z"/></svg>
@@ -237,94 +237,6 @@
         </div>
       </section>
 
-      <div id="bulk-apply-panel" class="card" hidden>
-        <div class="card__header card__header--compact">
-          <div>
-            <p class="eyebrow">Bulk operation</p>
-            <h3>Bulk apply logo - <span id="bulk-store-name" class="muted"></span></h3>
-          </div>
-          <button id="bulk-apply-close" class="icon-button" type="button" aria-label="Close bulk apply panel"><span aria-hidden="true">×</span></button>
-        </div>
-        <div class="dialog__body stack">
-
-          <div class="field combobox">
-            <label class="field__label" for="bulk-logo-search">Logo variant (code + color scheme)</label>
-            <div class="input-with-icon">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-4.5-4.5a8 8 0 1 0-1.4 1.4l4.5 4.5 1.4-1.4ZM4 10a6 6 0 1 1 12 0 6 6 0 0 1-12 0Z"/></svg>
-              <input id="bulk-logo-search" type="search" autocomplete="off" placeholder="Search description, design ID, or code" aria-autocomplete="list" aria-controls="bulk-logo-options" aria-expanded="false">
-            </div>
-            <div id="bulk-logo-options" class="combobox__options" role="listbox" hidden></div>
-            <input id="bulk-logo-code" type="hidden">
-            <input id="bulk-logo-scheme" type="hidden">
-            <div id="bulk-selected-logo" class="muted picked-note" hidden></div>
-          </div>
-
-          <fieldset class="field fieldset-plain">
-            <legend class="field__label">Target garment colors</legend>
-            <div class="choice-stack">
-              <label class="choice-row">
-                <input type="radio" name="bulk-target" value="light_dark" checked>
-                By light/dark class
-              </label>
-              <div class="choice-row choice-indent">
-                <select id="bulk-class">
-                  <option value="dark">Dark garments</option>
-                  <option value="light">Light garments</option>
-                </select>
-              </div>
-              <label class="choice-row">
-                <input type="radio" name="bulk-target" value="colors">
-                Specific garment colors
-              </label>
-              <div class="choice-indent">
-                <input id="bulk-colors-filter" type="search" placeholder="Type to filter colors..." aria-label="Filter garment colors" autocomplete="off">
-                <div id="bulk-colors-list" class="bulk-colors-list" role="group" aria-label="Garment colors"><span class="muted">Loading colors...</span></div>
-                <small class="muted select-hint"><span id="bulk-colors-count">0</span> selected - tick every color this logo should apply to.</small>
-              </div>
-            </div>
-          </fieldset>
-
-          <div class="field combobox">
-            <label class="field__label" for="bulk-placement">Placement</label>
-            <input id="bulk-placement" type="text" autocomplete="off" placeholder="Type or pick a placement..." aria-autocomplete="list" aria-controls="bulk-placement-options" aria-expanded="false">
-            <div id="bulk-placement-options" class="combobox__options" role="listbox" hidden></div>
-            <span class="field__help">The placement written into every affected assignment.</span>
-          </div>
-
-          <div class="inline-row">
-            <button type="button" id="bulk-preview-btn" class="button button--secondary">Preview affected products</button>
-            <span id="bulk-preview-summary" class="muted text-small"></span>
-          </div>
-
-          <div id="bulk-preview-table-wrap" hidden>
-            <div class="inline-row">
-              <input id="bulk-preview-filter" type="search" placeholder="Filter rows by style or color..." class="grow">
-              <span id="bulk-preview-shown" class="muted nowrap"></span>
-            </div>
-            <table class="data-table" id="bulk-preview-table">
-              <thead>
-                <tr>
-                  <th><input id="bulk-all" type="checkbox" checked aria-label="Select or deselect all preview rows"></th>
-                  <th>Style</th>
-                  <th>Color</th>
-                  <th>New logo (was)</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-
-          <div class="inline-row">
-            <button type="button" id="bulk-apply-btn" class="button button--primary" disabled>Apply to checked rows</button>
-            <span id="bulk-result"></span>
-          </div>
-
-          <section aria-labelledby="bulk-history-title">
-            <h4 id="bulk-history-title">Recent bulk batches</h4>
-            <div id="bulk-history" class="stack" aria-live="polite"></div>
-          </section>
-        </div>
-      </div>
 
       <aside id="ownership-warning" class="notice notice--warning" role="status" hidden>
         <span class="notice__icon" aria-hidden="true">!</span>
@@ -957,6 +869,97 @@
       </div>
       <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button class="button button--primary" type="submit">Save settings</button></div></div>
     </form>
+  </dialog>
+
+  <dialog id="bulk-apply-panel" class="dialog dialog--wide" aria-labelledby="bulk-apply-title">
+    <div class="dialog__header">
+      <div>
+        <p class="eyebrow">Whole store</p>
+        <h2 id="bulk-apply-title">Bulk apply a logo - <span id="bulk-store-name"></span></h2>
+        <p class="muted text-small">Puts one logo onto many garment colors across <strong>every product in this store</strong>, not just the one you have open. Preview first, apply, and undo if needed.</p>
+      </div>
+      <button id="bulk-apply-close" class="icon-button dialog-close" type="button" aria-label="Close bulk apply"><span aria-hidden="true">×</span></button>
+    </div>
+    <div class="dialog__body stack">
+
+      <div class="bulk-step">
+        <p class="bulk-step__label">Step 1 · Choose the logo and placement</p>
+        <div class="form-row">
+          <div class="field combobox field--grow">
+            <label class="field__label" for="bulk-logo-search">Logo (code + color scheme)</label>
+            <div class="input-with-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-4.5-4.5a8 8 0 1 0-1.4 1.4l4.5 4.5 1.4-1.4ZM4 10a6 6 0 1 1 12 0 6 6 0 0 1-12 0Z"/></svg>
+              <input id="bulk-logo-search" type="search" autocomplete="off" placeholder="Search description, design ID, or code" aria-autocomplete="list" aria-controls="bulk-logo-options" aria-expanded="false">
+            </div>
+            <div id="bulk-logo-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div>
+            <input id="bulk-logo-code" type="hidden">
+            <input id="bulk-logo-scheme" type="hidden">
+          </div>
+          <div class="field combobox field--grow">
+            <label class="field__label" for="bulk-placement">Placement</label>
+            <input id="bulk-placement" type="text" autocomplete="off" placeholder="Type or pick a placement..." aria-autocomplete="list" aria-controls="bulk-placement-options" aria-expanded="false">
+            <div id="bulk-placement-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div>
+          </div>
+        </div>
+        <div id="bulk-selected-logo" class="muted picked-note" hidden></div>
+      </div>
+
+      <div class="bulk-step">
+        <p class="bulk-step__label">Step 2 · Choose which garment colors get it</p>
+        <div class="choice-stack">
+          <div class="choice-row">
+            <label class="choice-option"><input type="radio" name="bulk-target" value="light_dark" checked> By light or dark garments</label>
+            <select id="bulk-class" aria-label="Light or dark garments">
+              <option value="dark">Dark garments</option>
+              <option value="light">Light garments</option>
+            </select>
+          </div>
+          <label class="choice-option"><input type="radio" name="bulk-target" value="colors"> Hand-pick specific colors</label>
+          <div class="choice-indent" id="bulk-colors-block" hidden>
+            <input id="bulk-colors-filter" type="search" placeholder="Type to filter colors..." aria-label="Filter garment colors" autocomplete="off">
+            <div id="bulk-colors-list" class="bulk-colors-list" role="group" aria-label="Garment colors"><span class="muted">Loading colors...</span></div>
+            <small class="muted select-hint"><span id="bulk-colors-count">0</span> selected - tick every color this logo should apply to.</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="bulk-step">
+        <p class="bulk-step__label">Step 3 · Preview, then apply</p>
+        <div class="inline-row">
+          <button type="button" id="bulk-preview-btn" class="button button--secondary">Preview affected products</button>
+          <span id="bulk-preview-summary" class="muted text-small"></span>
+        </div>
+        <div id="bulk-preview-table-wrap" hidden>
+          <div class="inline-row">
+            <input id="bulk-preview-filter" type="search" placeholder="Filter rows by style or color..." class="grow">
+            <span id="bulk-preview-shown" class="muted nowrap"></span>
+          </div>
+          <div class="table-wrap bulk-preview-scroll">
+            <table class="data-table" id="bulk-preview-table">
+              <thead>
+                <tr>
+                  <th><input id="bulk-all" type="checkbox" checked aria-label="Select or deselect all preview rows"></th>
+                  <th>Style</th>
+                  <th>Color</th>
+                  <th>New logo (was)</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="inline-row">
+          <button type="button" id="bulk-apply-btn" class="button button--primary" disabled>Apply to checked rows</button>
+          <span id="bulk-result"></span>
+        </div>
+      </div>
+
+      <section aria-labelledby="bulk-history-title" class="bulk-step">
+        <p class="bulk-step__label" id="bulk-history-title">Recent bulk batches</p>
+        <div id="bulk-history" class="stack" aria-live="polite"></div>
+      </section>
+    </div>
+    <div class="dialog__footer"><span class="muted text-small">Nothing reaches the website until you press Sync on this store.</span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>
 
   <dialog id="copy-dialog" class="dialog" aria-labelledby="copy-title">

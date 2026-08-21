@@ -554,8 +554,8 @@
     // A Bulk Apply preview belongs to the store it was built for - clear it so
     // a stale preview can't be applied against the newly selected store.
     const bulkPanel = $("#bulk-apply-panel");
-    if (bulkPanel && !bulkPanel.hidden) {
-      bulkPanel.hidden = true;
+    if (bulkPanel && bulkPanel.open) {
+      closeDialog(bulkPanel);
       const tbody = document.querySelector("#bulk-preview-table tbody");
       if (tbody) tbody.replaceChildren();
       const wrap = $("#bulk-preview-table-wrap");
@@ -3207,6 +3207,14 @@
   let bulkClassTouched = false;
   let bulkPlacementWired = false;
 
+  function syncBulkTarget() {
+    const mode = document.querySelector('input[name="bulk-target"]:checked')?.value || "light_dark";
+    const classSel = $("#bulk-class");
+    const colorsBlock = $("#bulk-colors-block");
+    if (classSel) classSel.hidden = mode !== "light_dark";
+    if (colorsBlock) colorsBlock.hidden = mode !== "colors";
+  }
+
   function renderBulkPlacementOptions(query = "") {
     const input = $("#bulk-placement");
     const list = $("#bulk-placement-options");
@@ -3385,12 +3393,13 @@
     document.querySelector('input[name="bulk-target"][value="light_dark"]').checked = true;
     $("#bulk-class").value = "dark";
     bulkClassTouched = false;
+    syncBulkTarget();
     document.querySelector("#bulk-preview-table tbody").replaceChildren();
     $("#bulk-preview-table-wrap").hidden = true;
     $("#bulk-preview-summary").textContent = "";
     $("#bulk-result").textContent = "";
     $("#bulk-apply-btn").disabled = true;
-    panel.hidden = false;
+    openDialog(panel);
     await loadBulkHistory();
     // Placement is the same searchable combobox as the assignment dialog,
     // reading the shared vocabulary; the field keeps its last value.
@@ -3678,7 +3687,7 @@
 
     // Bulk-apply panel wiring
     $("#bulk-apply-open").addEventListener("click", openBulkApplyPanel);
-    $("#bulk-apply-close").addEventListener("click", () => { $("#bulk-apply-panel").hidden = true; });
+    $$('input[name="bulk-target"]').forEach((r) => r.addEventListener("change", syncBulkTarget));
     $("#bulk-preview-btn").addEventListener("click", bulkPreview);
     $("#bulk-class")?.addEventListener("change", () => { bulkClassTouched = true; });
     $("#bulk-colors-filter")?.addEventListener("input", () => {
