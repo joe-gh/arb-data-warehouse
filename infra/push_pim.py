@@ -76,19 +76,37 @@ def api_call(method, path, key, body=None):
                 return response.status, (json.loads(raw) if raw else {})
         except urllib.error.HTTPError as exc:
             detail = exc.read()[:500].decode("utf-8", "replace")
-            # 4xx are semantic, not transient - surface immediately.
-            if 400 <= exc.code < 500:
+            # 429 is transient (rate limit): honor Retry-After if present.
+            if exc.code == 429:
+                last = f"HTTP 429: {detail}"
+                retry_after = exc.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    time.sleep(min(int(retry_after), 120))
+                    continue
+            # Other 4xx are semantic, not transient - surface immediately.
+            elif 400 <= exc.code < 500:
                 return exc.code, {"error": detail}
-            last = f"HTTP {exc.code}: {detail}"
+            else:
+                last = f"HTTP {exc.code}: {detail}"
         except Exception as exc:  # noqa: BLE001 - network layer
             last = str(exc)
         time.sleep(2 * (attempt + 1))
     return 0, {"error": last or "request failed"}
 
 
+# The API rejects collection GETs without $select; ask only for the fields
+# the precondition checks read. The numeric *_id is required because item
+# routes are addressed OData-style by internal id: /catalog/variants({id}).
+GET_SELECT = {
+    "variants": "frmt_id,frmt_ref,frmt_colorcode,frmt_colorname",
+    "products": "prod_id,prod_ref,prod_stat",
+}
+
+
 def api_get_one(entity, ref_field, ref, key):
     query = urllib.parse.urlencode(
-        {"$filter": f"{ref_field} eq '{ref}'", "$top": "1"},
+        {"$select": GET_SELECT[entity],
+         "$filter": f"{ref_field} eq '{ref}'", "$top": "1"},
         quote_via=urllib.parse.quote)
     status, payload = api_call("GET", f"/catalog/{entity}?{query}", key)
     if status != 200:
@@ -365,7 +383,11 @@ def apply_set(set_id, limit, allow_removals):
         print(f"DRY RUN (PIM_PUSH_ENABLED not set): would apply {len(rows)} rows")
     done = failed = skipped = 0
     for row in rows:
-        outcome, detail = apply_row(row, key, enabled, allow_removals)
+        # One bad row must not abort a multi-hour run.
+        try:
+            outcome, detail = apply_row(row, key, enabled, allow_removals)
+        except Exception as exc:  # noqa: BLE001 - keep the batch moving
+            outcome, detail = "failed", f"exception: {exc}"
         if enabled:
             cursor.execute(
                 "UPDATE pim.push_change_row SET status = %s, result = %s,"
@@ -390,15 +412,20 @@ def apply_row(row, key, enabled, allow_removals):
         current = api_get_one("variants", "frmt_ref", row["frmt_ref"], key)
         if current is None:
             return "skipped", "variant no longer in the PIM"
-        live = (current.get("frmt_colorcode") or "").strip()
-        expect = ((row["before"] or {}).get("frmt_colorcode") or "").strip()
+        # The PIM stores frmt_colorcode as a number, so live values come back
+        # as ints, 0 is a legitimate placeholder code, and zero-padded strings
+        # we send are stored stripped.
+        live_raw = current.get("frmt_colorcode")
+        before_raw = (row["before"] or {}).get("frmt_colorcode")
+        live = "" if live_raw is None else str(live_raw).strip()
+        expect = "" if before_raw is None else str(before_raw).strip()
         if live != expect:
             return "skipped", f"color code changed since diff ({live!r})"
         if not enabled:
             return "skipped", "dry run"
         body = {"frmt_colorcode": after.get("frmt_colorcode"),
                 "frmt_colorname": after.get("frmt_colorname")}
-        status, payload = api_call("PATCH", f"/catalog/variants/{urllib.parse.quote(row['frmt_ref'])}", key, body)
+        status, payload = api_call("PATCH", f"/catalog/variants({current['frmt_id']})", key, body)
         return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
     if action == "variant_remove":
         if not allow_removals:
@@ -408,15 +435,22 @@ def apply_row(row, key, enabled, allow_removals):
             return "skipped", "already gone"
         if not enabled:
             return "skipped", "dry run"
-        status, payload = api_call("DELETE", f"/catalog/variants/{urllib.parse.quote(row['frmt_ref'])}", key)
+        status, payload = api_call("DELETE", f"/catalog/variants({current['frmt_id']})", key)
         return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
     if action == "variant_create":
         current = api_get_one("variants", "frmt_ref", row["frmt_ref"], key)
         if current is not None:
             return "skipped", "variant already exists"
+        # POST /catalog/variants links to the parent by numeric prod_id.
+        parent = api_get_one("products", "prod_ref", row["prod_ref"], key)
+        if parent is None:
+            return "skipped", "parent product not in the PIM"
         if not enabled:
             return "skipped", "dry run"
-        status, payload = api_call("POST", "/catalog/variants", key, after)
+        body = {k: v for k, v in after.items()
+                if k.startswith("frmt_") and v is not None}
+        body["prod_id"] = parent["prod_id"]
+        status, payload = api_call("POST", "/catalog/variants", key, body)
         return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
     if action == "product_create":
         current = api_get_one("products", "prod_ref", row["prod_ref"], key)
