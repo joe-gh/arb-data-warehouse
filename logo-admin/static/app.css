@@ -651,3 +651,27 @@ button.chip:hover, label.chip:hover { border-color: var(--forest-700); }
 /* Sortable table headers: show they're interactive. */
 th[data-tsort], th[data-msort], #color-table th[data-sort] { cursor: pointer; user-select: none; }
 th[data-tsort]:focus-visible, th[data-msort]:focus-visible, #color-table th[data-sort]:focus-visible { outline: 2px solid var(--forest-700, #2f6b4f); outline-offset: -2px; }
+
+/* Help view: plain-language guide with CSS flow charts. */
+.help .card { margin-bottom: 1rem; }
+.help .card__body p { max-width: 68ch; }
+.flow { display: flex; flex-direction: column; align-items: center; gap: .3rem; padding: .6rem 0 .8rem; }
+.flow-step { border: 1px solid #cfd9d2; border-radius: 10px; padding: .55rem 1rem; background: #fff; text-align: center; max-width: 34rem; font-size: .84rem; line-height: 1.4; }
+.flow-step small { color: #67716a; font-weight: 450; }
+.flow-step--source { background: #f2f0e9; border-color: #d8d2bf; }
+.flow-step--app { background: #e6eee9; border-color: #b9cfc2; font-weight: 650; }
+.flow-step--dest { background: #2f6b4f; border-color: #2f6b4f; color: #fff; }
+.flow-step--dest small { color: #cfe3d8; }
+.flow-arrow { color: #8b968e; font-size: .95rem; line-height: 1; text-align: center; }
+.flow-arrow small { font-size: .7rem; display: inline-block; margin-left: .3rem; }
+.flow-branches { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; width: 100%; max-width: 46rem; margin-top: .3rem; }
+.flow-branch { display: flex; flex-direction: column; align-items: center; gap: .3rem; }
+.flow-branch__label { font-size: .7rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #2f6b4f; background: #e6eee9; border-radius: 999px; padding: .15rem .7rem; }
+.flow-branch:last-child .flow-branch__label { color: #8a5a2f; background: #f4ecdc; }
+.help-rules { margin: 0; padding-left: 1.2rem; display: grid; gap: .45rem; font-size: .85rem; max-width: 68ch; }
+.help-qa details { border: 1px solid #dde3de; border-radius: 10px; background: #fff; padding: 0; }
+.help-qa summary { cursor: pointer; font-weight: 650; font-size: .88rem; padding: .65rem .9rem; list-style-position: inside; }
+.help-qa summary:hover { background: #f4f6f4; border-radius: 10px; }
+.help-qa details[open] summary { border-bottom: 1px solid #e7ece8; }
+.help-qa details ol, .help-qa details ul { margin: .6rem 0 .8rem; padding-left: 2rem; display: grid; gap: .35rem; font-size: .84rem; max-width: 62ch; }
+@media (max-width: 700px) { .flow-branches { grid-template-columns: 1fr; } }

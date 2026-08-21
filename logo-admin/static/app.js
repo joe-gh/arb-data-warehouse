@@ -3717,7 +3717,7 @@
   }
 
   // ===== Warehouse Operations: view switching + pricing management =====
-  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "health"];
+  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "health", "help"];
   function switchView(name) {
     if (!VIEWS.includes(name)) name = "dashboard";
     VIEWS.forEach((v) => { const el = $(`#view-${v}`); if (el) el.hidden = v !== name; });

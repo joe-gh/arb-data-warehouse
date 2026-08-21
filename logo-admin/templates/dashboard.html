@@ -23,6 +23,7 @@
     <nav class="main-nav" aria-label="Sections">
       <button class="main-nav__link" type="button" data-view="dashboard">Dashboard</button>
       <button class="main-nav__link" type="button" data-view="health">Health</button>
+      <button class="main-nav__link" type="button" data-view="help">Help</button>
       <div class="main-nav__group" data-group="logo,names,colors">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-logos">Logos<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu" id="nav-menu-logos" hidden>
@@ -124,6 +125,11 @@
             <span class="dash-card__eyebrow">Store</span>
             <span class="dash-card__title">Fake Inventory</span>
             <span class="dash-card__desc">Make specific styles always show as in stock (third-party goods we can always order), or force real stock counts.</span>
+          </button>
+          <button class="dash-card" type="button" data-view="help">
+            <span class="dash-card__eyebrow">Guide</span>
+            <span class="dash-card__title">Help</span>
+            <span class="dash-card__desc">How everything works, in plain language: each tool, how changes reach the websites, and what to do in common situations.</span>
           </button>
           <button class="dash-card" type="button" data-view="health">
             <span class="dash-card__eyebrow">System</span>
@@ -606,6 +612,184 @@
           </section>
         </div>
         <p id="health-updated" class="muted health-updated"></p>
+      </div>
+    </section>
+
+    <!-- Help -->
+    <section id="view-help" class="view" hidden aria-label="Help">
+      <div class="pricing help">
+        <div class="pricing__head">
+          <p class="eyebrow">Guide</p>
+          <h1>How everything works</h1>
+          <p class="muted">A plain guide to this app: what each tool does, how your changes reach the store websites, and what to do in common situations.</p>
+        </div>
+
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Start here</p><h3>The big picture</h3></div></div>
+          <div class="card__body stack">
+            <p>This app is the control panel for the product warehouse. FDM4 (the company's main system) supplies the raw facts: which products exist, their prices, and their stock. This app is where people shape what each store website actually shows: which logos go on which garments, which products a store carries, special pricing, and stock behavior.</p>
+            <div class="flow" role="img" aria-label="How changes flow from FDM4 through this app to the store websites">
+              <div class="flow-step flow-step--source">FDM4<br><small>products, prices, stock</small></div>
+              <div class="flow-arrow">&darr; <small>pulled automatically every hour</small></div>
+              <div class="flow-step flow-step--app">The warehouse + this app<br><small>your logos, price rules, product lists, and exceptions are applied here</small></div>
+              <div class="flow-arrow">&darr; <small>published every hour (logos only when you press Sync)</small></div>
+              <div class="flow-step flow-step--dest">Store websites<br><small>what customers see</small></div>
+            </div>
+            <p><strong>Six things that are always true:</strong></p>
+            <ul class="help-rules">
+              <li>Everything you change here is saved right away, but the store websites update later. Nothing you do is instantly public.</li>
+              <li>Logos reach a website only when you press <strong>Sync</strong> on that store. Everything else (prices, stock, products) flows out automatically, within about an hour.</li>
+              <li>Nothing is ever really deleted. Removed products are hidden, paused logos are kept, and almost every switch can be turned back on.</li>
+              <li>Before anything big happens, the app tells you what it is about to do and how many products it will touch, and asks you to confirm.</li>
+              <li>Every change is recorded with your name in the Activity Log (Logos menu).</li>
+              <li>If something fails, you get a message and a Try again button. A failed action changes nothing.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3>Putting logos on products</h3></div></div>
+          <div class="card__body stack">
+            <div class="flow" role="img" aria-label="Steps to put a logo on a product">
+              <div class="flow-step">Pick a store, then a product style<br><small>Logo Configuration</small></div>
+              <div class="flow-arrow">&darr;</div>
+              <div class="flow-step">Add or edit logos in the color grid<br><small>each garment color has three logo positions</small></div>
+              <div class="flow-arrow">&darr; <small>saved immediately</small></div>
+              <div class="flow-step">Press <strong>Sync style</strong> (one product) or <strong>Sync store</strong> (everything)</div>
+              <div class="flow-arrow">&darr;</div>
+              <div class="flow-step flow-step--dest">The website shows the new logos</div>
+            </div>
+            <p><strong>Logo Configuration</strong> is the main tool. The grid shows every garment color of a product against three logo positions. Click a cell to add or change a logo: search the designs, pick the color scheme and placement, and attach an image. A color can offer more than one logo choice to the shopper (use Add row).</p>
+            <p><strong>Bulk Apply</strong> (button at the top of Logo Configuration) puts one logo onto many garment colors at once. Choose the logo, choose the target (dark garments, light garments, or a hand-picked list of colors), press Preview to see exactly which products it will touch, then apply. Every batch has an Undo button.</p>
+            <p><strong>Logo Names</strong> is where you edit the names shoppers see for each logo. Names you type are kept even when FDM4 changes its own description. With no store selected you edit the shared name used everywhere; with a store selected your edit applies to that store only.</p>
+            <p><strong>Logo Colors</strong> answers one question per garment color: is it light or dark? Dark garments get the white version of a logo, light garments get the black one. Bulk Apply relies on these answers, so if the wrong logo version shows up, check here first. A computer made the first guess for every color, and this page is where people correct it.</p>
+            <p><strong>Logo Sync Stores</strong> (Logos menu) is the master switch. It lists every store and whether its logos come from this app (On) or are still on the old sheets (Off). Turning a store on runs a safety check first, so no product can silently lose its logos. See the next section.</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3>Bringing a store onto the logo system</h3></div></div>
+          <div class="card__body stack">
+            <div class="flow" role="img" aria-label="Steps to turn on logo sync for a store">
+              <div class="flow-step">Open <strong>Logo Sync Stores</strong> (Logos menu) and press <strong>Turn on</strong> next to the store</div>
+              <div class="flow-arrow">&darr;</div>
+              <div class="flow-step">The app checks every product that already has logos on the website</div>
+              <div class="flow-branches">
+                <div class="flow-branch">
+                  <span class="flow-branch__label">All covered</span>
+                  <div class="flow-step">Confirm. Nothing can be lost.</div>
+                  <div class="flow-arrow">&darr;</div>
+                  <div class="flow-step flow-step--dest">Open the store and press <strong>Sync store</strong></div>
+                </div>
+                <div class="flow-branch">
+                  <span class="flow-branch__label">Some styles missing</span>
+                  <div class="flow-step">The app names the styles that would lose their logos</div>
+                  <div class="flow-arrow">&darr;</div>
+                  <div class="flow-step">Import the store's old logo sheets first (Logos menu, Import Legacy Sheets), then try again</div>
+                </div>
+              </div>
+            </div>
+            <p>Turning a store <strong>off</strong> is always safe: the website keeps the logos it has today, and any edits you make here are saved and waiting for the day sync is turned back on.</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Store</p><h3>Prices, products, and stock</h3></div></div>
+          <div class="card__body stack">
+            <p>These four tools shape what the hourly update does. Changes here reach the store websites automatically, within about an hour. No Sync button is needed.</p>
+            <p><strong>Price Rules</strong> are discounts and adjustments Arborwear controls directly: a percentage off, a set price, and so on, aimed at chosen stores, brands, categories, or styles. New rules start turned off, and the app refuses to turn one on until you have pressed Preview, which shows exactly which items change and by how much. Turning a rule off puts prices back to normal.</p>
+            <p><strong>Store Pricing Levels</strong> only matter when FDM4 sends no price for an item. The store's chosen level (L1, L2, L3) fills the gap from the price list instead of defaulting to full retail.</p>
+            <p><strong>Sync Blocks</strong> freeze things so the hourly update leaves them alone. You can freeze a whole store, freeze only its prices (the store keeps getting new products and stock, but hand-set prices are never overwritten), or freeze single styles. Each freeze has an on and off switch in the list.</p>
+            <p><strong>Product Mix</strong> controls which products a store carries. By default a store simply follows FDM4. Switch it to a curated list to take control: add styles, remove them, or open a style to trim which colors and sizes the store sells. Removing a product hides it and marks it out of stock. It is never deleted and comes back if you re-add the style.</p>
+            <p><strong>Fake Inventory</strong> handles goods we sell but do not stock ourselves, like boots from another maker. Those show as always in stock so customers can always order. This page manages the exceptions, one style at a time: force a style to show as always in stock, or force it to show the real warehouse count.</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Situations</p><h3>Common situations</h3></div></div>
+          <div class="card__body stack help-qa">
+            <details>
+              <summary>A logo is wrong or missing on the website</summary>
+              <ol>
+                <li>Open <strong>Logo Configuration</strong>, pick the store and the product style.</li>
+                <li>Fix the logo row in the grid: the image, color scheme, or placement.</li>
+                <li>Press <strong>Sync style</strong> and wait for it to finish.</li>
+                <li>Refresh the product page on the website. If it still looks old, the site cache may need a few minutes.</li>
+                <li>If you see a banner saying logo sync is off for this store, the store is not on the new system yet. See "Bringing a store onto the logo system" above.</li>
+              </ol>
+            </details>
+            <details>
+              <summary>The wrong logo version shows on dark or light shirts</summary>
+              <ol>
+                <li>Open <strong>Logo Colors</strong> and find the garment color.</li>
+                <li>Check its light or dark setting and click the chip to correct it.</li>
+                <li>Re-run <strong>Bulk Apply</strong> for the affected logo if needed, then Sync the store.</li>
+              </ol>
+            </details>
+            <details>
+              <summary>A price is wrong on a store</summary>
+              <ol>
+                <li>Prices normally come straight from FDM4. If FDM4 is right and the site is wrong, keep reading.</li>
+                <li>Check <strong>Price Rules</strong>: is a rule turned on that covers this item? Turn it off if it should not apply.</li>
+                <li>Check <strong>Store Pricing Levels</strong>: if the item has no FDM4 price, the store's level decides what shows.</li>
+                <li>Check <strong>Sync Blocks</strong>: a price freeze keeps old prices in place on purpose.</li>
+                <li>Fixes reach the website within the hour.</li>
+              </ol>
+            </details>
+            <details>
+              <summary>A store's hand-set prices must not be touched</summary>
+              <ol>
+                <li>Open <strong>Sync Blocks</strong>.</li>
+                <li>Pick the store, tick "Freeze the ENTIRE store", then also tick "Freeze prices only".</li>
+                <li>Add the freeze. The store keeps updating normally, but its prices stay exactly as they are.</li>
+              </ol>
+            </details>
+            <details>
+              <summary>A product should not be on a store (or is missing from it)</summary>
+              <ol>
+                <li>Open <strong>Product Mix</strong> and pick the store.</li>
+                <li>If the store still follows FDM4, switch it to a curated list first.</li>
+                <li>Remove the style, or add it by style number. The app tells you how many products this touches before you confirm.</li>
+                <li>Removed products are hidden, never deleted, and return if you re-add the style.</li>
+              </ol>
+            </details>
+            <details>
+              <summary>A style shows out of stock but we can always order it</summary>
+              <ol>
+                <li>Open <strong>Fake Inventory</strong>.</li>
+                <li>Add an exception for the style and choose "Always in stock".</li>
+                <li>The stores update within the hour.</li>
+              </ol>
+            </details>
+            <details>
+              <summary>I clicked something by mistake</summary>
+              <ul>
+                <li>Bulk Apply batches have an <strong>Undo</strong> button, right in the result and in the batch history.</li>
+                <li>Freezes, exceptions, and price rules can simply be turned off again.</li>
+                <li>Removed mix styles can be re-added and their products come back.</li>
+                <li>Deactivated logos can be turned back on in the grid.</li>
+                <li>The one action that cannot be undone is deleting a logo assignment permanently, which is why the app warns you twice.</li>
+                <li>The <strong>Activity Log</strong> (Logos menu) shows exactly what changed and when, which helps with putting things back.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>I see a red error message</summary>
+              <ul>
+                <li>Press <strong>Try again</strong>. Most errors are a brief hiccup, and a failed action changes nothing.</li>
+                <li>Check the <strong>Health</strong> page: it shows whether the data pulls and updates are running normally.</li>
+                <li>If the same error keeps coming back, note what you clicked and what the message says, and pass both to the site team.</li>
+              </ul>
+            </details>
+            <details>
+              <summary>I made a change but the website has not updated</summary>
+              <ul>
+                <li>Logos: did you press <strong>Sync</strong> on the store? That is the only way logos go live.</li>
+                <li>Everything else: give it up to an hour, then check the <strong>Health</strong> page to confirm the last data pull ran.</li>
+                <li>Still nothing after an hour and a sync? Pass it to the site team with the store and product.</li>
+              </ul>
+            </details>
+          </div>
+        </section>
       </div>
     </section>
   </main>
