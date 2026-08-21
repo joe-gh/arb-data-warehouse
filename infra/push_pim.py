@@ -34,6 +34,7 @@ Run on the warehouse box as postgres with the key in the environment:
 import argparse
 import json
 import os
+import random
 import sys
 import time
 import urllib.parse
@@ -44,7 +45,10 @@ import psycopg2.extras
 
 API_BASE = "https://api2.saleslayer.com"
 TIMEOUT = 30
-MAX_RETRIES = 3
+MAX_RETRIES = 8
+# Sales Layer documents 50 requests per 10 seconds for the whole key, which
+# the hourly pull cron also shares. Pace requests well under that.
+MIN_REQUEST_INTERVAL = 0.25
 REMOVAL_CAP = 200
 DB_NAME = "arb_warehouse"
 DB_SOCKET = "/var/run/postgresql"
@@ -60,6 +64,16 @@ def api_key():
     return key
 
 
+_last_request_at = [0.0]
+
+
+def _throttle():
+    wait = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at[0] = time.monotonic()
+
+
 def api_call(method, path, key, body=None):
     url = API_BASE + path
     data = None
@@ -70,24 +84,28 @@ def api_call(method, path, key, body=None):
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     last = None
     for attempt in range(MAX_RETRIES):
+        _throttle()
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
                 raw = response.read()
                 return response.status, (json.loads(raw) if raw else {})
         except urllib.error.HTTPError as exc:
             detail = exc.read()[:500].decode("utf-8", "replace")
-            # 429 is transient (rate limit): honor Retry-After if present.
+            # 429 is transient (rolling-window rate limit shared with the
+            # hourly pull cron): exponential backoff with jitter, honoring
+            # Retry-After when the server sends one.
             if exc.code == 429:
                 last = f"HTTP 429: {detail}"
+                delay = min(60, 2 ** (attempt + 1)) + random.uniform(0, 1)
                 retry_after = exc.headers.get("Retry-After")
                 if retry_after and retry_after.isdigit():
-                    time.sleep(min(int(retry_after), 120))
-                    continue
+                    delay = max(delay, min(int(retry_after), 120))
+                time.sleep(delay)
+                continue
             # Other 4xx are semantic, not transient - surface immediately.
-            elif 400 <= exc.code < 500:
+            if 400 <= exc.code < 500:
                 return exc.code, {"error": detail}
-            else:
-                last = f"HTTP {exc.code}: {detail}"
+            last = f"HTTP {exc.code}: {detail}"
         except Exception as exc:  # noqa: BLE001 - network layer
             last = str(exc)
         time.sleep(2 * (attempt + 1))
