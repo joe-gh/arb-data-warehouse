@@ -396,8 +396,22 @@
           <div class="card__header card__header--compact">
             <div><p class="eyebrow">Brands</p><h3>Brand rules</h3></div>
           </div>
-          <div class="table-toolbar"><input id="bs-search" type="search" placeholder="Filter brands..." aria-label="Filter brands"></div>
+          <div class="table-toolbar">
+            <input id="bs-search" type="search" placeholder="Search brands..." aria-label="Search brands">
+            <select id="bs-mode" class="field__select" aria-label="Filter by behavior">
+              <option value="">All behaviors</option>
+              <option value="real">Real stock</option>
+              <option value="fake">Always in stock</option>
+              <option value="auto">Automatic</option>
+            </select>
+            <span id="bs-count" class="muted"></span>
+          </div>
           <div id="bs-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
+          <div id="bs-pager" class="pager" hidden>
+            <button id="bs-prev" class="button button--ghost button--small" type="button">Previous</button>
+            <span id="bs-range" class="muted"></span>
+            <button id="bs-next" class="button button--ghost button--small" type="button">Next</button>
+          </div>
         </section>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -416,8 +430,21 @@
           <div class="card__header card__header--compact">
             <div><p class="eyebrow">Existing</p><h3>Current exceptions</h3></div>
           </div>
-          <div class="table-toolbar"><input id="so-search" type="search" placeholder="Filter by style, product, brand, or reason..." aria-label="Filter exceptions"></div>
+          <div class="table-toolbar">
+            <input id="so-search" type="search" placeholder="Search by style, product, brand, or reason..." aria-label="Search exceptions">
+            <select id="so-mode-filter" class="field__select" aria-label="Filter by behavior">
+              <option value="">All behaviors</option>
+              <option value="fake">Always in stock</option>
+              <option value="real">Real stock</option>
+            </select>
+            <span id="so-count" class="muted"></span>
+          </div>
           <div id="so-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
+          <div id="so-pager" class="pager" hidden>
+            <button id="so-prev" class="button button--ghost button--small" type="button">Previous</button>
+            <span id="so-range" class="muted"></span>
+            <button id="so-next" class="button button--ghost button--small" type="button">Next</button>
+          </div>
         </section>
       </div>
     </section>

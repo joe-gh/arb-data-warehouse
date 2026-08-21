@@ -4234,26 +4234,41 @@
     }));
   }
 
-  const soState = { overrides: [], brands: [] };
+  const soState = { overrides: [], total: 0, limit: 50, offset: 0, brands: [], bTotal: 0, bLimit: 50, bOffset: 0 };
 
   async function loadBrandRules() {
     const box = $("#bs-list");
     box.innerHTML = '<div class="grid-empty">Loading...</div>';
+    $("#bs-pager").hidden = true;
     try {
-      const resp = await api("/api/stock-overrides/brands");
+      const params = new URLSearchParams({
+        q: ($("#bs-search")?.value || "").trim(),
+        mode: $("#bs-mode")?.value || "",
+        limit: String(soState.bLimit),
+        offset: String(soState.bOffset),
+      });
+      const resp = await api(`/api/stock-overrides/brands?${params}`);
       soState.brands = resp.brands || [];
+      soState.bTotal = Number(resp.total) || 0;
       renderBrandRules();
     } catch (e) { renderErrorState(box, friendlyLoadError("the brand rules", e), loadBrandRules); }
   }
 
   function renderBrandRules() {
     const box = $("#bs-list");
-    const q = ($("#bs-search")?.value || "").trim().toLowerCase();
-    const rows = soState.brands.filter((b) => !q || `${text(b.brand_name)} ${b.mill_code}`.toLowerCase().includes(q));
+    const rows = soState.brands;
+    $("#bs-count").textContent = `${soState.bTotal} brand${soState.bTotal === 1 ? "" : "s"}`;
+    const pager = $("#bs-pager");
+    if (soState.bTotal > soState.bLimit) {
+      pager.hidden = false;
+      const start = soState.bOffset + 1;
+      const end = Math.min(soState.bOffset + rows.length, soState.bTotal);
+      $("#bs-range").textContent = `${start}-${end} of ${soState.bTotal}`;
+      $("#bs-prev").disabled = soState.bOffset <= 0;
+      $("#bs-next").disabled = end >= soState.bTotal;
+    } else pager.hidden = true;
     if (!rows.length) {
-      box.innerHTML = soState.brands.length
-        ? '<div class="grid-empty">No brands match your search.</div>'
-        : '<div class="grid-empty">No brands found.</div>';
+      box.innerHTML = '<div class="grid-empty">No brands match these filters.</div>';
       return;
     }
     const modeChip = (b) => {
@@ -4309,20 +4324,38 @@
   async function loadStockOverrides() {
     const box = $("#so-list");
     box.innerHTML = '<div class="grid-empty">Loading...</div>';
+    $("#so-pager").hidden = true;
     try {
-      const resp = await api("/api/stock-overrides");
+      const params = new URLSearchParams({
+        q: ($("#so-search")?.value || "").trim(),
+        mode: $("#so-mode-filter")?.value || "",
+        limit: String(soState.limit),
+        offset: String(soState.offset),
+      });
+      const resp = await api(`/api/stock-overrides?${params}`);
       soState.overrides = resp.overrides || [];
+      soState.total = Number(resp.total) || 0;
       renderStockOverrides();
     } catch (e) { renderErrorState(box, friendlyLoadError("the stock exceptions", e), loadStockOverrides); }
   }
 
   function renderStockOverrides() {
     const box = $("#so-list");
-    const q = ($("#so-search")?.value || "").trim().toLowerCase();
-    const rows = soState.overrides.filter((o) => !q || `${o.style_code} ${text(o.product_name)} ${text(o.brand)} ${text(o.note)}`.toLowerCase().includes(q));
+    const rows = soState.overrides;
+    $("#so-count").textContent = `${soState.total} exception${soState.total === 1 ? "" : "s"}`;
+    const pager = $("#so-pager");
+    if (soState.total > soState.limit) {
+      pager.hidden = false;
+      const start = soState.offset + 1;
+      const end = Math.min(soState.offset + rows.length, soState.total);
+      $("#so-range").textContent = `${start}-${end} of ${soState.total}`;
+      $("#so-prev").disabled = soState.offset <= 0;
+      $("#so-next").disabled = end >= soState.total;
+    } else pager.hidden = true;
     if (!rows.length) {
-      box.innerHTML = soState.overrides.length
-        ? '<div class="grid-empty">No exceptions match your search.</div>'
+      const filtered = ($("#so-search")?.value || "").trim() || ($("#so-mode-filter")?.value || "");
+      box.innerHTML = filtered
+        ? '<div class="grid-empty">No exceptions match these filters.</div>'
         : '<div class="grid-empty">No exceptions yet - the automatic rule decides everything: third-party brands show as always in stock, Arborwear styles show real warehouse stock.</div>';
       return;
     }
@@ -4363,7 +4396,15 @@
     const style = $("#so-style").value.trim();
     const mode = $("#so-mode").value;
     if (!style) { toast("Enter a style number first.", "error"); return; }
-    const existing = soState.overrides.find((o) => o.style_code.toUpperCase() === style.toUpperCase());
+    let existing = soState.overrides.find((o) => o.style_code.toUpperCase() === style.toUpperCase()) || null;
+    if (!existing) {
+      // The list is paged now - ask the server whether this style already has
+      // an exception before deciding between the add and replace dialogs.
+      try {
+        const check = await api(`/api/stock-overrides?${new URLSearchParams({ q: style, limit: "5" })}`);
+        existing = (check.overrides || []).find((o) => o.style_code.toUpperCase() === style.toUpperCase()) || null;
+      } catch { /* the save itself is a safe upsert either way */ }
+    }
     if (existing) {
       const ok = await confirmAction({
         title: "Replace the existing exception?",
@@ -4438,8 +4479,24 @@
   $("#sb-search").addEventListener("input", () => renderSyncBlocks());
   $("#sb-whole").addEventListener("change", syncSbWhole);
   $("#so-add").addEventListener("click", addStockOverride);
-  $("#so-search").addEventListener("input", () => renderStockOverrides());
-  $("#bs-search")?.addEventListener("input", () => renderBrandRules());
+  $("#so-search").addEventListener("input", debounce(() => { soState.offset = 0; loadStockOverrides(); }));
+  $("#so-mode-filter")?.addEventListener("change", () => { soState.offset = 0; loadStockOverrides(); });
+  $("#so-prev")?.addEventListener("click", () => { if (soState.offset > 0) { soState.offset = Math.max(0, soState.offset - soState.limit); loadStockOverrides(); } });
+  $("#so-next")?.addEventListener("click", () => {
+    const next = soState.offset + soState.limit;
+    if (next >= soState.total) return;
+    soState.offset = next;
+    loadStockOverrides();
+  });
+  $("#bs-search")?.addEventListener("input", debounce(() => { soState.bOffset = 0; loadBrandRules(); }));
+  $("#bs-mode")?.addEventListener("change", () => { soState.bOffset = 0; loadBrandRules(); });
+  $("#bs-prev")?.addEventListener("click", () => { if (soState.bOffset > 0) { soState.bOffset = Math.max(0, soState.bOffset - soState.bLimit); loadBrandRules(); } });
+  $("#bs-next")?.addEventListener("click", () => {
+    const next = soState.bOffset + soState.bLimit;
+    if (next >= soState.bTotal) return;
+    soState.bOffset = next;
+    loadBrandRules();
+  });
   // Enter submits the add rows, matching what fast typists expect.
   ["#so-style", "#so-note"].forEach((sel) => $(sel)?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addStockOverride(); }

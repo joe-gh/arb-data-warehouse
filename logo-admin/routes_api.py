@@ -1560,32 +1560,60 @@ class BrandStockRuleBody(BaseModel):
 
 
 @router.get("/stock-overrides/brands")
-def brand_stock_rules(user: Dict[str, str] = Depends(require_user)):
-    """Every FDM4 brand (mill) with its stock behavior: an explicit rule from
-    woo.brand_stock_rule, or the automatic third-party default."""
+def brand_stock_rules(
+    q: str = Query("", max_length=100),
+    mode: str = Query("", max_length=8),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """Every FDM4 brand (mill) with its stock behavior, paged and searchable:
+    an explicit rule from woo.brand_stock_rule, or the automatic default."""
     del user
+    if mode not in ("", "real", "fake", "auto"):
+        mode = ""
+    term = q.strip()
+    like = f"%{term}%"
+    mode_sql = {
+        "": "",
+        "real": "AND r.mode = 'real'",
+        "fake": "AND r.mode = 'fake'",
+        "auto": "AND r.mode IS NULL",
+    }[mode]
+    base_sql = f"""
+        FROM fdm4.mill m
+        LEFT JOIN woo.brand_stock_rule r
+               ON r.mill_code = btrim(m."mill-code") AND r.active
+        LEFT JOIN (
+              SELECT btrim("mill-code") AS mc,
+                     count(DISTINCT btrim("style-code")) AS styles
+                FROM fdm4.style GROUP BY 1
+             ) sc ON sc.mc = btrim(m."mill-code")
+       WHERE NULLIF(btrim(m."mill-code"), '') IS NOT NULL
+         AND COALESCE(sc.styles, 0) > 0
+         AND ( %(term)s = ''
+            OR btrim(COALESCE(m.description, '')) ILIKE %(like)s
+            OR btrim(m."mill-code") ILIKE %(like)s )
+         {mode_sql}
+    """
+    params = {"term": term, "like": like, "limit": limit, "offset": offset}
     with database.cursor() as cursor:
+        cursor.execute(f"SELECT count(*) AS total {base_sql}", params)
+        total = int(cursor.fetchone()["total"])
         cursor.execute(
-            """
+            f"""
             SELECT btrim(m."mill-code") AS mill_code,
                    btrim(COALESCE(m.description, '')) AS brand_name,
                    r.mode, r.updated_by, r.updated_at,
                    COALESCE(sc.styles, 0) AS styles
-              FROM fdm4.mill m
-              LEFT JOIN woo.brand_stock_rule r
-                     ON r.mill_code = btrim(m."mill-code") AND r.active
-              LEFT JOIN (
-                    SELECT btrim("mill-code") AS mc,
-                           count(DISTINCT btrim("style-code")) AS styles
-                      FROM fdm4.style GROUP BY 1
-                   ) sc ON sc.mc = btrim(m."mill-code")
-             WHERE NULLIF(btrim(m."mill-code"), '') IS NOT NULL
-               AND COALESCE(sc.styles, 0) > 0
+            {base_sql}
              ORDER BY (r.mode IS NULL), lower(btrim(COALESCE(m.description, ''))), btrim(m."mill-code")
-            """
+             LIMIT %(limit)s OFFSET %(offset)s
+            """,
+            params,
         )
         rows = [dict(r) for r in cursor.fetchall()]
-    return {"brands": rows}
+    return {"brands": rows, "total": total, "limit": limit, "offset": offset}
 
 
 @router.put("/stock-overrides/brands")
@@ -1630,23 +1658,55 @@ def delete_brand_stock_rule(
 
 
 @router.get("/stock-overrides")
-def stock_overrides(user: Dict[str, str] = Depends(require_user)):
+def stock_overrides(
+    q: str = Query("", max_length=100),
+    mode: str = Query("", max_length=8),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: Dict[str, str] = Depends(require_user),
+):
     del user
+    if mode not in ("", "real", "fake"):
+        mode = ""
+    term = q.strip()
+    like = f"%{term}%"
+    mode_sql = {"": "", "real": "AND o.mode = 'real'", "fake": "AND o.mode = 'fake'"}[mode]
+    # One set-based enrichment pass instead of two correlated subqueries per
+    # row - name and brand stay searchable without the per-row scans.
+    base_sql = f"""
+        FROM woo.stock_override o
+        LEFT JOIN (
+              SELECT upper(btrim(style_code)) AS style,
+                     max(brand) AS brand, max(name) AS product_name
+                FROM woo.store_product_state
+               WHERE kind = 'parent'
+                 AND upper(btrim(style_code)) IN
+                     (SELECT upper(btrim(style_code)) FROM woo.stock_override)
+               GROUP BY 1
+             ) e ON e.style = upper(btrim(o.style_code))
+       WHERE ( %(term)s = ''
+          OR o.style_code ILIKE %(like)s
+          OR o.note ILIKE %(like)s
+          OR COALESCE(e.brand, '') ILIKE %(like)s
+          OR COALESCE(e.product_name, '') ILIKE %(like)s )
+         {mode_sql}
+    """
+    params = {"term": term, "like": like, "limit": limit, "offset": offset}
     with database.cursor() as cursor:
+        cursor.execute(f"SELECT count(*) AS total {base_sql}", params)
+        total = int(cursor.fetchone()["total"])
         cursor.execute(
-            """
+            f"""
             SELECT o.style_code, o.mode, o.note, o.active, o.updated_at, o.updated_by,
-                   (SELECT max(s.brand) FROM woo.store_product_state s
-                     WHERE upper(btrim(s.style_code)) = upper(btrim(o.style_code))
-                       AND s.kind = 'parent') AS brand,
-                   (SELECT max(s.name) FROM woo.store_product_state s
-                     WHERE upper(btrim(s.style_code)) = upper(btrim(o.style_code))
-                       AND s.kind = 'parent') AS product_name
-              FROM woo.stock_override o ORDER BY o.style_code
-            """
+                   e.brand, e.product_name
+            {base_sql}
+             ORDER BY o.style_code
+             LIMIT %(limit)s OFFSET %(offset)s
+            """,
+            params,
         )
         rows = [dict(r) for r in cursor.fetchall()]
-    return {"overrides": rows}
+    return {"overrides": rows, "total": total, "limit": limit, "offset": offset}
 
 
 @router.put("/stock-overrides")
