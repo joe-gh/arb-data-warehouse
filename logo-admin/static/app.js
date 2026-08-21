@@ -257,10 +257,11 @@
     else dialog.removeAttribute("open");
   }
 
-  function confirmAction({ title = "Confirm action", message, actionLabel = "Continue", danger = true }) {
+  function confirmAction({ title = "Confirm action", message, actionLabel = "Continue", cancelLabel = "Cancel", danger = true }) {
     els.confirmTitle.textContent = title;
     els.confirmMessage.textContent = message;
     els.confirmAction.textContent = actionLabel;
+    els.confirmCancel.textContent = cancelLabel;
     els.confirmAction.className = danger ? "button button--danger" : "button button--primary";
     openDialog(els.confirmDialog);
     return new Promise((resolve) => {
@@ -3585,10 +3586,35 @@
     setBusy(btn, true, "Turning on...");
     try {
       await api("/api/logo-ownership", { method: "POST", body: { fdm4_store: store, owned: true, acknowledge_missing: ack } });
-      toast(`Logo sync is ON for ${name}. Open the store and press Sync to push its logos live.`);
       if (state.store === store && els.ownershipWarning) els.ownershipWarning.hidden = true;
-      await loadOwnership();
-    } catch (e) { setBusy(btn, false); toast(e.message, "error"); }
+    } catch (e) { setBusy(btn, false); toast(e.message, "error"); return; }
+    setBusy(btn, false);
+    // Ownership only changes who is in charge going forward; the hourly sync
+    // updates products as they change. Offer the one-time store-wide sweep so
+    // everything already on the website gets its logo setup right away.
+    const syncNow = await confirmAction({
+      title: `Put logos on ${name}'s current products?`,
+      message: `Logo sync is ON for ${name}. Products normally pick up their logos as they change, a little at a time. Run a one-time sweep now so every current product on the website gets its logo setup right away? This can take a few minutes for a large store.`,
+      actionLabel: "Sync all products now",
+      cancelLabel: "Later",
+      danger: false,
+    });
+    if (syncNow) {
+      setBusy(btn, true, "Syncing all products...");
+      try {
+        const result = await api("/api/sync", { method: "POST", body: { store, styles: [] } });
+        const errors = Number(result.stats?.errors ?? result.reconcile?.stats?.errors ?? 0);
+        const applied = Number(result.stats?.applied ?? result.reconcile?.stats?.applied ?? 0);
+        toast(errors
+          ? `The sweep finished, but ${errors} product${errors === 1 ? "" : "s"} could not be updated on the website.`
+          : `All set - ${applied} product${applied === 1 ? "" : "s"} on ${name} now carry their logo setup.`, errors ? "error" : "success");
+      } catch (e) {
+        toast(`Logo sync is ON, but the store-wide sweep failed: ${e.message} You can run it any time by opening the store and pressing Sync store.`, "error");
+      } finally { setBusy(btn, false); }
+    } else {
+      toast(`Logo sync is ON for ${name}. Open the store and press Sync store when you want to update its current products.`);
+    }
+    await loadOwnership();
   }
 
   async function disableOwnership(store, btn) {
