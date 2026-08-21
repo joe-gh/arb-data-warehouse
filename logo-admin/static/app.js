@@ -3823,7 +3823,7 @@
     if (name === "prices") loadPriceRules();
     if (name === "blocks") loadSyncBlocks();
     if (name === "mix") loadProductMix();
-    if (name === "stock") loadStockOverrides();
+    if (name === "stock") { loadStockOverrides(); loadBrandRules(); }
     if (name === "health") loadHealth();
     healthTimerSync(name);
   }
@@ -4234,7 +4234,77 @@
     }));
   }
 
-  const soState = { overrides: [] };
+  const soState = { overrides: [], brands: [] };
+
+  async function loadBrandRules() {
+    const box = $("#bs-list");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
+    try {
+      const resp = await api("/api/stock-overrides/brands");
+      soState.brands = resp.brands || [];
+      renderBrandRules();
+    } catch (e) { renderErrorState(box, friendlyLoadError("the brand rules", e), loadBrandRules); }
+  }
+
+  function renderBrandRules() {
+    const box = $("#bs-list");
+    const q = ($("#bs-search")?.value || "").trim().toLowerCase();
+    const rows = soState.brands.filter((b) => !q || `${text(b.brand_name)} ${b.mill_code}`.toLowerCase().includes(q));
+    if (!rows.length) {
+      box.innerHTML = soState.brands.length
+        ? '<div class="grid-empty">No brands match your search.</div>'
+        : '<div class="grid-empty">No brands found.</div>';
+      return;
+    }
+    const modeChip = (b) => {
+      if (b.mode === "real") return '<span class="chip">Real stock</span>';
+      if (b.mode === "fake") return '<span class="chip dark">Always in stock</span>';
+      return '<span class="chip chip--muted">Automatic - always in stock</span>';
+    };
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Brand</th><th>Styles</th><th>Shows as</th><th></th></tr></thead><tbody>${rows.map((b) => `
+      <tr data-mill="${escapeHtml(b.mill_code)}">
+        <td><strong>${escapeHtml(text(b.brand_name, "(unnamed)"))}</strong> <small class="muted">mill ${escapeHtml(b.mill_code)}</small>${b.updated_by ? `<br><small class="muted">set by ${escapeHtml(text(b.updated_by))}</small>` : ""}</td>
+        <td>${Number(b.styles) || 0}</td>
+        <td>${modeChip(b)}</td>
+        <td class="name-actions">
+          ${b.mode === "real" ? "" : '<button class="button button--small button--ghost bs-real" type="button">Set real stock</button>'}
+          ${b.mode === "fake" ? "" : '<button class="button button--small button--ghost bs-fake" type="button">Set always in stock</button>'}
+          ${b.mode ? '<button class="button button--small button--ghost bs-reset" type="button">Reset to automatic</button>' : ""}
+        </td>
+      </tr>`).join("")}</tbody></table>`;
+    const brandFor = (btn) => soState.brands.find((x) => x.mill_code === btn.closest("tr").dataset.mill);
+    const setMode = async (btn, mode) => {
+      const b = brandFor(btn);
+      if (!b) return loadBrandRules();
+      const name = text(b.brand_name, `mill ${b.mill_code}`);
+      const n = Number(b.styles) || 0;
+      const ok = await confirmAction(mode === "fake"
+        ? { title: `Always show ${name} as in stock?`, message: `All ${n} ${name} style${n === 1 ? "" : "s"} will show as always in stock on the store websites - customers can always order them. Style exceptions below still win. Takes effect within the hour.`, actionLabel: "Set always in stock", danger: false }
+        : { title: `Show real stock for ${name}?`, message: `All ${n} ${name} style${n === 1 ? "" : "s"} will show their true warehouse stock counts on the store websites. Style exceptions below still win. Takes effect within the hour.`, actionLabel: "Set real stock", danger: false });
+      if (!ok) return;
+      btn.disabled = true;
+      try {
+        await api("/api/stock-overrides/brands", { method: "PUT", body: { mill_code: b.mill_code, mode } });
+        toast(`${name} now shows ${mode === "fake" ? "as always in stock" : "real stock"}. The stores update within the hour.`);
+        loadBrandRules();
+      } catch (e) { btn.disabled = false; toast(e.message, "error"); }
+    };
+    $$(".bs-real", box).forEach((btn) => btn.addEventListener("click", () => setMode(btn, "real")));
+    $$(".bs-fake", box).forEach((btn) => btn.addEventListener("click", () => setMode(btn, "fake")));
+    $$(".bs-reset", box).forEach((btn) => btn.addEventListener("click", async () => {
+      const b = brandFor(btn);
+      if (!b) return loadBrandRules();
+      const name = text(b.brand_name, `mill ${b.mill_code}`);
+      const ok = await confirmAction({ title: `Reset ${name} to automatic?`, message: `${name} goes back to the automatic rule: always in stock, except footwear, arborist gear, and tools which show real stock. Takes effect within the hour.`, actionLabel: "Reset" });
+      if (!ok) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/stock-overrides/brands?${new URLSearchParams({ mill: b.mill_code })}`, { method: "DELETE" });
+        toast(`${name} is back on the automatic rule.`);
+        loadBrandRules();
+      } catch (e) { btn.disabled = false; toast(e.message, "error"); }
+    }));
+  }
 
   async function loadStockOverrides() {
     const box = $("#so-list");
@@ -4369,6 +4439,7 @@
   $("#sb-whole").addEventListener("change", syncSbWhole);
   $("#so-add").addEventListener("click", addStockOverride);
   $("#so-search").addEventListener("input", () => renderStockOverrides());
+  $("#bs-search")?.addEventListener("input", () => renderBrandRules());
   // Enter submits the add rows, matching what fast typists expect.
   ["#so-style", "#so-note"].forEach((sel) => $(sel)?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addStockOverride(); }

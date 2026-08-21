@@ -1553,6 +1553,82 @@ def save_sync_block(body: SyncBlockBody, user: Dict[str, str] = Depends(require_
     return {"ok": True, "saved": len(rows), "per_style": per_style}
 
 
+class BrandStockRuleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mill_code: str = Field(min_length=1, max_length=32)
+    mode: str = Field(pattern="^(real|fake)$")
+
+
+@router.get("/stock-overrides/brands")
+def brand_stock_rules(user: Dict[str, str] = Depends(require_user)):
+    """Every FDM4 brand (mill) with its stock behavior: an explicit rule from
+    woo.brand_stock_rule, or the automatic third-party default."""
+    del user
+    with database.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT btrim(m."mill-code") AS mill_code,
+                   btrim(COALESCE(m.description, '')) AS brand_name,
+                   r.mode, r.updated_by, r.updated_at,
+                   COALESCE(sc.styles, 0) AS styles
+              FROM fdm4.mill m
+              LEFT JOIN woo.brand_stock_rule r
+                     ON r.mill_code = btrim(m."mill-code") AND r.active
+              LEFT JOIN (
+                    SELECT btrim("mill-code") AS mc,
+                           count(DISTINCT btrim("style-code")) AS styles
+                      FROM fdm4.style GROUP BY 1
+                   ) sc ON sc.mc = btrim(m."mill-code")
+             WHERE NULLIF(btrim(m."mill-code"), '') IS NOT NULL
+               AND COALESCE(sc.styles, 0) > 0
+             ORDER BY (r.mode IS NULL), lower(btrim(COALESCE(m.description, ''))), btrim(m."mill-code")
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+    return {"brands": rows}
+
+
+@router.put("/stock-overrides/brands")
+def set_brand_stock_rule(body: BrandStockRuleBody, user: Dict[str, str] = Depends(require_csrf)):
+    mill = _clean(body.mill_code, "mill_code")
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute(
+            'SELECT btrim(COALESCE(description, \'\')) AS name FROM fdm4.mill WHERE btrim("mill-code") = %s LIMIT 1',
+            (mill,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail=f"No FDM4 brand with mill code {mill}")
+        cursor.execute(
+            """
+            INSERT INTO woo.brand_stock_rule (mill_code, brand_name, mode, active, updated_by, updated_at)
+            VALUES (%s, %s, %s, true, %s, now())
+            ON CONFLICT (mill_code) DO UPDATE SET
+                mode = EXCLUDED.mode, brand_name = EXCLUDED.brand_name,
+                active = true, updated_by = EXCLUDED.updated_by, updated_at = now()
+            """,
+            (mill, row["name"], body.mode, user["user_login"]),
+        )
+        cursor.execute(
+            'SELECT count(DISTINCT btrim("style-code")) AS n FROM fdm4.style WHERE btrim("mill-code") = %s',
+            (mill,),
+        )
+        styles = int(cursor.fetchone()["n"])
+    return {"ok": True, "mill_code": mill, "brand_name": row["name"], "mode": body.mode, "styles": styles}
+
+
+@router.delete("/stock-overrides/brands")
+def delete_brand_stock_rule(
+    mill: str = Query(..., min_length=1, max_length=32),
+    user: Dict[str, str] = Depends(require_csrf),
+):
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute("DELETE FROM woo.brand_stock_rule WHERE mill_code = %s RETURNING mill_code", (_clean(mill, "mill"),))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="That brand has no rule to remove")
+    return {"ok": True}
+
+
 @router.get("/stock-overrides")
 def stock_overrides(user: Dict[str, str] = Depends(require_user)):
     del user

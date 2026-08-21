@@ -390,11 +390,18 @@
         <div class="pricing__head">
           <p class="eyebrow">Product sync</p>
           <h1>Fake inventory</h1>
-          <p class="muted">Third-party brands (anything not made by Arborwear) automatically show as always in stock - shoppers can always order them, and the hourly update keeps it that way. Entries here are exceptions to that rule for a single style: show a style as always in stock, or show its real warehouse count. Changes reach the store websites within the hour.</p>
+          <p class="muted">Two levels of control. <strong>Brand rules</strong> decide whole brands: Arborwear and the stocked premium brands show real warehouse counts, every other brand shows as always in stock (third-party goods we can always order). <strong>Style exceptions</strong> override the brand rule for a single style. For brands without a rule, footwear, arborist gear, and tools always show real stock. Changes reach the store websites within the hour.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">New</p><h3>Add an exception</h3></div>
+            <div><p class="eyebrow">Brands</p><h3>Brand rules</h3></div>
+          </div>
+          <div class="table-toolbar"><input id="bs-search" type="search" placeholder="Filter brands..." aria-label="Filter brands"></div>
+          <div id="bs-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
+        </section>
+        <section class="card">
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">New</p><h3>Add a style exception</h3></div>
           </div>
           <div class="card__body">
             <div class="form-row">
@@ -636,7 +643,7 @@
             <p><strong>Store Pricing Levels</strong> only matter when FDM4 sends no price for an item. The store's chosen level (L1, L2, L3) fills the gap from the price list instead of defaulting to full retail.</p>
             <p><strong>Sync Blocks</strong> freeze things so the hourly update leaves them alone. You can freeze a whole store, freeze only its prices (the store keeps getting new products and stock, but hand-set prices are never overwritten), or freeze single styles. Each freeze has an on and off switch in the list.</p>
             <p><strong>Product Mix</strong> controls which products a store carries. By default a store simply follows FDM4. Switch it to a curated list to take control: add styles, remove them, or open a style to trim which colors and sizes the store sells. Removing a product hides it and marks it out of stock. It is never deleted and comes back if you re-add the style.</p>
-            <p><strong>Fake Inventory</strong> handles goods we sell but do not stock ourselves, like boots from another maker. Those show as always in stock so customers can always order. This page manages the exceptions, one style at a time: force a style to show as always in stock, or force it to show the real warehouse count.</p>
+            <p><strong>Fake Inventory</strong> handles goods we sell but do not stock ourselves, like boots from another maker. Those show as always in stock so customers can always order. The page controls this at two levels. Brand rules decide whole brands: Arborwear and the stocked premium brands show real counts, everything else shows always in stock, and any brand can be flipped or reset to automatic. Style exceptions override the brand rule for a single style. Footwear, arborist gear, and tools show real stock when their brand has no rule.</p>
           </div>
         </section>
 

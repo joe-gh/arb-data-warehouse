@@ -726,3 +726,6 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 .hint:hover::after, .hint:focus-visible::after { opacity: 1; }
 .hint--left::after { left: auto; right: -0.4rem; transform: none; }
 @media (prefers-reduced-motion: reduce) { .hint::after { transition: none; } }
+
+/* Brand rule chips: the automatic default reads muted. */
+.chip.chip--muted { border-color: #cfd6d1; background: #f2f4f2; color: #6b756e; }
