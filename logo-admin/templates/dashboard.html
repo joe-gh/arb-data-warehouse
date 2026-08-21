@@ -31,6 +31,7 @@
           <button class="main-nav__item" type="button" data-view="colors">Logo Colors</button>
           <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section">Logo tools</p>
+          <button id="ownership-button" class="main-nav__item" type="button">Logo Sync Stores <span class="badge badge--writes">Writes</span><small>Turn warehouse logo sync on or off per store</small></button>
           <button id="audit-button" class="main-nav__item" type="button" title="Change history - who changed what, and when">Activity Log<small>Who changed what, and when</small></button>
           <a id="export-link" class="main-nav__item" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
           <button id="import-button" class="main-nav__item" type="button">Import Assignments <span class="badge badge--writes">Writes</span><small>Overwrites the assignments listed in the CSV</small></button>
@@ -311,7 +312,7 @@
 
       <aside id="ownership-warning" class="notice notice--warning" role="status" hidden>
         <span class="notice__icon" aria-hidden="true">!</span>
-        <div><strong>This store still runs on the legacy logo sheets.</strong> Your edits are saved safely here, but they will not reach the website until an administrator switches this store to the new logo system.</div>
+        <div><strong>Logo sync is off for this store.</strong> Your edits are saved safely here, but they will not reach the website until sync is turned on. <button id="ownership-warning-open" class="button button--secondary button--small" type="button">Manage logo sync stores</button></div>
       </aside>
 
       <section class="card grid-card" aria-labelledby="grid-title">
@@ -893,6 +894,19 @@
       <div class="audit-more-row"><button id="audit-more" class="button button--secondary" type="button" hidden>Load older entries</button></div>
     </div>
     <div class="dialog__footer"><span id="audit-count" class="muted"></span><button class="button button--primary dialog-close" type="button">Done</button></div>
+  </dialog>
+
+  <dialog id="ownership-dialog" class="dialog dialog--wide" aria-labelledby="ownership-title">
+    <div class="dialog__header">
+      <div><p class="eyebrow">Logo sync</p><h2 id="ownership-title">Logo sync stores</h2></div>
+      <button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button>
+    </div>
+    <div class="dialog__body stack">
+      <p class="muted">Stores with sync <strong>on</strong> get their product logos from this app - Sync pushes your edits to the website. Stores with sync <strong>off</strong> keep whatever logos they have today and refuse Sync. Turning a store on runs a safety check first, so no product can silently lose its logos.</p>
+      <div class="table-toolbar"><input id="ownership-filter" type="search" placeholder="Filter stores..." aria-label="Filter stores"></div>
+      <div id="ownership-list" class="table-wrap" aria-live="polite"><div class="grid-empty">Loading...</div></div>
+    </div>
+    <div class="dialog__footer"><span id="ownership-count" class="muted"></span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>
 
   <dialog id="sync-dialog" class="dialog" aria-labelledby="sync-title">

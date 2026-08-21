@@ -1053,6 +1053,148 @@ def product_link(
     }
 
 
+# ---- Logo sync ownership -------------------------------------------------
+# Which stores the warehouse is allowed to sync logos to. The gate itself
+# lives in WordPress (a network option read by ARB_Logo_Reconcile); these
+# endpoints let operators see and flip it from this app, with a mandatory
+# safety check so enabling a store can never silently wipe live logos.
+
+
+class OwnershipBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fdm4_store: str = Field(min_length=1, max_length=32)
+    owned: bool
+    # When enabling a store whose warehouse data does not cover every
+    # currently-logo'd style, the caller must acknowledge the exact count of
+    # styles that will lose logos. Prevents blind/scripted enables.
+    acknowledge_missing: int = Field(0, ge=0, le=100000)
+
+
+def _wp_admin_call(path: str, *, method: str = "GET", payload: Optional[dict] = None, timeout: Optional[int] = None) -> dict:
+    settings = get_settings()
+    base = settings.wp_sync_url.rsplit("/sync", 1)[0]
+    return wordpress_json_request(
+        f"{base}{path}",
+        settings.wp_sync_user,
+        settings.wp_sync_app_password,
+        method=method,
+        timeout=timeout or settings.wp_http_timeout,
+        payload=payload,
+    )
+
+
+def _warehouse_logo_styles(store: str) -> set:
+    with database.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT upper(btrim(product_style)) AS style
+              FROM logo.assignment
+             WHERE fdm4_store = %s AND active
+            """,
+            (store,),
+        )
+        return {row["style"] for row in cursor.fetchall() if row["style"]}
+
+
+def _ownership_preview(store: str) -> dict:
+    settings = get_settings()
+    wp = _wp_admin_call(
+        f"/logo-styles?{urlencode({'fdm4_store': store})}",
+        timeout=settings.wp_sync_timeout,
+    )
+    wp_styles = [dict(s) for s in (wp.get("styles") or []) if isinstance(s, dict)]
+    warehouse = _warehouse_logo_styles(store)
+    missing = [s for s in wp_styles if str(s.get("style", "")).upper() not in warehouse]
+    return {
+        "blog_id": int(wp.get("blog_id") or 0),
+        "wp_logo_styles": len(wp_styles),
+        "warehouse_styles": len(warehouse),
+        "covered": len(wp_styles) - len(missing),
+        "missing": missing,
+        "safe": not missing,
+    }
+
+
+@router.get("/logo-ownership")
+def logo_ownership(user: Dict[str, str] = Depends(require_user)):
+    """Every mapped store with whether this app may sync its logos."""
+    del user
+    try:
+        resp = _wp_admin_call("/ownership")
+    except WordPressRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {
+        "stores": resp.get("stores") or [],
+        "owned_blogs": resp.get("owned_blogs") or [],
+    }
+
+
+@router.get("/logo-ownership/preview")
+def logo_ownership_preview(
+    store: str = Query(..., min_length=1, max_length=32),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """Pre-enable safety check: styles that carry logos on the website today
+    but have no active warehouse rows - enabling sync would remove those."""
+    del user
+    try:
+        return _ownership_preview(store.strip())
+    except WordPressRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+@router.post("/logo-ownership")
+def set_logo_ownership(body: OwnershipBody, user: Dict[str, str] = Depends(require_csrf)):
+    store = body.fdm4_store.strip()
+    preview = None
+    if body.owned:
+        try:
+            preview = _ownership_preview(store)
+        except WordPressRequestError as exc:
+            raise HTTPException(status_code=502, detail=f"Safety check failed: {exc}") from None
+        if preview["missing"] and body.acknowledge_missing != len(preview["missing"]):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{len(preview['missing'])} style(s) on this store currently have logos the warehouse "
+                    "does not cover - enabling sync would remove them from the website. "
+                    "Import their sheets first, or acknowledge the removal to proceed."
+                ),
+            )
+    try:
+        resp = _wp_admin_call(
+            "/ownership",
+            method="POST",
+            payload={"fdm4_store": store, "owned": body.owned},
+        )
+    except WordPressRequestError as exc:
+        status = exc.status if 400 <= exc.status < 500 else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from None
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute(
+            """
+            INSERT INTO logo.audit_log (actor, action, fdm4_store, detail)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                user["user_login"],
+                "ownership_enabled" if body.owned else "ownership_disabled",
+                store,
+                json.dumps({
+                    "blog_id": resp.get("blog_id"),
+                    "acknowledged_missing": body.acknowledge_missing if body.owned else None,
+                    "missing_styles": [str(m.get("style", "")) for m in (preview or {}).get("missing", [])][:200],
+                }),
+            ),
+        )
+    return {
+        "ok": True,
+        "fdm4_store": store,
+        "blog_id": resp.get("blog_id"),
+        "owned": bool(resp.get("owned")),
+    }
+
+
 @router.get("/audit-log")
 def audit_log(
     store: Optional[str] = Query(None, max_length=100),

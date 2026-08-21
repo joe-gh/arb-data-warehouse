@@ -3434,6 +3434,112 @@
     if (el) el.textContent = String(bulkSelectedColors().length);
   }
 
+
+  // ----- Logo sync ownership (which stores this app may sync) -----
+  const ownershipState = { rows: [] };
+
+  async function openOwnershipDialog() {
+    openDialog($("#ownership-dialog"));
+    await loadOwnership();
+  }
+
+  async function loadOwnership() {
+    const box = $("#ownership-list");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
+    $("#ownership-count").textContent = "";
+    try {
+      await ensureStores();
+      const resp = await api("/api/logo-ownership");
+      ownershipState.rows = Array.isArray(resp.stores) ? resp.stores.slice() : [];
+      renderOwnership();
+    } catch (e) { renderErrorState(box, friendlyLoadError("the store list", e), loadOwnership); }
+  }
+
+  function renderOwnership() {
+    const box = $("#ownership-list");
+    const q = ($("#ownership-filter")?.value || "").trim().toLowerCase();
+    const rows = ownershipState.rows
+      .map((r) => ({ ...r, label: storeDisplayFor(r.fdm4_store) }))
+      .filter((r) => !q || `${r.fdm4_store} ${r.label}`.toLowerCase().includes(q))
+      .sort((a, b) => (Number(b.owned) - Number(a.owned)) || a.label.localeCompare(b.label));
+    const total = ownershipState.rows.length;
+    const on = ownershipState.rows.filter((r) => r.owned).length;
+    $("#ownership-count").textContent = total ? `${on} of ${total} stores sync their logos from this app` : "";
+    if (!rows.length) {
+      box.innerHTML = total ? '<div class="grid-empty">No stores match your filter.</div>' : '<div class="grid-empty">No mapped stores found.</div>';
+      return;
+    }
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>Logo sync</th><th></th></tr></thead><tbody>${rows.map((r) => `
+      <tr data-store="${escapeHtml(r.fdm4_store)}">
+        <td><strong>${escapeHtml(r.label)}</strong><br><code>${escapeHtml(r.fdm4_store)}</code></td>
+        <td>${r.owned ? '<span class="chip dark">On - synced from this app</span>' : '<span class="chip">Off - legacy sheets</span>'}</td>
+        <td class="name-actions">${r.owned
+          ? '<button class="button button--small button--ghost own-off" type="button">Turn off</button>'
+          : '<button class="button button--small button--primary own-on" type="button">Turn on...</button>'}</td>
+      </tr>`).join("")}</tbody></table>`;
+    $$(".own-on", box).forEach((b) => b.addEventListener("click", () => enableOwnership(b.closest("tr").dataset.store, b)));
+    $$(".own-off", box).forEach((b) => b.addEventListener("click", () => disableOwnership(b.closest("tr").dataset.store, b)));
+  }
+
+  async function enableOwnership(store, btn) {
+    const name = storeDisplayFor(store);
+    setBusy(btn, true, "Checking safety...");
+    let preview;
+    try {
+      preview = await api(`/api/logo-ownership/preview?${new URLSearchParams({ store })}`);
+    } catch (e) {
+      setBusy(btn, false);
+      toast(`Safety check failed - sync was NOT turned on. ${e.message}`, "error");
+      return;
+    }
+    setBusy(btn, false);
+    let ok;
+    let ack = 0;
+    if (preview.safe) {
+      ok = await confirmAction({
+        title: `Turn on logo sync for ${name}?`,
+        message: preview.wp_logo_styles
+          ? `Safety check passed: all ${preview.wp_logo_styles} styles that currently have logos on the website are covered by this app's data - nothing will be lost. From now on this app controls the store's logos; press Sync to push changes live.`
+          : `This store has no logos on the website yet, so nothing can be lost. From now on this app controls the store's logos; press Sync to push changes live.`,
+        actionLabel: "Turn on sync",
+        danger: false,
+      });
+    } else {
+      const missing = preview.missing.map((m) => text(m.style));
+      const shown = missing.slice(0, 10).join(", ") + (missing.length > 10 ? ` and ${missing.length - 10} more` : "");
+      ok = await confirmAction({
+        title: `${missing.length} style${missing.length === 1 ? "" : "s"} would lose logos`,
+        message: `${name} has ${preview.wp_logo_styles} styles with logos on the website, but ${missing.length} (${shown}) have no data in this app. Turning sync on removes their logos from the website on the next sync. Import this store's legacy sheets first (Logos menu) unless you really mean to remove them.`,
+        actionLabel: `Turn on anyway - remove ${missing.length}`,
+      });
+      ack = missing.length;
+    }
+    if (!ok) return;
+    setBusy(btn, true, "Turning on...");
+    try {
+      await api("/api/logo-ownership", { method: "POST", body: { fdm4_store: store, owned: true, acknowledge_missing: ack } });
+      toast(`Logo sync is ON for ${name}. Open the store and press Sync to push its logos live.`);
+      if (state.store === store && els.ownershipWarning) els.ownershipWarning.hidden = true;
+      await loadOwnership();
+    } catch (e) { setBusy(btn, false); toast(e.message, "error"); }
+  }
+
+  async function disableOwnership(store, btn) {
+    const name = storeDisplayFor(store);
+    const ok = await confirmAction({
+      title: `Turn off logo sync for ${name}?`,
+      message: `The website keeps the logos it has today, but this app can no longer sync changes to ${name} until sync is turned back on. Edits made here stay saved in the meantime.`,
+      actionLabel: "Turn off sync",
+    });
+    if (!ok) return;
+    setBusy(btn, true, "Turning off...");
+    try {
+      await api("/api/logo-ownership", { method: "POST", body: { fdm4_store: store, owned: false, acknowledge_missing: 0 } });
+      toast(`Logo sync is OFF for ${name}.`);
+      await loadOwnership();
+    } catch (e) { setBusy(btn, false); toast(e.message, "error"); }
+  }
+
   function wireEvents() {
     els.storeSearch.addEventListener("input", () => renderStoreOptions(els.storeSearch.value));
     els.storeSearch.addEventListener("focus", () => renderStoreOptions(els.storeSearch.value));
@@ -3528,6 +3634,9 @@
     $("#legacy-images-button").addEventListener("click", mirrorLegacyImages);
     $("#reports-button").addEventListener("click", () => { openDialog(els.reportsDialog); loadReports(); });
     els.reportFilters.addEventListener("submit", loadReports);
+    $("#ownership-button")?.addEventListener("click", openOwnershipDialog);
+    $("#ownership-warning-open")?.addEventListener("click", openOwnershipDialog);
+    $("#ownership-filter")?.addEventListener("input", () => renderOwnership());
     $("#audit-button").addEventListener("click", () => {
       populateAuditStores();
       openDialog(els.auditDialog);
