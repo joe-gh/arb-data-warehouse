@@ -909,7 +909,7 @@
             <input id="bulk-logo-scheme" type="hidden">
           </div>
           <div class="field combobox field--grow">
-            <label class="field__label" for="bulk-placement">Placement</label>
+            <label class="field__label" for="bulk-placement">Placement <span class="hint" tabindex="0" data-hint="Where on the garment the logo goes. This placement is written into every affected assignment.">?</span></label>
             <input id="bulk-placement" type="text" autocomplete="off" placeholder="Type or pick a placement..." aria-autocomplete="list" aria-controls="bulk-placement-options" aria-expanded="false">
             <div id="bulk-placement-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div>
           </div>
@@ -1011,7 +1011,7 @@
     <div class="dialog__body">
       <div class="form-row">
         <label class="field field--grow"><span class="field__label">Name</span><input id="pr-name" type="text" maxlength="200" required></label>
-        <label class="field field--xs"><span class="field__label">Priority</span><input id="pr-priority" type="number" min="1" max="100000" value="100"><span class="field__help">Lowest number runs first - first match wins</span></label>
+        <label class="field field--xs"><span class="field__label">Priority <span class="hint" tabindex="0" data-hint="Rules are checked lowest number first, and the first matching rule wins unless it is combinable.">?</span></span><input id="pr-priority" type="number" min="1" max="100000" value="100"></label>
         <label class="field--checkbox"><input id="pr-stackable" type="checkbox"> Combinable with later rules</label>
       </div>
       <fieldset class="pr-fieldset">
@@ -1052,7 +1052,7 @@
             <option value="margin_over_cost">Margin over cost (×)</option>
           </select></label>
           <label class="field field--sm" id="pr-value-wrap"><span class="field__label" id="pr-value-label">Value</span><input id="pr-effect-value" type="number" step="0.0001"></label>
-          <label class="field field--md" id="pr-basis-wrap"><span class="field__label">Based on</span><select id="pr-basis">
+          <label class="field field--md" id="pr-basis-wrap"><span class="field__label">Based on <span class="hint" tabindex="0" data-hint="What the change starts from. MSRP basis with a value of -20 means MSRP minus 20 percent. Items missing the chosen level are skipped.">?</span></span><select id="pr-basis">
             <option value="current">Current price</option>
             <option value="msrp">MSRP</option>
             <option value="corp1">Corp1</option>
@@ -1061,19 +1061,19 @@
             <option value="wholesale">Wholesale</option>
             <option value="employee">Employee</option>
             <option value="base">Base</option>
-          </select><span class="field__help">What the percent or flat change starts from. "MSRP minus 20%" = MSRP basis with −20. Items missing the chosen level are skipped.</span></label>
-          <label class="field field--md" id="pr-level-wrap" hidden><span class="field__label">Price level</span><select id="pr-level-key"><option value="">Choose a level...</option><option value="msrp">MSRP</option><option value="corp1">Corp1</option><option value="corp2">Corp2</option><option value="corp3">Corp3</option><option value="wholesale">Wholesale</option><option value="employee">Employee</option><option value="base">Base</option></select><span class="field__help">Prices each matched item at ITS OWN value for this FDM4 price-list column (e.g. Corp2 = that item's Corp2 contract price). No math - pure FDM4 data. Items missing the level keep their current price. Only used by the "Use FDM4 price level" effect.</span></label>
-          <label class="field field--md"><span class="field__label">Round the result</span><select id="pr-rounding">
+          </select></label>
+          <label class="field field--md" id="pr-level-wrap" hidden><span class="field__label">Price level <span class="hint" tabindex="0" data-hint="Prices each matched item at its own value for this FDM4 price-list column, e.g. Corp2 means that item&#39;s Corp2 contract price. No math, pure FDM4 data. Items missing the level keep their current price.">?</span></span><select id="pr-level-key"><option value="">Choose a level...</option><option value="msrp">MSRP</option><option value="corp1">Corp1</option><option value="corp2">Corp2</option><option value="corp3">Corp3</option><option value="wholesale">Wholesale</option><option value="employee">Employee</option><option value="base">Base</option></select></label>
+          <label class="field field--md"><span class="field__label">Round the result <span class="hint" tabindex="0" data-hint="Gives the result a retail ending, e.g. $29.32 becomes $28.99. Without it, results are exact.">?</span></span><select id="pr-rounding">
             <option value="none">Exact - no rounding</option>
             <option value="99">End in .99</option>
             <option value="95">End in .95</option>
             <option value="00">Whole dollars (.00)</option>
-          </select><span class="field__help">Applied to this rule's result, e.g. $29.32 becomes $28.99.</span></label>
-          <label class="field field--sm"><span class="field__label">Never below ($, optional)</span><input id="pr-floor" type="number" step="0.0001" min="0"></label>
-          <label class="field field--sm"><span class="field__label">Never above ($, optional)</span><input id="pr-ceiling" type="number" step="0.0001" min="0"></label>
+          </select></label>
+          <label class="field field--sm"><span class="field__label">Never below $ <span class="hint" tabindex="0" data-hint="Optional. The result never drops below this price. If bounds conflict, never below wins.">?</span></span><input id="pr-floor" type="number" step="0.0001" min="0"></label>
+          <label class="field field--sm"><span class="field__label">Never above $ <span class="hint" tabindex="0" data-hint="Optional. The result never rises above this price.">?</span></span><input id="pr-ceiling" type="number" step="0.0001" min="0"></label>
           <label class="field--checkbox" title="Clamp the result to each item's own MSRP"><input id="pr-cap-msrp" type="checkbox"> Never above MSRP</label>
-          <label class="field field--sm field--date"><span class="field__label">Starts (optional)</span><input id="pr-from" type="date"><span class="field__help">From the start of this day</span></label>
-          <label class="field field--sm field--date"><span class="field__label">Ends (optional)</span><input id="pr-until" type="date"><span class="field__help">Through the end of this day</span></label>
+          <label class="field field--sm field--date"><span class="field__label">Starts <span class="hint hint--left" tabindex="0" data-hint="Optional. The rule begins at the start of this day.">?</span></span><input id="pr-from" type="date"></label>
+          <label class="field field--sm field--date"><span class="field__label">Ends <span class="hint hint--left" tabindex="0" data-hint="Optional. The rule runs through the end of this day.">?</span></span><input id="pr-until" type="date"></label>
         </div>
         <span id="pr-effect-error" class="field-error" role="alert" hidden></span>
         <p class="muted pr-effect-note">Percent example: −15 lowers by 15%. Without a rounding choice, results are exact (up to 4 decimal places). If bounds conflict, "never below" wins.</p>

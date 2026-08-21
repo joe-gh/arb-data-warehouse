@@ -717,3 +717,12 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 .pr-exceptions summary { cursor: pointer; list-style-position: inside; padding: .2rem 0; }
 .pr-exceptions[open] summary { margin-bottom: .5rem; }
 .chip.chip--frozen-warn { border-color: #8a5a2f; background: #f4ecdc; color: #6f4a20; font-size: .62rem; vertical-align: middle; }
+
+/* Hint icon: label-level "?" with a hover/focus tooltip. Replaces in-column
+   help paragraphs whose varying heights wrecked form-row alignment. */
+.hint { display: inline-flex; align-items: center; justify-content: center; width: 1rem; height: 1rem; margin-left: .3rem; border-radius: 50%; background: #dfe7e1; color: #43514a; font-size: .64rem; font-weight: 800; cursor: help; position: relative; vertical-align: -8%; letter-spacing: 0; }
+.hint:hover, .hint:focus-visible { background: var(--forest-700); color: #fff; outline: none; }
+.hint::after { content: attr(data-hint); position: absolute; top: calc(100% + .5rem); left: 50%; transform: translateX(-50%); width: max-content; max-width: 19rem; background: #26312b; color: #f2f5f2; font-size: .73rem; font-weight: 450; line-height: 1.5; letter-spacing: .01em; text-transform: none; padding: .55rem .75rem; border-radius: 8px; box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 200; white-space: normal; text-align: left; }
+.hint:hover::after, .hint:focus-visible::after { opacity: 1; }
+.hint--left::after { left: auto; right: -0.4rem; transform: none; }
+@media (prefers-reduced-motion: reduce) { .hint::after { transition: none; } }
