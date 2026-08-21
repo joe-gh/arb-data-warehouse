@@ -1076,17 +1076,20 @@
 
   async function searchDesigns(query) {
     const sequence = ++state.requestSequence.designs;
-    showEmptyOption(els.designOptions, query.trim() ? "Searching..." : "Loading this store's designs...");
+    showEmptyOption(els.designOptions, query.trim() ? "Searching..." : "Loading this store's logos...");
     setOptionsOpen(els.designSearch, els.designOptions, true);
     try {
       const params = new URLSearchParams({ q: query.trim() });
       if (state.store) params.set("store", state.store);
+      // Browsing lists only this store's own logos; typing searches every
+      // design, so a brand-new logo can still be added on purpose.
+      if (!query.trim()) params.set("used_only", "true");
       const payload = await api(`/api/designs?${params}`);
       if (sequence !== state.requestSequence.designs) return;
       const designs = envelope(payload, "designs");
       els.designOptions.replaceChildren();
       if (!designs.length) {
-        showEmptyOption(els.designOptions, "No matching FDM4 designs");
+        showEmptyOption(els.designOptions, query.trim() ? "No matching FDM4 designs" : "This store has no logos yet - type to search all designs");
         return;
       }
       designs.forEach((design) => {
