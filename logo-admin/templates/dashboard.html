@@ -35,12 +35,12 @@
           <button class="main-nav__item" type="button" data-view="colors">Logo Colors</button>
           <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section">Logo tools</p>
-          <button id="ownership-button" class="main-nav__item" type="button">Logo Sync Stores <span class="badge badge--writes">Writes</span><small>Turn warehouse logo sync on or off per store</small></button>
+          <button id="ownership-button" class="main-nav__item" type="button">Logo Sync Stores <span class="badge badge--writes">Makes changes</span><small>Turn warehouse logo sync on or off per store</small></button>
           <button id="audit-button" class="main-nav__item" type="button" title="Change history - who changed what, and when">Activity Log<small>Who changed what, and when</small></button>
           <a id="export-link" class="main-nav__item" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
-          <button id="import-button" class="main-nav__item" type="button">Import Assignments <span class="badge badge--writes">Writes</span><small>Overwrites the assignments listed in the CSV</small></button>
+          <button id="import-button" class="main-nav__item" type="button">Import Assignments <span class="badge badge--writes">Makes changes</span><small>Overwrites the assignments listed in the CSV</small></button>
           <button id="reports-button" class="main-nav__item" type="button">Import Punch List<small>Review unresolved rows (read-only)</small></button>
-          <button id="legacy-import-button" class="main-nav__item" type="button">Import Legacy Sheets <span class="badge badge--writes">Writes</span><small>Updates every store included in the export file</small></button>
+          <button id="legacy-import-button" class="main-nav__item" type="button">Import Legacy Sheets <span class="badge badge--writes">Makes changes</span><small>Updates every store included in the export file</small></button>
           <button id="legacy-images-button" class="main-nav__item" type="button">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
         </div>
       </div>
@@ -814,18 +814,18 @@
           <label class="field"><span class="field__label">Color scheme</span><select id="assignment-scheme" required><option value="">Choose a design first</option></select><span class="field__help">The artwork's FDM4 colorway (e.g. WH, BKRD) - which thread-color version of the design gets stitched. Comes from the design's art files in FDM4.</span></label>
           <label class="field"><span class="field__label">Logo code</span><input id="assignment-logo-code" autocapitalize="characters" spellcheck="false" placeholder="e.g. C43" required><span class="field__help">The short code operators use for this logo (e.g. C43). Auto-filled from the selected design and must match its FDM4 art filenames.</span></label>
           <div class="field combobox">
-            <span class="field__label">Placement</span>
+            <label class="field__label" for="assignment-location">Placement</label>
             <input id="assignment-location" placeholder="e.g. Left Chest" autocomplete="off" aria-autocomplete="list" aria-controls="placement-vocab-options" aria-expanded="false" required>
             <div id="placement-vocab-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div>
             <span class="field__help">Where on the garment this logo is applied. Reuse an existing placement from the list when possible - new spellings become new placements.</span>
           </div>
           <label class="field"><span class="field__label">Name override</span><input id="assignment-name-override" type="text" maxlength="200" placeholder="Shopper-facing name (optional)"><span class="field__help">When set, this exact name is shown on the site for this logo row - overriding the design's display name. Leave blank to use the normal name resolution.</span></label>
-          <label class="field"><span class="field__label">Background class</span><select id="assignment-background"><option value="">None</option></select><span class="field__help">Legacy sheet "background" tag (e.g. lb-white). Reference only - which garment colors get this logo is set by the color you're editing, not this field. Leave on None unless the legacy sheet used one.</span></label>
+          <label class="field"><span class="field__label">Background tag</span><select id="assignment-background"><option value="">None</option></select><span class="field__help">A tag carried over from the old logo sheets (e.g. lb-white). Reference only - which garment colors get this logo is set by the color you're editing, not this field. Leave on None unless the old sheet used one.</span></label>
         </section>
 
         <section class="form-section" aria-labelledby="rules-heading">
           <h3 id="rules-heading">3. Rules & pricing</h3>
-          <label class="field"><span class="field__label">Cost override</span><span class="currency-input"><span>$</span><input id="assignment-cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Automatic"></span><span class="field__help">Leave blank to use the warehouse-derived price.</span></label>
+          <label class="field"><span class="field__label">Cost override</span><span class="currency-input"><span>$</span><input id="assignment-cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Automatic"></span><span class="field__help">Leave blank to use the automatic price.</span></label>
           <label class="field"><span class="field__label">Sort order</span><input id="assignment-sort" type="number" step="1" value="0"><span class="field__help">Display-order tie-breaker; leave 0 unless you need to reorder.</span></label>
           <label class="check-row"><input id="assignment-optional" type="checkbox"><span><strong>Optional logo</strong><small>Customer may omit this logo.</small></span></label>
           <label class="check-row"><input id="assignment-active" type="checkbox" checked><span><strong>Active</strong><small>Show on the website after the next sync.</small></span></label>
@@ -835,7 +835,7 @@
           <h3 id="image-heading">4. Storefront image</h3>
           <div class="image-fields">
             <label class="field"><span class="field__label">Public image URL</span><input id="assignment-image-url" type="url" placeholder="https://..."><span class="field__help">The image shoppers see for this logo. Keep the seeded media URL, or upload a file - uploads publish to the media server automatically within a minute.</span></label>
-            <div class="upload-control"><span class="field__label">Upload image</span><label class="button button--secondary" for="assignment-upload">Choose image</label><input id="assignment-upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden><small id="upload-status" class="muted">PNG, JPEG, WebP, or GIF</small></div>
+            <div class="upload-control"><span class="field__label">Upload image</span><button type="button" id="assignment-upload-button" class="button button--secondary">Choose image</button><input id="assignment-upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden><small id="upload-status" class="muted">PNG, JPEG, WebP, or GIF</small></div>
           </div>
         </section>
       </div>
@@ -858,7 +858,7 @@
       </div>
       <div class="dialog__body">
         <label class="switch-row">
-          <span><strong>Store logos enabled</strong><small>Projects assigned logos onto this store's products.</small></span>
+          <span><strong>Store logos enabled</strong><small>Shows this store's assigned logos on its products after the next sync.</small></span>
           <span class="switch"><input id="setting-enabled" type="checkbox"><span></span></span>
         </label>
         <label class="switch-row">
@@ -966,8 +966,8 @@
     <form id="copy-form" method="dialog">
       <div class="dialog__header"><div><p class="eyebrow">Bulk helper</p><h2 id="copy-title">Copy style configuration</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
       <div class="dialog__body stack">
-        <p>Copy assignments from another style in <strong id="copy-store"></strong> into the current style. Matching garment color codes and positions are used.</p>
-        <div class="field combobox"><label class="field__label" for="copy-style-search">Source style</label><input id="copy-style-search" type="search" autocomplete="off" required aria-autocomplete="list" aria-controls="copy-style-options"><input id="copy-source-style" type="hidden"><div id="copy-style-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></div>
+        <p>Copy logos from another style in <strong id="copy-store"></strong> onto the style you have open. Logos copy over wherever both styles share the same garment color and logo position.</p>
+        <div class="field combobox"><label class="field__label" for="copy-style-search">Source style</label><input id="copy-style-search" type="search" autocomplete="off" placeholder="Type a style number or name..." aria-autocomplete="list" aria-controls="copy-style-options"><input id="copy-source-style" type="hidden"><div id="copy-style-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></div>
         <label class="check-row"><input id="copy-overwrite" type="checkbox"><span><strong>Overwrite occupied positions</strong><small>Otherwise existing assignments are preserved.</small></span></label>
       </div>
       <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button class="button button--primary" type="submit">Copy configuration</button></div></div>
@@ -979,9 +979,9 @@
       <div class="dialog__header"><div><p class="eyebrow">Legacy migration</p><h2 id="legacy-title">Import legacy logo sheets</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
       <div class="dialog__body stack">
         <p class="muted">Upload the logo-sheet export file (.ndjson) from your administrator. Running it twice is safe: existing rows are updated, not duplicated; rows that can't be matched go to the Import Punch List; and edits made in this app are preserved unless you choose to overwrite them.</p>
-        <label class="field"><span class="field__label">NDJSON export</span><input id="legacy-file" type="file" accept=".ndjson,.jsonl,.json,text/plain,application/x-ndjson" required></label>
+        <label class="field"><span class="field__label">Export file (.ndjson) from your administrator</span><input id="legacy-file" type="file" accept=".ndjson,.jsonl,.json,text/plain,application/x-ndjson" required></label>
         <label class="check-row"><input id="legacy-overwrite" type="checkbox"><span><strong>Overwrite manual edits</strong><small>Default preserves assignments edited in this app since the last import.</small></span></label>
-        <div id="legacy-results"></div>
+        <div id="legacy-results" role="status"></div>
       </div>
       <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button class="button button--primary" type="submit">Import sheets</button></div></div>
     </form>
@@ -989,7 +989,7 @@
 
   <dialog id="import-dialog" class="dialog" aria-labelledby="import-title">
     <div class="dialog__header"><div><p class="eyebrow">CSV import</p><h2 id="import-title">Import results</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
-    <div id="import-results" class="dialog__body"></div>
+    <div id="import-results" role="status" class="dialog__body"></div>
     <div class="dialog__footer"><span></span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>
 
@@ -1030,8 +1030,8 @@
           <label class="field field--sm" id="pr-value-wrap"><span class="field__label" id="pr-value-label">Value</span><input id="pr-effect-value" type="number" step="0.0001"></label>
           <label class="field field--md" id="pr-level-wrap" hidden><span class="field__label">Price level</span><select id="pr-level-key"><option value="">Choose a level...</option><option value="msrp">MSRP</option><option value="corp1">Corp1</option><option value="corp2">Corp2</option><option value="corp3">Corp3</option><option value="wholesale">Wholesale</option><option value="employee">Employee</option><option value="base">Base</option></select><span class="field__help">Prices each matched item at ITS OWN value for this FDM4 price-list column (e.g. Corp2 = that item's Corp2 contract price). No math - pure FDM4 data. Items missing the level keep their current price. Only used by the "Use FDM4 price level" effect.</span></label>
           <label class="field field--sm"><span class="field__label">Price floor ($, optional)</span><input id="pr-floor" type="number" step="0.0001" min="0"></label>
-          <label class="field field--sm"><span class="field__label">Starts (optional)</span><input id="pr-from" type="date"><span class="field__help">UTC, inclusive</span></label>
-          <label class="field field--sm"><span class="field__label">Ends (optional)</span><input id="pr-until" type="date"><span class="field__help">UTC, inclusive</span></label>
+          <label class="field field--sm field--date"><span class="field__label">Starts (optional)</span><input id="pr-from" type="date"><span class="field__help">From the start of this day</span></label>
+          <label class="field field--sm field--date"><span class="field__label">Ends (optional)</span><input id="pr-until" type="date"><span class="field__help">Through the end of this day</span></label>
         </div>
         <span id="pr-effect-error" class="field-error" role="alert" hidden></span>
         <p class="muted pr-effect-note">Exact values only - results are never rounded (up to 4 decimal places). Percent example: −15 lowers by 15%.</p>
@@ -1064,11 +1064,12 @@
     <div class="dialog__body">
       <form id="report-filters" class="filter-bar">
         <label class="field combobox combobox--wide"><span class="field__label">Store</span><input id="report-store-search" type="search" placeholder="All stores" autocomplete="off" aria-autocomplete="list" aria-controls="report-store-options" aria-expanded="false"><input type="hidden" id="report-store"><div id="report-store-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></label>
-        <label class="field"><span class="field__label">Reason</span><select id="report-reason"><option value="">All reasons</option><option value="no_color_code">No color code</option><option value="no_design">No design</option><option value="no_art">No art</option><option value="no_store">No store</option><option value="no_style">No style</option><option value="ambiguous_design">Ambiguous design</option><option value="ambiguous_color">Ambiguous color</option><option value="orphaned_companion">Companion without primary</option><option value="store_mismatch">Store mismatch</option><option value="duplicate_row">Duplicate import row</option><option value="invalid_csv">Invalid CSV</option><option value="invalid_value">Invalid value</option><option value="invalid_boolean">Invalid boolean</option><option value="invalid_integer">Invalid integer</option><option value="invalid_cost">Invalid cost</option><option value="invalid_image_url">Invalid image URL</option><option value="image_import_failed">Image import failed</option><option value="database_error">Database error</option></select></label>
+        <label class="field"><span class="field__label">Reason</span><select id="report-reason"><option value="">All reasons</option><option value="no_color_code">No color code</option><option value="no_design">No design</option><option value="no_art">No art</option><option value="no_store">No store</option><option value="no_style">No style</option><option value="ambiguous_design">Ambiguous design</option><option value="ambiguous_color">Ambiguous color</option><option value="orphaned_companion">Add-on logo missing its main logo</option><option value="store_mismatch">Store mismatch</option><option value="duplicate_row">Duplicate import row</option><option value="invalid_csv">Invalid CSV</option><option value="invalid_value">Invalid value</option><option value="invalid_boolean">Invalid boolean</option><option value="invalid_integer">Invalid integer</option><option value="invalid_cost">Invalid cost</option><option value="invalid_image_url">Invalid image URL</option><option value="image_import_failed">Image import failed</option><option value="database_error">Database error</option></select></label>
         <button class="button button--secondary" type="submit">Apply filters</button>
       </form>
       <input id="report-quick-filter" type="search" placeholder="Quick filter loaded rows (style, color, logo, reason, detail)..." class="quick-filter" hidden>
       <div id="report-results" class="table-wrap" aria-live="polite"></div>
+      <div class="dialog__footer-links"><a id="report-export" class="button button--secondary button--small" href="/api/import-report/export" title="Download every unresolved row as CSV, past the 500 shown here">Export CSV</a></div>
     </div>
     <div class="dialog__footer"><span id="report-count" class="muted"></span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>
@@ -1083,7 +1084,7 @@
         <label class="field combobox combobox--wide"><span class="field__label">Store</span><input id="audit-store-search" type="search" placeholder="All stores" autocomplete="off" aria-autocomplete="list" aria-controls="audit-store-options" aria-expanded="false"><input type="hidden" id="audit-store"><div id="audit-store-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></label>
         <label class="field"><span class="field__label">Style</span><input id="audit-style" placeholder="Any style"></label>
         <label class="field"><span class="field__label">User</span><input id="audit-actor" placeholder="Anyone"></label>
-        <label class="field"><span class="field__label">Action</span><select id="audit-action"><option value="">All actions</option><option value="assignment_created">Logo added</option><option value="assignment_updated">Logo updated</option><option value="assignment_deleted">Logo deleted</option><option value="store_settings_created">Store settings created</option><option value="store_settings_updated">Store settings updated</option><option value="sync_requested">Sync to WordPress</option></select></label>
+        <label class="field"><span class="field__label">Action</span><select id="audit-action"><option value="">All actions</option><option value="assignment_created">Logo added</option><option value="assignment_updated">Logo updated</option><option value="assignment_deleted">Logo deleted</option><option value="store_settings_created">Store settings created</option><option value="store_settings_updated">Store settings updated</option><option value="sync_requested">Sync to website</option></select></label>
         <button class="button button--secondary" type="submit">Apply filters</button>
         <a id="audit-export" class="button button--secondary" href="/api/audit-log/export" title="Download the filtered history as CSV">Export CSV</a>
       </form>

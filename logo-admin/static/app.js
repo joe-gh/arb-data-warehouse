@@ -14,7 +14,7 @@
     editing: null,
     selectedDesign: null,
     designDetail: null,
-    requestSequence: { styles: 0, designs: 0, designDetail: 0 },
+    requestSequence: { styles: 0, designs: 0, designDetail: 0, upload: 0 },
     vocab: null,
     audit: { beforeId: null, filters: {} },
   };
@@ -232,8 +232,7 @@
     if (retryFn) {
       const retry = document.createElement("button");
       retry.type = "button";
-      retry.className = "button button--ghost button--small";
-      retry.style.marginTop = "8px";
+      retry.className = "button button--ghost button--small retry-button";
       retry.textContent = "Try again";
       retry.addEventListener("click", () => retryFn());
       wrap.append(retry);
@@ -306,8 +305,12 @@
     list.setAttribute("role", "listbox");
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        event.preventDefault();
-        setOptionsOpen(input, list, false);
+        // Swallow Escape only while the list is open; otherwise let the
+        // surrounding dialog receive it and close normally.
+        if (!list.hidden) {
+          event.preventDefault();
+          setOptionsOpen(input, list, false);
+        }
         return;
       }
       const options = $$("[role='option']:not(.option--empty)", list);
@@ -955,6 +958,9 @@
 
   function resetAssignmentForm() {
     state.requestSequence.designDetail += 1;
+    state.requestSequence.upload = (state.requestSequence.upload || 0) + 1;
+    document.getElementById("scheme-empty-note")?.remove();
+    if (els.designPreview) els.designPreview.className = "preview-frame";
     els.assignmentForm.reset();
     els.designId.value = "";
     els.selectedDesign.hidden = true;
@@ -1005,6 +1011,10 @@
         logo_code: assignment.logo_code,
         description: assignment.description,
       }, assignment);
+      // Focus a side-effect-free field: the design search auto-opens its
+      // dropdown on focus, and the default (the header close button) makes a
+      // stray Enter close the editor.
+      window.setTimeout(() => els.scheme?.focus(), 30);
     } else {
       window.setTimeout(() => els.designSearch.focus(), 30);
     }
@@ -1326,7 +1336,7 @@
       closeDialog(els.assignmentDialog);
       const copied = Number(result.copied ?? result.created ?? result.applied ?? 0);
       const skipped = Number(result.skipped_without_primary ?? 0);
-      toast(`Applied to ${copied} color${copied === 1 ? "" : "s"}${skipped ? `; skipped ${skipped} without a primary logo` : ""}.`);
+      toast(`Applied to ${copied} color${copied === 1 ? "" : "s"}${skipped ? `; skipped ${skipped} add-on logo${skipped === 1 ? "" : "s"} whose main logo was missing` : ""}.`);
       await refreshStyle();
     } catch (error) {
       toast(error.message, "error");
@@ -1338,9 +1348,14 @@
     if (!file) return;
     const form = new FormData();
     form.append("file", file);
+    state.requestSequence.upload = (state.requestSequence.upload || 0) + 1;
+    const sequence = state.requestSequence.upload;
+    const saveButton = $("button[type='submit']", els.assignmentForm);
+    if (saveButton) setBusy(saveButton, true, "Uploading image...");
     els.uploadStatus.innerHTML = '<span class="spinner" aria-hidden="true"></span> Uploading...';
     try {
       const result = await api("/api/upload", { method: "POST", body: form });
+      if (sequence !== state.requestSequence.upload) return; // dialog was reused
       const url = text(result.image_url ?? result.url).trim();
       if (!url) throw new Error("The upload succeeded but returned no image URL.");
       els.imageUrl.value = url;
@@ -1348,8 +1363,11 @@
       updateDesignPreview(url);
       toast("Image uploaded. Save the assignment to keep the URL.");
     } catch (error) {
+      if (sequence !== state.requestSequence.upload) return;
       els.uploadStatus.textContent = "Upload failed";
       toast(error.message, "error");
+    } finally {
+      if (sequence === state.requestSequence.upload && saveButton) setBusy(saveButton, false);
     }
   }
 
@@ -1358,6 +1376,8 @@
     els.storeSettingsContext.textContent = storeDisplayFor(state.store);
     els.settingEnabled.checked = true;
     els.settingAllowsNone.checked = false;
+    els.settingEnabled.disabled = true;
+    els.settingAllowsNone.disabled = true;
     openDialog(els.storeSettingsDialog);
     const button = $("button[type='submit']", els.settingsForm);
     setBusy(button, true, "Loading...");
@@ -1366,6 +1386,8 @@
       const settings = payload.settings || {};
       els.settingEnabled.checked = bool(settings.enabled, true);
       els.settingAllowsNone.checked = bool(settings.allows_none, false);
+      els.settingEnabled.disabled = false;
+      els.settingAllowsNone.disabled = false;
     } catch (error) {
       closeDialog(els.storeSettingsDialog);
       toast(error.message, "error");
@@ -1397,9 +1419,9 @@
   function openCopyDialog() {
     els.copyForm.reset();
     els.copySource.value = "";
+    setOptionsOpen(els.copySearch, els.copyOptions, false);
     els.copyStore.textContent = storeDisplayFor(state.store);
     openDialog(els.copyDialog);
-    searchStyles("", "copy");
     window.setTimeout(() => els.copySearch.focus(), 30);
   }
 
@@ -1437,7 +1459,20 @@
     }
   }
 
+  let importRunning = false;
+
+  function setImportDialogTitle(eyebrow, title) {
+    const dlg = els.importDialog;
+    if (!dlg) return;
+    const eb = dlg.querySelector(".dialog__header .eyebrow");
+    const h = dlg.querySelector(".dialog__header h2");
+    if (eb) eb.textContent = eyebrow;
+    if (h) h.textContent = title;
+  }
+
   async function importCsv() {
+    if (importRunning) { toast("An import is already running - wait for it to finish.", "error"); return; }
+    if (mirrorRunning) { toast("Image mirroring is running - wait for it to finish before importing.", "error"); return; }
     const file = els.importFile.files?.[0];
     if (!file) return;
     const accepted = await confirmAction({
@@ -1455,8 +1490,10 @@
     const form = new FormData();
     form.append("file", file);
     if (state.store) form.append("store", state.store);
+    setImportDialogTitle("CSV import", "Import results");
     els.importResults.innerHTML = '<p><span class="spinner" aria-hidden="true"></span> Validating and importing CSV...</p>';
     openDialog(els.importDialog);
+    importRunning = true;
     try {
       const result = await api("/api/import", { method: "POST", body: form });
       renderResult(els.importResults, result, "Import completed");
@@ -1511,6 +1548,7 @@
       openDialog(els.importDialog);
       return;
     }
+    if (importRunning) { toast("A CSV import is running - wait for it to finish first.", "error"); return; }
     const accepted = await confirmAction({
       title: "Mirror legacy images for ALL stores?",
       message: "This is a global migration, not a page. It copies every legacy sheet image into the warehouse and rewrites the image link on every store's logo assignments - tens of thousands of rows across all stores at once, no matter which store is selected. It is safe to re-run (already-mirrored images are skipped), and storefronts only change when a store is next synced.",
@@ -1519,6 +1557,7 @@
     });
     if (!accepted) return;
     mirrorRunning = true;
+    setImportDialogTitle("Legacy migration", "Mirror legacy images");
     els.importResults.innerHTML = '<p><span class="spinner" aria-hidden="true"></span> Mirroring legacy images into the warehouse...</p>';
     openDialog(els.importDialog);
     const totals = { processed: 0, downloaded: 0, reused: 0, repointed_assignments: 0, failed: 0 };
@@ -1532,14 +1571,14 @@
           totals[key] += Number(result[key] || 0);
         });
         const nowRemaining = Number(result.remaining || 0);
-        els.importResults.innerHTML = `<p><span class="spinner" aria-hidden="true"></span> Mirrored ${totals.downloaded + totals.reused} URL(s)... ${nowRemaining} remaining</p>`;
+        els.importResults.innerHTML = `<p><span class="spinner" aria-hidden="true"></span> Mirrored ${totals.downloaded + totals.reused} image(s)... ${nowRemaining} remaining</p>`;
         if (!nowRemaining) { remaining = 0; break; }
         // No forward progress (every remaining URL failed) - stop and report.
         if (remaining !== -1 && nowRemaining >= remaining) { remaining = nowRemaining; break; }
         remaining = nowRemaining;
       }
       const leftover = Math.max(remaining, 0);
-      renderResult(els.importResults, { ...totals, remaining: leftover, misses: totals.failed },
+      renderResult(els.importResults, { ...totals, remaining: leftover },
         leftover ? `Legacy image mirror stopped early - ${leftover} image(s) remaining, run it again to continue` : "Legacy image mirror finished");
       toast(leftover ? `Image mirroring stopped early - ${leftover} remaining. Run it again to continue.` : "Legacy image mirroring finished.");
       if (state.style) await refreshStyle();
@@ -1585,6 +1624,14 @@
     if (els.reportStore.value) params.set("store", els.reportStore.value);
     if (els.reportReason.value) params.set("reason", els.reportReason.value);
     els.reportResults.innerHTML = '<div class="grid-loading"><span class="spinner" aria-hidden="true"></span> Loading punch list...</div>';
+    els.reportCount.textContent = "Loading...";
+    const exportLink = $("#report-export");
+    if (exportLink) {
+      const ep = new URLSearchParams();
+      if (els.reportStore.value) ep.set("store", els.reportStore.value);
+      if (els.reportReason.value) ep.set("reason", els.reportReason.value);
+      exportLink.href = `/api/import-report/export${ep.size ? `?${ep}` : ""}`;
+    }
     try {
       const payload = await api(`/api/import-report${params.size ? `?${params}` : ""}`);
       const reports = envelope(payload, "reports").length ? envelope(payload, "reports") : envelope(payload, "rows");
@@ -1616,7 +1663,9 @@
     assignment_deleted: "Logo deleted",
     store_settings_created: "Store settings created",
     store_settings_updated: "Store settings updated",
-    sync_requested: "Sync to WordPress",
+    sync_requested: "Sync to website",
+    ownership_enabled: "Logo sync turned on",
+    ownership_disabled: "Logo sync turned off",
   };
 
   function auditValue(value) {
@@ -1657,8 +1706,8 @@
   function auditTarget(entry) {
     const parts = [];
     if (entry.garment_color_code) parts.push(entry.garment_color_code);
-    if (entry.option_row) parts.push(`row ${entry.option_row}`);
-    if (entry.position) parts.push(`pos ${entry.position}`);
+    if (entry.option_row) parts.push(`choice ${entry.option_row}`);
+    if (entry.position) parts.push(`position ${entry.position}`);
     return parts.join(" · ") || "-";
   }
 
@@ -3448,6 +3497,8 @@
   const ownershipState = { rows: [] };
 
   async function openOwnershipDialog() {
+    const filter = $("#ownership-filter");
+    if (filter) filter.value = "";
     openDialog($("#ownership-dialog"));
     await loadOwnership();
   }
@@ -3481,7 +3532,7 @@
     box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>Logo sync</th><th></th></tr></thead><tbody>${rows.map((r) => `
       <tr data-store="${escapeHtml(r.fdm4_store)}">
         <td><strong>${escapeHtml(r.label)}</strong><br><code>${escapeHtml(r.fdm4_store)}</code></td>
-        <td>${r.owned ? '<span class="chip dark">On - synced from this app</span>' : '<span class="chip">Off - legacy sheets</span>'}</td>
+        <td>${r.owned ? '<span class="chip dark">On - synced from this app</span>' : '<span class="chip">Off - still on the old logo sheets</span>'}</td>
         <td class="name-actions">${r.owned
           ? '<button class="button button--small button--ghost own-off" type="button">Turn off</button>'
           : '<button class="button button--small button--primary own-on" type="button">Turn on...</button>'}</td>
@@ -3623,6 +3674,7 @@
     bindListKeyboard(els.designSearch, els.designOptions);
     els.scheme.addEventListener("change", () => updateDesignPreview());
     els.background.addEventListener("change", () => updateDesignPreview());
+    $("#assignment-upload-button")?.addEventListener("click", () => els.upload.click());
     els.upload.addEventListener("change", uploadImage);
     els.softRemove.addEventListener("click", () => removeAssignment(false));
     els.hardRemove.addEventListener("click", () => removeAssignment(true));
@@ -3649,6 +3701,15 @@
     $("#ownership-filter")?.addEventListener("input", () => renderOwnership());
     $("#audit-button").addEventListener("click", () => {
       populateAuditStores();
+      // Re-sync the visible filters to what is actually applied, so typed but
+      // never-applied text can't disagree with the rows and the CSV export.
+      const f = state.audit.filters;
+      els.auditStyle.value = f.style || "";
+      els.auditActor.value = f.actor || "";
+      els.auditAction.value = f.action || "";
+      els.auditStore.value = f.store || "";
+      const auditSearch = $("#audit-store-search");
+      if (auditSearch) auditSearch.value = f.store ? `${storeDisplayFor(f.store)} (${f.store})` : "";
       openDialog(els.auditDialog);
       loadAudit(true);
     });
@@ -3670,9 +3731,18 @@
     $("#sync-store-button").addEventListener("click", () => sync("store"));
 
     $$(".dialog-close").forEach((button) => button.addEventListener("click", () => closeDialog(button.closest("dialog"))));
-    $$('dialog').forEach((dialog) => dialog.addEventListener("click", (event) => {
-      if (event.target === dialog && dialog !== els.confirmDialog) closeDialog(dialog);
-    }));
+    const backdropCloseExempt = new Set(["confirm-dialog", "assignment-dialog", "pr-dialog", "mix-style-dialog", "legacy-dialog", "copy-dialog"]);
+    $$('dialog').forEach((dialog) => {
+      // Close on backdrop click only when both the press and the release land
+      // on the backdrop - a text-selection drag that ends outside an input
+      // must not throw away a filled-in form.
+      let pressedOnBackdrop = false;
+      dialog.addEventListener("mousedown", (event) => { pressedOnBackdrop = event.target === dialog; });
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog && pressedOnBackdrop && !backdropCloseExempt.has(dialog.id)) closeDialog(dialog);
+        pressedOnBackdrop = false;
+      });
+    });
     document.addEventListener("click", (event) => {
       [[els.storeSearch, els.storeOptions], [els.styleSearch, els.styleOptions], [els.designSearch, els.designOptions], [els.location, els.placementVocabOptions], [els.copySearch, els.copyOptions]].forEach(([input, list]) => {
         if (!input.contains(event.target) && !list.contains(event.target)) setOptionsOpen(input, list, false);
@@ -3809,7 +3879,7 @@
         <td>${escapeHtml(text(r.note))}</td>
         <td>${escapeHtml(formatDate(r.updated_at))}</td>
         <td><button class="button button--ghost button--small tier-remove" type="button" data-store="${escapeHtml(r.fdm4_store)}">Remove</button></td>
-      </tr>`).join("")}</tbody></table>${tierListTruncated ? '<p class="muted" style="padding:.4rem .2rem 0">Showing the first 500 stores - use the filter to narrow the list.</p>' : ""}`;
+      </tr>`).join("")}</tbody></table>${tierListTruncated ? '<p class="muted table-footnote">Showing the first 500 stores - use the filter to narrow the list.</p>' : ""}`;
     $$(".tier-remove", box).forEach((b) => b.addEventListener("click", () => removeTier(b.dataset.store, b)));
     $$("th[data-tsort]", box).forEach((th) => {
       const toggle = () => {
@@ -4759,6 +4829,8 @@
     const save = $("#mix-style-save");
     save.disabled = true;
     save.textContent = "Save style";
+    const allBox = $("#mix-style-all-colors");
+    if (allBox) { allBox.checked = false; allBox.disabled = true; }
     mixState.editing = null;
     openDialog(dialog);
     try {
@@ -4773,7 +4845,7 @@
       };
       Object.entries(loadedExcludes).forEach(([color, sizes]) => { work.excludes[color] = new Set(Array.isArray(sizes) ? sizes : []); });
       mixState.editing = { style: styleCode, available, loadedColors, loadedExcludes, work, confirmed: false, openColors: new Set(Object.keys(loadedExcludes)) };
-      $("#mix-style-all-colors").checked = work.all;
+      if (allBox) { allBox.checked = work.all; allBox.disabled = false; }
       renderMixStyleColors();
       syncMixEditorState();
     } catch (e) {
@@ -4785,7 +4857,7 @@
     const ed = mixState.editing;
     if (!ed) return;
     const body = $("#mix-style-colors");
-    if (!ed.available.length) { body.innerHTML = '<div class="grid-empty">No color channels found for this style.</div>'; return; }
+    if (!ed.available.length) { body.innerHTML = '<div class="grid-empty">No colors found for this style.</div>'; return; }
     body.innerHTML = ed.available.map((c) => {
       const color = text(c.color);
       const on = ed.work.all || ed.work.colors.has(color);
@@ -5099,7 +5171,12 @@
     const catWrap = $("#pr-cat-chips"); catWrap.replaceChildren();
     prState.chips.categories.forEach((c) => prChip("categories", c, catWrap));
     const tiers = $("#pr-tiers"); tiers.replaceChildren();
-    (prState.dims?.tiers || []).forEach((t) => {
+    // If the tier list failed to load, fall back to the rule's own tiers so
+    // saving can never silently strip its tier targeting.
+    const tierNames = (prState.dims?.tiers && prState.dims.tiers.length)
+      ? prState.dims.tiers
+      : [...(rule?.store_tiers || [])];
+    tierNames.forEach((t) => {
       const lab = document.createElement("label");
       lab.className = "chip";
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = t;
@@ -5118,11 +5195,15 @@
       listName: "brands", items: () => prState.dims?.brands || [] });
     attachChipPicker({ search: "#pr-cat-input", options: "#pr-cat-options", chips: "#pr-cat-chips",
       listName: "categories", items: () => prState.dims?.categories || [] });
+    ["#pr-store-search", "#pr-brand-input", "#pr-cat-input"].forEach((sel) => { const el = $(sel); if (el) el.value = ""; });
     prUpdateTargetSummary();
     prEffectTypeChanged();
     prEffectError("");
-    $("#pr-dialog-status").textContent = rule?.active ? "Rule is ACTIVE - saving a material change deactivates it until re-previewed." : "";
-    openDialog($("#pr-dialog"));
+    $("#pr-dialog-status").textContent = rule?.active ? "Rule is ON - changing its targets, effect, or dates turns it off until you preview again." : "";
+    const dlg = $("#pr-dialog");
+    openDialog(dlg);
+    const body = $(".dialog__body", dlg);
+    if (body) body.scrollTop = 0;
   }
 
   function prEffectError(msg) {
@@ -5180,6 +5261,10 @@
     if (body.floor_price !== null && (Number.isNaN(body.floor_price) || body.floor_price < 0 || body.floor_price > 9999999)) {
       prEffectError("Price floor must be between $0 and $9,999,999.");
       toast("Price floor must be between $0 and $9,999,999.", "error");
+      return;
+    }
+    if (body.effective_from && body.effective_until && body.effective_until < body.effective_from) {
+      toast("The end date is before the start date.", "error");
       return;
     }
     setBusy(btn, true, "Saving...");
@@ -5372,7 +5457,12 @@
     });
   });
   document.addEventListener("click", (e) => { if (!e.target.closest(".main-nav__group")) closeNavMenus(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeNavMenus(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const openGroup = navGroups.find((g) => { const m = g.querySelector(".main-nav__menu"); return m && !m.hidden; });
+    closeNavMenus();
+    if (openGroup) openGroup.querySelector(".main-nav__trigger")?.focus();
+  });
   attachStoreCombobox({ search: "#tier-store-search", hidden: "#tier-store-code", options: "#tier-store-options" });
   $("#tier-form").addEventListener("submit", saveTier);
 

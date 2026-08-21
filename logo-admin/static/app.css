@@ -296,7 +296,7 @@ select {
   background-size: 1rem;
   padding-right: 2.4rem;
 }
-select:focus-visible { border-color: var(--accent, #2e7d5b); box-shadow: 0 0 0 3px rgba(46, 125, 91, .18); }
+select:focus-visible { border-color: var(--forest-700); box-shadow: 0 0 0 3px rgba(46, 125, 91, .18); }
 
 /* Flex ONLY when open - a bare display:flex on .dialog overrides the
    browser's built-in dialog:not([open]){display:none} and leaks every
@@ -317,9 +317,6 @@ select:focus-visible { border-color: var(--accent, #2e7d5b); box-shadow: 0 0 0 3
 .mini-toggle input { width: auto; min-height: 0; margin: 0; accent-color: var(--forest-800, #2e5d46); }
 
 /* Header data-tools dropdown */
-.menu { position: relative; }
-.menu__chevron { width: .9rem; height: .9rem; margin-left: .25rem; vertical-align: -.15rem; fill: currentColor; }
-.menu__panel { position: absolute; z-index: 70; top: calc(100% + .5rem); right: 0; width: 19.5rem; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--white); color: var(--ink, #1c2b23); box-shadow: 0 12px 35px rgb(20 40 31 / 22%); }
 
 /* Small text+icon action beside a field label (store settings gear) */
 .label-action { display: inline-flex; align-items: center; gap: .3rem; padding: .1rem .35rem; border: 0; border-radius: .35rem; color: var(--ink-soft); background: transparent; font-size: .74rem; font-weight: 600; cursor: pointer; }
@@ -569,7 +566,6 @@ button.chip:hover, label.chip:hover { border-color: var(--forest-700); }
 .choice-row { display: flex; align-items: center; gap: .5rem; }
 .choice-row select { width: auto; min-width: 14rem; }
 .choice-indent { margin-left: 1.4rem; }
-.select-multi { width: auto; min-width: 220px; }
 .select-hint { display: block; margin-top: .25rem; font-size: .72rem; }
 .picked-note { margin-top: .25rem; font-size: .8rem; }
 .inline-row { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
@@ -690,3 +686,30 @@ th[data-tsort]:focus-visible, th[data-msort]:focus-visible, #color-table th[data
 .choice-row .choice-option { flex: 0 0 auto; }
 .bulk-preview-scroll { max-height: 340px; overflow-y: auto; }
 #bulk-apply-panel .picked-note { margin-top: .2rem; }
+
+/* Secondary-surface sweep fixes. */
+/* File inputs must not inherit the text-field chrome (the radio bug class). */
+input[type="file"] { width: auto; min-height: 0; padding: 0; border: 0; background: none; }
+input[type="file"]:hover, input[type="file"]:focus { border: 0; box-shadow: none; }
+/* The copy dialog is short; give its body room so the style dropdown is not
+   clipped to a sliver by the body's own scrollbox. */
+#copy-dialog .dialog__body { min-height: 26rem; }
+/* Utility classes replacing CSP-stripped inline styles. */
+.table-footnote { padding: .4rem .2rem 0; }
+.retry-button { margin-top: 8px; }
+/* Compact inline name editor should not inflate to full text-field height. */
+.name-input { min-height: 2.1rem; }
+/* Interactive chips get the house focus ring like every other control. */
+button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
+/* Mix editor color rows wrap instead of forcing horizontal scroll. */
+.mix-color__head { white-space: normal; }
+/* Activity Log filter bar has six controls, not the punch list's three. */
+#audit-filters { display: flex; flex-wrap: wrap; gap: .8rem; align-items: flex-end; }
+#audit-filters .field { flex: 1 1 11rem; min-width: 10rem; }
+#audit-filters .combobox--wide { flex: 1.4 1 14rem; }
+#audit-filters .button { flex: 0 0 auto; }
+/* Date fields keep enough room for the native picker. */
+.field--date { flex: 0 0 10.5rem; }
+.field--date input[type="date"] { min-width: 10rem; padding-inline: .5rem; }
+/* Punch list footer link row. */
+.dialog__footer-links { padding: .6rem 0 0; display: flex; justify-content: flex-end; }

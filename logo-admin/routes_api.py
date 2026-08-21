@@ -1023,6 +1023,74 @@ def import_report(
     )
 
 
+@router.get("/import-report/export")
+def export_import_report(
+    store: Optional[str] = Query(None, max_length=100),
+    reason: Optional[str] = Query(None, max_length=100),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """CSV export of the import punch list, honoring the same filters. The
+    dialog shows at most 500 rows; this is how the full backlog is reached."""
+    del user
+    clauses = []
+    params: List[Any] = []
+    if store:
+        clauses.append("fdm4_store = %s")
+        params.append(_clean(store, "store"))
+    if reason:
+        clauses.append("reason = %s")
+        params.append(_clean(reason, "reason"))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    columns = [
+        "id", "imported_at", "fdm4_store", "product_style", "product_color",
+        "logo_code", "reason", "detail",
+    ]
+    select_sql = f"""
+        SELECT id, imported_at, fdm4_store, product_style, product_color,
+               logo_code, reason, detail
+          FROM logo.import_report
+          {where}
+         ORDER BY imported_at DESC, id DESC
+         LIMIT 100000
+    """
+
+    def chunks() -> Iterator[str]:
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(columns)
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+        with database.streaming_cursor(batch_size=500) as cursor:
+            cursor.execute(select_sql, tuple(params))
+            while rows := cursor.fetchmany(500):
+                for db_row in rows:
+                    row = dict(db_row)
+                    writer.writerow([
+                        row["id"],
+                        row["imported_at"].isoformat() if row["imported_at"] is not None else "",
+                        _csv_safe_text(row["fdm4_store"]),
+                        _csv_safe_text(row["product_style"]),
+                        _csv_safe_text(row["product_color"]),
+                        _csv_safe_text(row["logo_code"]),
+                        _csv_safe_text(row["reason"]),
+                        _csv_safe_text(row["detail"]),
+                    ])
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+
+    filename_parts = ["import-punch-list"]
+    if store:
+        filename_parts.append(re.sub(r"[^A-Za-z0-9._-]", "_", store))
+    filename = "-".join(filename_parts) + ".csv"
+    return StreamingResponse(
+        chunks(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/product-link")
 def product_link(
     store: str = Query(..., min_length=1, max_length=100),
