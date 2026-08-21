@@ -88,57 +88,64 @@
           <h1>Warehouse Operations</h1>
           <p class="muted">Manage each store's logos, prices, and product lineup. Changes publish to the store websites automatically every hour.</p>
         </div>
-        <div class="dashboard__cards">
-          <button class="dash-card" type="button" data-view="logo">
-            <span class="dash-card__eyebrow">Logos</span>
-            <span class="dash-card__title">Logo Configuration</span>
-            <span class="dash-card__desc">Assign logos to products by store, color, and position, then sync to WordPress.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="names">
-            <span class="dash-card__eyebrow">Logos</span>
-            <span class="dash-card__title">Logo Names</span>
-            <span class="dash-card__desc">Edit the name shoppers see for each logo, or refresh it from FDM4's description.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="colors">
-            <span class="dash-card__eyebrow">Logos</span>
-            <span class="dash-card__title">Logo Colors</span>
-            <span class="dash-card__desc">Mark garment colors light or dark so Bulk Apply picks the black or white version of the logo.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="pricing">
-            <span class="dash-card__eyebrow">Store</span>
-            <span class="dash-card__title">Store Pricing Levels</span>
-            <span class="dash-card__desc">Choose which backup price list a store uses when FDM4 sends no price for an item.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="prices">
-            <span class="dash-card__eyebrow">Store</span>
-            <span class="dash-card__title">Price Rules</span>
-            <span class="dash-card__desc">Create targeted price adjustments by store, tier, brand, category, or style - previewed before they go live.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="blocks">
-            <span class="dash-card__eyebrow">Store</span>
-            <span class="dash-card__title">Sync Blocks</span>
-            <span class="dash-card__desc">Freeze whole stores, just their prices, or specific products so the hourly update leaves them exactly as they are.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="mix">
-            <span class="dash-card__eyebrow">Store</span>
-            <span class="dash-card__title">Product Mix</span>
-            <span class="dash-card__desc">Control exactly which products each store carries - or let FDM4 decide.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="stock">
-            <span class="dash-card__eyebrow">Store</span>
-            <span class="dash-card__title">Fake Inventory</span>
-            <span class="dash-card__desc">Make specific styles always show as in stock (third-party goods we can always order), or force real stock counts.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="help">
-            <span class="dash-card__eyebrow">Guide</span>
-            <span class="dash-card__title">Help</span>
-            <span class="dash-card__desc">How everything works, in plain language: each tool, how changes reach the websites, and what to do in common situations.</span>
-          </button>
-          <button class="dash-card" type="button" data-view="health">
-            <span class="dash-card__eyebrow">System</span>
-            <span class="dash-card__title">Health</span>
-            <span class="dash-card__desc">Check that data pulls and store updates are running normally.</span>
-          </button>
+        <div class="dashboard__section">
+          <div class="dash-section-head"><h2>Logos</h2><p class="muted">Which logos go on which garments, and what shoppers see. Logo changes go live when you press Sync on a store.</p></div>
+          <div class="dashboard__cards">
+            <button class="dash-card" type="button" data-view="logo">
+              <span class="dash-card__title">Logo Configuration</span>
+              <span class="dash-card__desc">Assign logos to products by store, color, and position, then sync to the store website.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="names">
+              <span class="dash-card__title">Logo Names</span>
+              <span class="dash-card__desc">Edit the name shoppers see for each logo, or refresh it from FDM4's description.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="colors">
+              <span class="dash-card__title">Logo Colors</span>
+              <span class="dash-card__desc">Mark garment colors light or dark so Bulk Apply picks the black or white version of the logo.</span>
+            </button>
+            <button class="dash-card" type="button" id="dash-ownership">
+              <span class="dash-card__title">Logo Sync Stores</span>
+              <span class="dash-card__desc">Turn warehouse logo sync on or off per store, with a safety check so no product loses its logos.</span>
+            </button>
+          </div>
+        </div>
+        <div class="dashboard__section">
+          <div class="dash-section-head"><h2>Store operations</h2><p class="muted">Prices, product lineups, freezes, and stock behavior. Changes reach the store websites within the hour, automatically.</p></div>
+          <div class="dashboard__cards">
+            <button class="dash-card" type="button" data-view="pricing">
+              <span class="dash-card__title">Store Pricing Levels</span>
+              <span class="dash-card__desc">Choose which backup price list a store uses when FDM4 sends no price for an item.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="prices">
+              <span class="dash-card__title">Price Rules</span>
+              <span class="dash-card__desc">Create targeted price adjustments by store, tier, brand, category, or style - previewed before they go live.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="blocks">
+              <span class="dash-card__title">Sync Blocks</span>
+              <span class="dash-card__desc">Freeze whole stores, just their prices, or specific products so the hourly update leaves them exactly as they are.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="mix">
+              <span class="dash-card__title">Product Mix</span>
+              <span class="dash-card__desc">Control exactly which products each store carries - or let FDM4 decide.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="stock">
+              <span class="dash-card__title">Fake Inventory</span>
+              <span class="dash-card__desc">Make specific styles always show as in stock (third-party goods we can always order), or force real stock counts.</span>
+            </button>
+          </div>
+        </div>
+        <div class="dashboard__section">
+          <div class="dash-section-head"><h2>Status and help</h2><p class="muted">Check that everything is running, and learn how it all works.</p></div>
+          <div class="dashboard__cards">
+            <button class="dash-card" type="button" data-view="health">
+              <span class="dash-card__title">Health</span>
+              <span class="dash-card__desc">Check that data pulls and store updates are running normally.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="help">
+              <span class="dash-card__title">Help</span>
+              <span class="dash-card__desc">How everything works, in plain language: each tool, how changes reach the websites, and what to do in common situations.</span>
+            </button>
+          </div>
         </div>
       </div>
     </section>

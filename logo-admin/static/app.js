@@ -3635,6 +3635,7 @@
     $("#reports-button").addEventListener("click", () => { openDialog(els.reportsDialog); loadReports(); });
     els.reportFilters.addEventListener("submit", loadReports);
     $("#ownership-button")?.addEventListener("click", openOwnershipDialog);
+    $("#dash-ownership")?.addEventListener("click", openOwnershipDialog);
     $("#ownership-warning-open")?.addEventListener("click", openOwnershipDialog);
     $("#ownership-filter")?.addEventListener("input", () => renderOwnership());
     $("#audit-button").addEventListener("click", () => {

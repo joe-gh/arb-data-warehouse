@@ -675,3 +675,9 @@ th[data-tsort]:focus-visible, th[data-msort]:focus-visible, #color-table th[data
 .help-qa details[open] summary { border-bottom: 1px solid #e7ece8; }
 .help-qa details ol, .help-qa details ul { margin: .6rem 0 .8rem; padding-left: 2rem; display: grid; gap: .35rem; font-size: .84rem; max-width: 62ch; }
 @media (max-width: 700px) { .flow-branches { grid-template-columns: 1fr; } }
+
+/* Dashboard sections: tools grouped by what they cover. */
+.dashboard__section { margin-bottom: 2rem; }
+.dash-section-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; margin-bottom: .8rem; border-bottom: 1px solid #e2e8e3; padding-bottom: .45rem; }
+.dash-section-head h2 { margin: 0; font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--forest-700); }
+.dash-section-head p { margin: 0; font-size: .8rem; }
