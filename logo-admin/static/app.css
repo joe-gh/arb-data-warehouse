@@ -712,3 +712,8 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 .field--date input[type="date"] { min-width: 10rem; padding-inline: .5rem; }
 /* Punch list footer link row. */
 .dialog__footer-links { padding: .6rem 0 0; display: flex; justify-content: flex-end; }
+
+/* Price rules v2: exceptions and frozen-store warnings. */
+.pr-exceptions summary { cursor: pointer; list-style-position: inside; padding: .2rem 0; }
+.pr-exceptions[open] summary { margin-bottom: .5rem; }
+.chip.chip--frozen-warn { border-color: #8a5a2f; background: #f4ecdc; color: #6f4a20; font-size: .62rem; vertical-align: middle; }

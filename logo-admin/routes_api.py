@@ -1688,10 +1688,18 @@ class PriceRuleBody(BaseModel):
     styles: List[str] = []
     brands: List[str] = []
     categories: List[str] = []
+    excl_stores: List[str] = []
+    excl_styles: List[str] = []
+    excl_brands: List[str] = []
+    excl_categories: List[str] = []
     effect_type: str
     effect_value: Optional[Decimal] = None
     price_level_key: Optional[str] = None
+    basis: str = Field(default="current", max_length=16)
+    rounding: str = Field(default="none", max_length=8)
     floor_price: Optional[Decimal] = None
+    ceiling_price: Optional[Decimal] = None
+    cap_at_msrp: bool = False
     effective_from: Optional[str] = None    # YYYY-MM-DD or empty
     effective_until: Optional[str] = None
     note: str = Field(default="", max_length=2000)
@@ -1738,15 +1746,24 @@ def price_rules(user: Dict[str, str] = Depends(require_user)):
                    COALESCE(stores, '{}') AS stores, COALESCE(store_tiers, '{}') AS store_tiers,
                    COALESCE(styles, '{}') AS styles, COALESCE(brands, '{}') AS brands,
                    COALESCE(categories, '{}') AS categories,
-                   effect_type, effect_value, price_level_key, floor_price,
+                   COALESCE(excl_stores, '{}') AS excl_stores, COALESCE(excl_styles, '{}') AS excl_styles,
+                   COALESCE(excl_brands, '{}') AS excl_brands, COALESCE(excl_categories, '{}') AS excl_categories,
+                   effect_type, effect_value, price_level_key, basis, rounding,
+                   floor_price, ceiling_price, cap_at_msrp,
                    effective_from, effective_until, note, updated_at, updated_by,
                    last_previewed_at
               FROM woo.price_rule ORDER BY priority, rule_id
             """
         )
         rules = [dict(r) for r in cursor.fetchall()]
+        # Stores whose prices the sync will not touch (whole-store freezes of
+        # either scope) - rules targeting them have no storefront effect.
+        cursor.execute(
+            "SELECT DISTINCT fdm4_store FROM woo.sync_exclusion WHERE active AND style_code = ''")
+        frozen = [r["fdm4_store"] for r in cursor.fetchall()]
     return {"rules": rules, "effect_types": list(PRICE_EFFECT_TYPES),
-            "price_level_keys": list(PRICE_LEVEL_KEYS)}
+            "price_level_keys": list(PRICE_LEVEL_KEYS),
+            "frozen_stores": frozen}
 
 
 @router.get("/price-rules/dimensions")
@@ -1772,8 +1789,10 @@ MAX_RULE_VALUE = Decimal("9999999")
 # server-side counterpart of "preview required before activating".
 MATERIAL_RULE_FIELDS = (
     "priority", "stackable", "stores", "store_tiers", "styles", "brands",
-    "categories", "effect_type", "effect_value", "price_level_key",
-    "floor_price", "effective_from", "effective_until",
+    "categories", "excl_stores", "excl_styles", "excl_brands",
+    "excl_categories", "effect_type", "effect_value", "price_level_key",
+    "basis", "rounding", "floor_price", "ceiling_price", "cap_at_msrp",
+    "effective_from", "effective_until",
 )
 
 
@@ -1783,7 +1802,7 @@ def _rule_material_changed(old, new) -> bool:
         if isinstance(a, list) or isinstance(b, list):
             if set(a or []) != set(b or []):
                 return True
-        elif field in ("effect_value", "floor_price"):
+        elif field in ("effect_value", "floor_price", "ceiling_price"):
             if (a is None) != (b is None):
                 return True
             if a is not None and Decimal(a) != Decimal(b):
@@ -1813,6 +1832,19 @@ def save_price_rule(body: PriceRuleBody, user: Dict[str, str] = Depends(require_
             raise HTTPException(status_code=400, detail="percent must be above -100 and at most 1000")
     if body.floor_price is not None and (body.floor_price < 0 or body.floor_price > MAX_RULE_VALUE):
         raise HTTPException(status_code=400, detail="floor_price must be between 0 and 9,999,999")
+    if body.ceiling_price is not None and (body.ceiling_price < 0 or body.ceiling_price > MAX_RULE_VALUE):
+        raise HTTPException(status_code=400, detail="ceiling_price must be between 0 and 9,999,999")
+    if (body.floor_price is not None and body.ceiling_price is not None
+            and body.ceiling_price < body.floor_price):
+        raise HTTPException(status_code=400, detail="The never-above price is below the never-below price")
+    basis = (body.basis or "current").strip().lower()
+    if body.effect_type not in ("percent", "flat"):
+        basis = "current"
+    if basis != "current" and basis not in PRICE_LEVEL_KEYS:
+        raise HTTPException(status_code=400, detail="Unknown price basis")
+    rounding = (body.rounding or "none").strip().lower()
+    if rounding not in ("none", "99", "95", "00"):
+        raise HTTPException(status_code=400, detail="Unknown rounding choice")
     frm = _parse_rule_date(body.effective_from, "effective_from")
     until = _parse_rule_date(body.effective_until, "effective_until")
     if frm and until and until < frm:
@@ -1827,10 +1859,18 @@ def save_price_rule(body: PriceRuleBody, user: Dict[str, str] = Depends(require_
         "styles": _clean_list(body.styles, upper=True, field="styles") or None,
         "brands": _clean_list(body.brands, field="brands") or None,
         "categories": _clean_list(body.categories, field="categories") or None,
+        "excl_stores": _clean_list(body.excl_stores, upper=True, field="excl_stores") or None,
+        "excl_styles": _clean_list(body.excl_styles, upper=True, field="excl_styles") or None,
+        "excl_brands": _clean_list(body.excl_brands, field="excl_brands") or None,
+        "excl_categories": _clean_list(body.excl_categories, field="excl_categories") or None,
         "effect_type": body.effect_type,
         "effect_value": body.effect_value,
         "price_level_key": body.price_level_key if body.effect_type == "price_level" else None,
+        "basis": basis,
+        "rounding": rounding,
         "floor_price": body.floor_price,
+        "ceiling_price": body.ceiling_price,
+        "cap_at_msrp": bool(body.cap_at_msrp),
         "effective_from": frm,
         "effective_until": until,
         "note": body.note.strip(),
@@ -1857,8 +1897,11 @@ def save_price_rule(body: PriceRuleBody, user: Dict[str, str] = Depends(require_
                     name=%(name)s, active=%(active)s, priority=%(priority)s, stackable=%(stackable)s,
                     stores=%(stores)s, store_tiers=%(store_tiers)s, styles=%(styles)s,
                     brands=%(brands)s, categories=%(categories)s,
+                    excl_stores=%(excl_stores)s, excl_styles=%(excl_styles)s,
+                    excl_brands=%(excl_brands)s, excl_categories=%(excl_categories)s,
                     effect_type=%(effect_type)s, effect_value=%(effect_value)s,
-                    price_level_key=%(price_level_key)s, floor_price=%(floor_price)s,
+                    price_level_key=%(price_level_key)s, basis=%(basis)s, rounding=%(rounding)s,
+                    floor_price=%(floor_price)s, ceiling_price=%(ceiling_price)s, cap_at_msrp=%(cap_at_msrp)s,
                     effective_from=%(effective_from)s, effective_until=%(effective_until)s,
                     last_previewed_at=CASE WHEN %(material)s THEN NULL ELSE last_previewed_at END,
                     note=%(note)s, updated_at=now(), updated_by=%(actor)s
@@ -1873,12 +1916,14 @@ def save_price_rule(body: PriceRuleBody, user: Dict[str, str] = Depends(require_
             cursor.execute(
                 """
                 INSERT INTO woo.price_rule (name, active, priority, stackable, stores, store_tiers,
-                    styles, brands, categories, effect_type, effect_value, price_level_key,
-                    floor_price, effective_from, effective_until, note, updated_by)
+                    styles, brands, categories, excl_stores, excl_styles, excl_brands, excl_categories,
+                    effect_type, effect_value, price_level_key, basis, rounding,
+                    floor_price, ceiling_price, cap_at_msrp, effective_from, effective_until, note, updated_by)
                 VALUES (%(name)s, false, %(priority)s, %(stackable)s, %(stores)s, %(store_tiers)s,
-                    %(styles)s, %(brands)s, %(categories)s, %(effect_type)s, %(effect_value)s,
-                    %(price_level_key)s, %(floor_price)s, %(effective_from)s, %(effective_until)s,
-                    %(note)s, %(actor)s)
+                    %(styles)s, %(brands)s, %(categories)s, %(excl_stores)s, %(excl_styles)s,
+                    %(excl_brands)s, %(excl_categories)s, %(effect_type)s, %(effect_value)s,
+                    %(price_level_key)s, %(basis)s, %(rounding)s, %(floor_price)s, %(ceiling_price)s,
+                    %(cap_at_msrp)s, %(effective_from)s, %(effective_until)s, %(note)s, %(actor)s)
                 RETURNING rule_id, active
                 """,
                 {**values, "actor": user["user_login"]},
@@ -1962,6 +2007,18 @@ def preview_price_rule(body: PriceRulePreviewBody, user: Dict[str, str] = Depend
         if rule["categories"]:
             where.append("s.category = ANY(%(cats)s)")
             params["cats"] = rule["categories"]
+        if rule.get("excl_stores"):
+            where.append("NOT (s.fdm4_store = ANY(%(xstores)s))")
+            params["xstores"] = rule["excl_stores"]
+        if rule.get("excl_styles"):
+            where.append("NOT (upper(btrim(s.style_code)) = ANY(%(xstyles)s))")
+            params["xstyles"] = rule["excl_styles"]
+        if rule.get("excl_brands"):
+            where.append("NOT (s.brand = ANY(%(xbrands)s))")
+            params["xbrands"] = rule["excl_brands"]
+        if rule.get("excl_categories"):
+            where.append("NOT (s.category = ANY(%(xcats)s))")
+            params["xcats"] = rule["excl_categories"]
         cursor.execute("SET LOCAL statement_timeout = '120s'")
         cursor.execute(
             f"""
@@ -2045,6 +2102,13 @@ def preview_price_rule(body: PriceRulePreviewBody, user: Dict[str, str] = Depend
             params,
         )
         per_store = [dict(r) for r in cursor.fetchall()]
+        # Price-frozen stores among the affected: the hourly sync will not
+        # change their live prices, so the rule has no visible effect there.
+        cursor.execute(
+            "SELECT DISTINCT fdm4_store FROM woo.sync_exclusion WHERE active AND style_code = ''")
+        frozen_all = {r["fdm4_store"] for r in cursor.fetchall()}
+        affected_stores = {p["fdm4_store"] for p in per_store} | set(rule["stores"] or [])
+        frozen_targets = sorted(affected_stores & frozen_all)
     summary["truncated"] = summary.get("candidates", 0) is not None and summary["candidates"] >= 50001
     # Record the preview server-side - this is what /toggle checks before
     # allowing activation. Guarded by updated_at so a rule edited while the
@@ -2062,7 +2126,58 @@ def preview_price_rule(body: PriceRulePreviewBody, user: Dict[str, str] = Depend
     return {"ok": True, "rule_id": body.rule_id, "summary": summary,
             "store_count": summary.get("stores"),
             "per_store": per_store, "sample": sample,
+            "frozen_targets": frozen_targets,
             "preview_recorded": preview_recorded}
+
+
+@router.get("/price-rules/check")
+def check_price(
+    store: str = Query(..., min_length=1, max_length=100),
+    style: str = Query(..., min_length=1, max_length=100),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """The composed answer: what will this style cost on this store with every
+    active rule, priority, and stacking applied - the same math as the sync."""
+    del user
+    store_v = _clean(store, "store").upper()
+    style_v = _clean(style, "style").upper()
+    with database.cursor() as cursor:
+        cursor.execute("SET LOCAL statement_timeout = '30s'")
+        cursor.execute(
+            """
+            SELECT s.sku, s.color, s.size,
+                   COALESCE(s.base_price, s.price) AS base_price,
+                   s.price AS current_price,
+                   (s.price_levels ->> 'msrp')::numeric AS msrp,
+                   rp.final_price, rp.applied_rule_ids
+              FROM woo.store_product_state s
+              CROSS JOIN LATERAL woo.eval_price_rules(
+                  s.fdm4_store, s.style_code, s.brand, s.category,
+                  COALESCE(s.base_price, s.price), s.price_levels, s.def_cost,
+                  current_date, NULL, NULL) rp
+             WHERE s.fdm4_store = %s AND upper(btrim(s.style_code)) = %s
+               AND s.is_active AND s.kind = 'variation' AND s.price IS NOT NULL
+             ORDER BY s.color, s.size
+             LIMIT 500
+            """,
+            (store_v, style_v),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        rule_ids = sorted({rid for r in rows for rid in (r.get("applied_rule_ids") or [])})
+        names = {}
+        if rule_ids:
+            cursor.execute(
+                "SELECT rule_id, name FROM woo.price_rule WHERE rule_id = ANY(%s)",
+                (rule_ids,),
+            )
+            names = {r["rule_id"]: r["name"] for r in cursor.fetchall()}
+        cursor.execute(
+            "SELECT 1 FROM woo.sync_exclusion WHERE active AND style_code = '' AND fdm4_store = %s LIMIT 1",
+            (store_v,),
+        )
+        frozen = cursor.fetchone() is not None
+    return {"store": store_v, "style": style_v, "rows": rows,
+            "rule_names": names, "frozen": frozen}
 
 
 # ---------------------------------------------------------------------------

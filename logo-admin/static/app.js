@@ -4984,7 +4984,7 @@
   });
 
   // ----- Price rules -----
-  const prState = { rules: [], dims: null, editing: null, chips: { stores: [], brands: [], categories: [] }, previewed: {} };
+  const prState = { rules: [], dims: null, editing: null, chips: { stores: [], brands: [], categories: [], excl_stores: [], excl_brands: [], excl_categories: [] }, previewed: {}, frozenStores: [] };
 
   // Generic searchable chip multi-select (same combobox pattern as stores).
   function attachChipPicker({ search, options, chips, listName, items, labelFor = null }) {
@@ -5030,13 +5030,18 @@
       if (tiers.length) parts.push(`every store on tier ${tiers.join(", ")}`);
       el.innerHTML = `<strong>Affects:</strong> ${escapeHtml(parts.join(" - plus "))}`;
     }
+    const exc = prState.chips.excl_stores.length + prState.chips.excl_brands.length + prState.chips.excl_categories.length
+      + ($("#pr-xstyles")?.value || "").split(/[\n,]+/).map((x) => x.trim()).filter(Boolean).length;
+    if (exc) el.innerHTML += ` <span class="muted">(with ${exc} exception${exc === 1 ? "" : "s"})</span>`;
   }
 
   function prEffectSummary(r) {
     const v = r.effect_value !== null && r.effect_value !== undefined ? Number(r.effect_value) : null;
+    const basisNote = r.basis && r.basis !== "current" ? ` of ${r.basis.toUpperCase()}` : "";
+    const roundNote = r.rounding && r.rounding !== "none" ? ` → .${r.rounding}` : "";
     switch (r.effect_type) {
-      case "percent": return `${v > 0 ? "+" : ""}${v}%`;
-      case "flat": return `${v > 0 ? "+" : "−"}$${Math.abs(v).toFixed(4).replace(/\.?0+$/, "")}`;
+      case "percent": return `${v > 0 ? "+" : ""}${v}%${basisNote}${roundNote}`;
+      case "flat": return `${v > 0 ? "+" : "−"}$${Math.abs(v).toFixed(4).replace(/\.?0+$/, "")}${basisNote}${roundNote}`;
       case "set_price": return `= $${v}`;
       case "price_level": return `level: ${text(r.price_level_key).toUpperCase()}`;
       case "margin_over_cost": return `cost × ${v}`;
@@ -5051,7 +5056,14 @@
     if ((r.brands || []).length) bits.push(`${r.brands.length} brand${r.brands.length === 1 ? "" : "s"}`);
     if ((r.categories || []).length) bits.push(`${r.categories.length} categor${r.categories.length === 1 ? "y" : "ies"}`);
     if ((r.styles || []).length) bits.push(`${r.styles.length} style${r.styles.length === 1 ? "" : "s"}`);
+    const exc = (r.excl_stores || []).length + (r.excl_styles || []).length + (r.excl_brands || []).length + (r.excl_categories || []).length;
+    if (exc) bits.push(`except ${exc}`);
     return bits.join(" · ");
+  }
+
+  function prRuleHasFrozenTarget(r) {
+    if (!prState.frozenStores.length) return false;
+    return (r.stores || []).some((code) => prState.frozenStores.includes(code));
   }
 
   async function loadPriceRules() {
@@ -5064,6 +5076,7 @@
       catch { prState.dims = prState.dims || null; toast("Couldn't load the brand/category lists - the New rule dialog may be limited until you reload.", "error"); }
       const resp = await api("/api/price-rules");
       prState.rules = resp.rules || [];
+      prState.frozenStores = resp.frozen_stores || [];
       renderPRList();
     } catch (e) { renderErrorState(box, friendlyLoadError("the price rules", e), loadPriceRules); }
   }
@@ -5086,11 +5099,11 @@
       return;
     }
     box.innerHTML = `<table class="data-table"><thead><tr><th>Rule</th><th>Status</th><th>Priority</th><th>Targets</th><th>Effect</th><th>Schedule</th><th></th></tr></thead><tbody>${rules.map((r) => `<tr data-id="${r.rule_id}">
-      <td><strong>${escapeHtml(r.name)}</strong>${r.note ? `<br><small class="muted">${escapeHtml(r.note)}</small>` : ""}</td>
+      <td><strong>${escapeHtml(r.name)}</strong>${prRuleHasFrozenTarget(r) ? ' <span class="chip chip--frozen-warn" title="At least one targeted store has a price freeze - the sync will not change its live prices while frozen">targets a frozen store</span>' : ""}${r.note ? `<br><small class="muted">${escapeHtml(r.note)}</small>` : ""}</td>
       <td><span class="chip ${r.active ? "dark" : ""}">${r.active ? "On" : "Off"}</span>${r.stackable ? '<br><small class="muted">combinable</small>' : ""}</td>
       <td>${r.priority}</td>
       <td>${escapeHtml(prTargetSummary(r))}</td>
-      <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">never below $${Number(r.floor_price).toFixed(2)}</small>` : ""}</td>
+      <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">never below $${Number(r.floor_price).toFixed(2)}</small>` : ""}${r.ceiling_price ? `<br><small class="muted">never above $${Number(r.ceiling_price).toFixed(2)}</small>` : ""}${r.cap_at_msrp ? '<br><small class="muted">never above MSRP</small>' : ""}</td>
       <td>${r.effective_from || r.effective_until ? `${escapeHtml(text(r.effective_from, "..."))} → ${escapeHtml(text(r.effective_until, "..."))}` : '<span class="muted">always</span>'}</td>
       <td class="name-actions">
         <button class="button button--small button--secondary pr-preview" type="button">Preview</button>
@@ -5142,7 +5155,7 @@
   function prChip(listName, value, wrap) {
     const chip = document.createElement("span");
     chip.className = "chip";
-    chip.textContent = listName === "stores" ? `${storeDisplayFor(value)} (${value})` : value;
+    chip.textContent = (listName === "stores" || listName === "excl_stores") ? `${storeDisplayFor(value)} (${value})` : value;
     const x = document.createElement("button");
     x.type = "button"; x.className = "chip__remove"; x.textContent = "×"; x.setAttribute("aria-label", `Remove ${value}`);
     x.addEventListener("click", () => {
@@ -5163,7 +5176,12 @@
     $("#pr-effect-type").value = rule?.effect_type || "percent";
     $("#pr-effect-value").value = rule?.effect_value ?? "";
     $("#pr-level-key").value = rule?.price_level_key || "";
+    $("#pr-basis").value = rule?.basis || "current";
+    $("#pr-rounding").value = rule?.rounding || "none";
     $("#pr-floor").value = rule?.floor_price ?? "";
+    $("#pr-ceiling").value = rule?.ceiling_price ?? "";
+    $("#pr-cap-msrp").checked = Boolean(rule?.cap_at_msrp);
+    $("#pr-xstyles").value = (rule?.excl_styles || []).join("\n");
     $("#pr-from").value = rule?.effective_from || "";
     $("#pr-until").value = rule?.effective_until || "";
     $("#pr-note").value = rule?.note || "";
@@ -5171,12 +5189,25 @@
     prState.chips.stores = [...(rule?.stores || [])];
     prState.chips.brands = [...(rule?.brands || [])];
     prState.chips.categories = [...(rule?.categories || [])];
+    prState.chips.excl_stores = [...(rule?.excl_stores || [])];
+    prState.chips.excl_brands = [...(rule?.excl_brands || [])];
+    prState.chips.excl_categories = [...(rule?.excl_categories || [])];
     const storeWrap = $("#pr-store-chips"); storeWrap.replaceChildren();
     prState.chips.stores.forEach((s) => prChip("stores", s, storeWrap));
     const brandWrap = $("#pr-brand-chips"); brandWrap.replaceChildren();
     prState.chips.brands.forEach((b2) => prChip("brands", b2, brandWrap));
     const catWrap = $("#pr-cat-chips"); catWrap.replaceChildren();
     prState.chips.categories.forEach((c) => prChip("categories", c, catWrap));
+    const xsWrap = $("#pr-xstore-chips"); xsWrap.replaceChildren();
+    prState.chips.excl_stores.forEach((c) => prChip("excl_stores", c, xsWrap));
+    const xbWrap = $("#pr-xbrand-chips"); xbWrap.replaceChildren();
+    prState.chips.excl_brands.forEach((c) => prChip("excl_brands", c, xbWrap));
+    const xcWrap = $("#pr-xcat-chips"); xcWrap.replaceChildren();
+    prState.chips.excl_categories.forEach((c) => prChip("excl_categories", c, xcWrap));
+    const hasExceptions = prState.chips.excl_stores.length || prState.chips.excl_brands.length
+      || prState.chips.excl_categories.length || (rule?.excl_styles || []).length;
+    const exceptionsBox = $("#pr-exceptions");
+    if (exceptionsBox) exceptionsBox.open = Boolean(hasExceptions);
     const tiers = $("#pr-tiers"); tiers.replaceChildren();
     // If the tier list failed to load, fall back to the rule's own tiers so
     // saving can never silently strip its tier targeting.
@@ -5202,7 +5233,17 @@
       listName: "brands", items: () => prState.dims?.brands || [] });
     attachChipPicker({ search: "#pr-cat-input", options: "#pr-cat-options", chips: "#pr-cat-chips",
       listName: "categories", items: () => prState.dims?.categories || [] });
-    ["#pr-store-search", "#pr-brand-input", "#pr-cat-input"].forEach((sel) => { const el = $(sel); if (el) el.value = ""; });
+    attachChipPicker({ search: "#pr-xbrand-input", options: "#pr-xbrand-options", chips: "#pr-xbrand-chips",
+      listName: "excl_brands", items: () => prState.dims?.brands || [] });
+    attachChipPicker({ search: "#pr-xcat-input", options: "#pr-xcat-options", chips: "#pr-xcat-chips",
+      listName: "excl_categories", items: () => prState.dims?.categories || [] });
+    attachStoreCombobox({ search: "#pr-xstore-search", hidden: "#pr-xstore-picked", options: "#pr-xstore-options",
+      onPick: (code) => {
+        if (code && !prState.chips.excl_stores.includes(code)) { prState.chips.excl_stores.push(code); prChip("excl_stores", code, $("#pr-xstore-chips")); }
+        const el = $("#pr-xstore-search"); el.value = "";
+        prUpdateTargetSummary();
+      } });
+    ["#pr-store-search", "#pr-brand-input", "#pr-cat-input", "#pr-xstore-search", "#pr-xbrand-input", "#pr-xcat-input"].forEach((sel) => { const el = $(sel); if (el) el.value = ""; });
     prUpdateTargetSummary();
     prEffectTypeChanged();
     prEffectError("");
@@ -5222,6 +5263,8 @@
     const t = $("#pr-effect-type").value;
     $("#pr-level-wrap").hidden = t !== "price_level";
     $("#pr-value-wrap").hidden = t === "price_level";
+    const basisWrap = $("#pr-basis-wrap");
+    if (basisWrap) basisWrap.hidden = !(t === "percent" || t === "flat");
     $("#pr-value-label").textContent = t === "percent" ? "Percent (±)" : t === "flat" ? "Amount (±$)" : t === "set_price" ? "Price ($)" : t === "margin_over_cost" ? "Multiplier (×)" : "Value";
     const val = $("#pr-effect-value");
     if (t === "set_price" || t === "margin_over_cost") { val.min = "0.0001"; val.max = "9999999"; }
@@ -5242,10 +5285,18 @@
       styles: $("#pr-styles").value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean),
       brands: prState.chips.brands,
       categories: prState.chips.categories,
+      excl_stores: prState.chips.excl_stores,
+      excl_styles: $("#pr-xstyles").value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean),
+      excl_brands: prState.chips.excl_brands,
+      excl_categories: prState.chips.excl_categories,
       effect_type: $("#pr-effect-type").value,
       effect_value: $("#pr-effect-value").value === "" ? null : Number($("#pr-effect-value").value),
       price_level_key: $("#pr-level-key").value,
+      basis: $("#pr-basis").value || "current",
+      rounding: $("#pr-rounding").value || "none",
       floor_price: $("#pr-floor").value === "" ? null : Number($("#pr-floor").value),
+      ceiling_price: $("#pr-ceiling").value === "" ? null : Number($("#pr-ceiling").value),
+      cap_at_msrp: $("#pr-cap-msrp").checked,
       effective_from: $("#pr-from").value || "",
       effective_until: $("#pr-until").value || "",
       note: $("#pr-note").value.trim(),
@@ -5272,6 +5323,14 @@
     }
     if (body.effective_from && body.effective_until && body.effective_until < body.effective_from) {
       toast("The end date is before the start date.", "error");
+      return;
+    }
+    if (body.ceiling_price !== null && (Number.isNaN(body.ceiling_price) || body.ceiling_price < 0 || body.ceiling_price > 9999999)) {
+      toast("The never-above price must be between $0 and $9,999,999.", "error");
+      return;
+    }
+    if (body.floor_price !== null && body.ceiling_price !== null && body.ceiling_price < body.floor_price) {
+      toast("The never-above price is below the never-below price.", "error");
       return;
     }
     setBusy(btn, true, "Saving...");
@@ -5310,6 +5369,9 @@
       const zeroNote = !(resp.sample || []).length
         ? '<div class="grid-empty">This rule currently matches no products - check its store and product targeting.</div>'
         : "";
+      const frozenNote = (resp.frozen_targets || []).length
+        ? `<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>${resp.frozen_targets.length} targeted store${resp.frozen_targets.length === 1 ? " has" : "s have"} a price freeze</strong> - the hourly sync will not change live prices there while frozen: ${escapeHtml(resp.frozen_targets.map((c) => storeDisplayFor(c)).join(", "))}. Manage freezes on the Sync Blocks page.</div></div>`
+        : "";
       box.innerHTML = `
         <div class="result-summary">
           <div class="stat"><strong>${Number(s.affected ?? 0).toLocaleString()}</strong><small>items affected</small></div>
@@ -5318,7 +5380,7 @@
           <div class="stat"><strong>${s.above_msrp ?? 0}</strong><small>above MSRP</small></div>
           <div class="stat"><strong>${fmtMoney(s.min_delta)} / ${fmtMoney(s.max_delta)}</strong><small>biggest drop / biggest increase</small></div>
         </div>
-        ${staleWarn}${overWarn}${trunc}${zeroNote}
+        ${staleWarn}${overWarn}${frozenNote}${trunc}${zeroNote}
         ${perStore.length ? `<p class="muted">Per store: ${perStore.map((p) => `${escapeHtml(storeDisplayFor(p.fdm4_store))} (${p.affected})`).join(" · ")}${moreStores > 0 ? ` · +${moreStores} more store${moreStores === 1 ? "" : "s"}` : ""}</p>` : ""}
         ${(resp.sample || []).length ? `<table class="data-table"><thead><tr><th>Store</th><th>Style</th><th>SKU</th><th>Color / size</th><th>Base</th><th>New</th><th>MSRP</th></tr></thead>
         <tbody>${(resp.sample || []).map((row) => `<tr${row.over_msrp ? ' class="row--over-msrp"' : ""}>
@@ -5338,9 +5400,47 @@
     }
   }
 
+  async function checkPrice() {
+    const store = $("#pc-store").value.trim();
+    const style = $("#pc-style").value.trim();
+    const box = $("#pc-results");
+    if (!store) { toast("Pick a store first.", "error"); return; }
+    if (!style) { toast("Enter a style number.", "error"); return; }
+    const btn = $("#pc-check");
+    setBusy(btn, true, "Checking...");
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
+    try {
+      const resp = await api(`/api/price-rules/check?${new URLSearchParams({ store, style })}`);
+      const rows = resp.rows || [];
+      if (!rows.length) {
+        box.innerHTML = '<div class="grid-empty">No live products found for that style on that store.</div>';
+        return;
+      }
+      const names = resp.rule_names || {};
+      const frozen = resp.frozen
+        ? '<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>This store has a price freeze</strong> - the website keeps its current prices, so the final column shows what WOULD apply once the freeze is turned off.</div></div>'
+        : "";
+      const money = (v) => (v === null || v === undefined ? "-" : `$${Number(v).toFixed(2)}`);
+      box.innerHTML = `${frozen}<table class="data-table"><thead><tr><th>SKU</th><th>Color / size</th><th>Before rules</th><th>Final price</th><th>Rules applied</th></tr></thead><tbody>${rows.map((r) => `<tr>
+        <td><code>${escapeHtml(text(r.sku))}</code></td>
+        <td>${escapeHtml(text(r.color))} / ${escapeHtml(text(r.size))}</td>
+        <td>${money(r.base_price)}</td>
+        <td><strong>${money(r.final_price ?? r.base_price)}</strong></td>
+        <td>${(r.applied_rule_ids || []).length ? (r.applied_rule_ids || []).map((id) => escapeHtml(names[id] || `rule ${id}`)).join(", ") : '<span class="muted">none</span>'}</td>
+      </tr>`).join("")}</tbody></table>`;
+    } catch (e) {
+      renderErrorState(box, friendlyLoadError("the price check", e), checkPrice);
+    } finally { setBusy(btn, false); }
+  }
+
+  attachStoreCombobox({ search: "#pc-store-search", hidden: "#pc-store", options: "#pc-store-options" });
+  $("#pc-check")?.addEventListener("click", checkPrice);
+  $("#pc-style")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); checkPrice(); } });
+
   $("#pr-new").addEventListener("click", () => openPREditor(null));
   $("#pr-save").addEventListener("click", savePR);
   $("#pr-effect-type").addEventListener("change", prEffectTypeChanged);
+  $("#pr-xstyles")?.addEventListener("input", debounce(() => prUpdateTargetSummary()));
   $("#pr-search").addEventListener("input", () => renderPRList());
   $("#pr-status-filter").addEventListener("change", () => renderPRList());
 

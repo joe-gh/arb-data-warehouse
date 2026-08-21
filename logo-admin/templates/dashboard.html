@@ -346,7 +346,7 @@
         <div class="pricing__head">
           <p class="eyebrow">Pricing</p>
           <h1>Price rules</h1>
-          <p class="muted">Price overrides Arborwear controls directly (not from FDM4). Rules are checked in order (1 first); the first match wins unless a rule is marked combinable. Changes reach the store websites within the hour. <strong>Preview is required before a rule can be turned on.</strong></p>
+          <p class="muted">Price overrides Arborwear controls directly (not from FDM4). Rules are checked in order (1 first); the first match wins unless a rule is marked combinable. Rules can carry exceptions, retail price endings (.99), and never-above or never-below bounds. Changes reach the store websites within the hour. <strong>Preview is required before a rule can be turned on.</strong></p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -367,6 +367,19 @@
             <div><p class="eyebrow">Impact</p><h3 id="pr-preview-title">Preview</h3></div>
           </div>
           <div id="pr-preview" class="table-wrap" aria-live="polite"><div class="grid-empty">Select a rule and press its Preview button to see exactly which stores and products it changes.</div></div>
+        </section>
+        <section class="card">
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Check</p><h3>Check a price</h3><p class="muted text-small">The final answer for one product: every active rule, priority, and stacking applied - the same math the hourly sync uses.</p></div>
+          </div>
+          <div class="card__body">
+            <div class="form-row">
+              <div class="field combobox field--md"><span class="field__label">Store</span><input id="pc-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="pc-store-options" aria-expanded="false"><input type="hidden" id="pc-store"><div id="pc-store-options" class="combobox__options" role="listbox" hidden></div></div>
+              <label class="field field--sm"><span class="field__label">Style #</span><input id="pc-style" type="text" maxlength="100" placeholder="e.g. 18500"></label>
+              <button id="pc-check" class="button button--secondary" type="button">Check price</button>
+            </div>
+            <div id="pc-results" class="table-wrap" aria-live="polite"></div>
+          </div>
         </section>
       </div>
     </section>
@@ -619,7 +632,7 @@
           <div class="card__header card__header--compact"><div><p class="eyebrow">Store</p><h3>Prices, products, and stock</h3></div></div>
           <div class="card__body stack">
             <p>These four tools shape what the hourly update does. Changes here reach the store websites automatically, within about an hour. No Sync button is needed.</p>
-            <p><strong>Price Rules</strong> are discounts and adjustments Arborwear controls directly: a percentage off, a set price, and so on, aimed at chosen stores, brands, categories, or styles. New rules start turned off, and the app refuses to turn one on until you have pressed Preview, which shows exactly which items change and by how much. Turning a rule off puts prices back to normal.</p>
+            <p><strong>Price Rules</strong> are discounts and adjustments Arborwear controls directly: a percentage off, a set price, and so on, aimed at chosen stores, brands, categories, or styles, with optional <strong>exceptions</strong> ("everything except boots"). A percent or flat change can start from the current price or from a level like MSRP ("MSRP minus 20%"), the result can be rounded to a retail ending (.99, .95, or whole dollars), and a rule can promise never to go below or above a chosen price, or above MSRP. New rules start turned off, and the app refuses to turn one on until you have pressed Preview, which shows exactly which items change and by how much. The <strong>Check a price</strong> box on the same page answers the final question for one product: what will it cost with every active rule applied. One caution: a rule aimed at a store with a price freeze has no effect there until the freeze is turned off, and the page warns you when that is the case.</p>
             <p><strong>Store Pricing Levels</strong> only matter when FDM4 sends no price for an item. The store's chosen level (L1, L2, L3) fills the gap from the price list instead of defaulting to full retail.</p>
             <p><strong>Sync Blocks</strong> freeze things so the hourly update leaves them alone. You can freeze a whole store, freeze only its prices (the store keeps getting new products and stock, but hand-set prices are never overwritten), or freeze single styles. Each freeze has an on and off switch in the list.</p>
             <p><strong>Product Mix</strong> controls which products a store carries. By default a store simply follows FDM4. Switch it to a curated list to take control: add styles, remove them, or open a style to trim which colors and sizes the store sells. Removing a product hides it and marks it out of stock. It is never deleted and comes back if you re-add the style.</p>
@@ -1017,6 +1030,17 @@
           <label class="field"><span class="field__label">Style #s (paste a list - newline or comma separated)</span><textarea id="pr-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
         </div>
       </fieldset>
+      <details class="pr-fieldset pr-exceptions" id="pr-exceptions">
+        <summary class="eyebrow">Exceptions - "everything except..." (optional)</summary>
+        <p class="muted text-small">Anything listed here is skipped by this rule, even when the targeting above matches it.</p>
+        <div class="form-row">
+          <div class="field combobox"><span class="field__label">Except brands</span><input id="pr-xbrand-input" type="search" placeholder="Type to search brands..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-xbrand-options" aria-expanded="false"><div id="pr-xbrand-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div><div id="pr-xbrand-chips" class="chip-row"></div></div>
+          <div class="field combobox"><span class="field__label">Except categories</span><input id="pr-xcat-input" type="search" placeholder="Type or click to list categories..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-xcat-options" aria-expanded="false"><div id="pr-xcat-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div><div id="pr-xcat-chips" class="chip-row"></div></div>
+          <label class="field"><span class="field__label">Except style #s (one per line, or commas)</span><textarea id="pr-xstyles" rows="3" placeholder="e.g.&#10;18500"></textarea></label>
+        </div>
+        <div class="field combobox combobox--constrained"><span class="field__label">Except stores</span><input id="pr-xstore-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-xstore-options" aria-expanded="false"><input type="hidden" id="pr-xstore-picked"><div id="pr-xstore-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></div>
+        <div id="pr-xstore-chips" class="chip-row"></div>
+      </details>
       <fieldset class="pr-fieldset">
         <legend class="eyebrow">Effect</legend>
         <div class="form-row">
@@ -1028,13 +1052,31 @@
             <option value="margin_over_cost">Margin over cost (×)</option>
           </select></label>
           <label class="field field--sm" id="pr-value-wrap"><span class="field__label" id="pr-value-label">Value</span><input id="pr-effect-value" type="number" step="0.0001"></label>
+          <label class="field field--md" id="pr-basis-wrap"><span class="field__label">Based on</span><select id="pr-basis">
+            <option value="current">Current price</option>
+            <option value="msrp">MSRP</option>
+            <option value="corp1">Corp1</option>
+            <option value="corp2">Corp2</option>
+            <option value="corp3">Corp3</option>
+            <option value="wholesale">Wholesale</option>
+            <option value="employee">Employee</option>
+            <option value="base">Base</option>
+          </select><span class="field__help">What the percent or flat change starts from. "MSRP minus 20%" = MSRP basis with −20. Items missing the chosen level are skipped.</span></label>
           <label class="field field--md" id="pr-level-wrap" hidden><span class="field__label">Price level</span><select id="pr-level-key"><option value="">Choose a level...</option><option value="msrp">MSRP</option><option value="corp1">Corp1</option><option value="corp2">Corp2</option><option value="corp3">Corp3</option><option value="wholesale">Wholesale</option><option value="employee">Employee</option><option value="base">Base</option></select><span class="field__help">Prices each matched item at ITS OWN value for this FDM4 price-list column (e.g. Corp2 = that item's Corp2 contract price). No math - pure FDM4 data. Items missing the level keep their current price. Only used by the "Use FDM4 price level" effect.</span></label>
-          <label class="field field--sm"><span class="field__label">Price floor ($, optional)</span><input id="pr-floor" type="number" step="0.0001" min="0"></label>
+          <label class="field field--md"><span class="field__label">Round the result</span><select id="pr-rounding">
+            <option value="none">Exact - no rounding</option>
+            <option value="99">End in .99</option>
+            <option value="95">End in .95</option>
+            <option value="00">Whole dollars (.00)</option>
+          </select><span class="field__help">Applied to this rule's result, e.g. $29.32 becomes $28.99.</span></label>
+          <label class="field field--sm"><span class="field__label">Never below ($, optional)</span><input id="pr-floor" type="number" step="0.0001" min="0"></label>
+          <label class="field field--sm"><span class="field__label">Never above ($, optional)</span><input id="pr-ceiling" type="number" step="0.0001" min="0"></label>
+          <label class="field--checkbox" title="Clamp the result to each item's own MSRP"><input id="pr-cap-msrp" type="checkbox"> Never above MSRP</label>
           <label class="field field--sm field--date"><span class="field__label">Starts (optional)</span><input id="pr-from" type="date"><span class="field__help">From the start of this day</span></label>
           <label class="field field--sm field--date"><span class="field__label">Ends (optional)</span><input id="pr-until" type="date"><span class="field__help">Through the end of this day</span></label>
         </div>
         <span id="pr-effect-error" class="field-error" role="alert" hidden></span>
-        <p class="muted pr-effect-note">Exact values only - results are never rounded (up to 4 decimal places). Percent example: −15 lowers by 15%.</p>
+        <p class="muted pr-effect-note">Percent example: −15 lowers by 15%. Without a rounding choice, results are exact (up to 4 decimal places). If bounds conflict, "never below" wins.</p>
       </fieldset>
       <label class="field pr-note-field"><span class="field__label">Note</span><input id="pr-note" type="text" maxlength="2000" placeholder="Why this rule exists..."></label>
     </div>
