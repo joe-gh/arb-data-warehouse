@@ -127,6 +127,10 @@ def api_get_one(entity, ref_field, ref, key):
          "$filter": f"{ref_field} eq '{ref}'", "$top": "1"},
         quote_via=urllib.parse.quote)
     status, payload = api_call("GET", f"/catalog/{entity}?{query}", key)
+    # This API answers a zero-match collection filter with 404, not an
+    # empty list - that is the normal "does not exist yet" signal.
+    if status == 404:
+        return None
     if status != 200:
         raise RuntimeError(f"GET {entity} {ref}: {status} {payload}")
     rows = payload.get("value") or []
@@ -274,7 +278,7 @@ def run_diff(note, remove_skus=None):
                jsonb_build_object(
                    'prod_ref', m.style_code,
                    'prod_stylenumber', m.style_code,
-                   'prod_stat', 'D',
+                   'prod_stat', 'd',  -- hidden; input enum is lowercase v/i/d/r
                    'prod_brand', COALESCE(m.brand, 'Arborwear'),
                    'prod_title', COALESCE(c.name, m.wh_name, m.style_code),
                    'prod_description', c.description,
@@ -423,6 +427,9 @@ def apply_set(set_id, limit, allow_removals):
           + ("" if enabled else " (dry run, nothing sent)"))
 
 
+_parent_id_cache = {}
+
+
 def apply_row(row, key, enabled, allow_removals):
     action = row["action"]
     after = row["after"] or {}
@@ -460,14 +467,20 @@ def apply_row(row, key, enabled, allow_removals):
         if current is not None:
             return "skipped", "variant already exists"
         # POST /catalog/variants links to the parent by numeric prod_id.
-        parent = api_get_one("products", "prod_ref", row["prod_ref"], key)
-        if parent is None:
-            return "skipped", "parent product not in the PIM"
+        # Products apply before variants, so parents exist by now; cache the
+        # id per ref - thousands of variants share a few hundred parents.
+        prod_id = _parent_id_cache.get(row["prod_ref"])
+        if prod_id is None:
+            parent = api_get_one("products", "prod_ref", row["prod_ref"], key)
+            if parent is None:
+                return "skipped", "parent product not in the PIM"
+            prod_id = parent["prod_id"]
+            _parent_id_cache[row["prod_ref"]] = prod_id
         if not enabled:
             return "skipped", "dry run"
         body = {k: v for k, v in after.items()
                 if k.startswith("frmt_") and v is not None}
-        body["prod_id"] = parent["prod_id"]
+        body["prod_id"] = prod_id
         status, payload = api_call("POST", "/catalog/variants", key, body)
         return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
     if action == "product_create":
