@@ -5,7 +5,7 @@ Legacy rows may omit that link and use the same value for both identifiers;
 that equality is a fallback only.  Callers always receive real design IDs.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Dict, Optional, Set, Tuple
 
 
@@ -71,27 +71,82 @@ DESIGN_INDEX_SQL = """
 class DesignIndex:
     by_key: Dict[Tuple[str, str, str], Set[str]]
     usable_art: Set[Tuple[str, str]]
+    extra_by_store: Dict[str, Tuple[str, ...]] = dataclass_field(default_factory=dict)
 
     def candidates(self, store: str, logo_prefix: str, scheme: str) -> Set[str]:
-        customer = store_customer(store)
         prefix = logo_prefix.strip().upper()
         scheme_key = scheme.strip().upper()
-        if customer:
-            owned = self.by_key.get((customer, prefix, scheme_key)) or self.by_key.get(
+        owned: Set[str] = set()
+        for customer in self._customers(store):
+            hit = self.by_key.get((customer, prefix, scheme_key)) or self.by_key.get(
                 (customer, prefix, "*")
             )
-            if owned:
-                return set(owned)
+            if hit:
+                owned |= hit
+        if owned:
+            return owned
         return set(
             self.by_key.get(("*", prefix, scheme_key))
             or self.by_key.get(("*", prefix, "*"))
             or ()
         )
 
+    def _customers(self, store: str) -> Tuple[str, ...]:
+        values = []
+        primary = store_customer(store)
+        if primary:
+            values.append(primary)
+        for cust in self.extra_by_store.get(str(store).strip(), ()):
+            if cust and cust not in values:
+                values.append(cust)
+        return tuple(values)
+
 
 def store_customer(store: str) -> str:
     value = str(store).strip()
     return value[2:] if value.startswith("S_") else ""
+
+
+def store_customers(cursor, store: str) -> Tuple[str, ...]:
+    """The store's own customer number plus configured design-account extras.
+
+    FDM4 keeps some stores' designs under a separate customer account
+    (Southview 035340 -> designs under 033403; Lewis 001114 -> 003101).
+    logo.store_settings.extra_customers records those pairings per store.
+    """
+    values = []
+    primary = store_customer(store)
+    if primary:
+        values.append(primary)
+    cursor.execute(
+        "SELECT extra_customers FROM logo.store_settings WHERE fdm4_store = %s",
+        (str(store).strip(),),
+    )
+    row = cursor.fetchone()
+    if row and row.get("extra_customers"):
+        for cust in row["extra_customers"]:
+            cust = str(cust).strip()
+            if cust and cust not in values:
+                values.append(cust)
+    return tuple(values)
+
+
+def design_available_to_store(cursor, store: str, design_id: str) -> bool:
+    """Whether the design belongs to the store's customer family (or is unowned)."""
+    customers = list(store_customers(cursor, store)) or [""]
+    cursor.execute(
+        """
+        SELECT 1 FROM fdm4.dec_design
+         WHERE btrim(design_id) = %s
+           AND (
+               btrim(cust_number) = ANY(%s)
+               OR NULLIF(btrim(cust_number), '') IS NULL
+           )
+         LIMIT 1
+        """,
+        (design_id, customers),
+    )
+    return cursor.fetchone() is not None
 
 
 def load_design_index(cursor) -> DesignIndex:
@@ -114,7 +169,18 @@ def load_design_index(cursor) -> DesignIndex:
             "asset_file"
         ]:
             usable_art.add((design_id, scheme))
-    return DesignIndex(by_key=by_key, usable_art=usable_art)
+    extra_by_store: Dict[str, Tuple[str, ...]] = {}
+    cursor.execute(
+        "SELECT fdm4_store, extra_customers FROM logo.store_settings"
+        " WHERE extra_customers <> '{}'"
+    )
+    for row in cursor.fetchall():
+        extras = tuple(
+            str(c).strip() for c in (row["extra_customers"] or []) if str(c).strip()
+        )
+        if extras:
+            extra_by_store[str(row["fdm4_store"]).strip()] = extras
+    return DesignIndex(by_key=by_key, usable_art=usable_art, extra_by_store=extra_by_store)
 
 
 def validate_design_asset(
@@ -127,22 +193,7 @@ def validate_design_asset(
 ) -> bool:
     """Return whether the mapped/fallback art has the scheme and optional code."""
 
-    customer = store_customer(store)
-    cursor.execute(
-        """
-        SELECT 1
-          FROM fdm4.dec_design
-         WHERE btrim(design_id) = %s
-           AND (
-               btrim(cust_number) = %s
-               OR NULLIF(btrim(cust_number), '') IS NULL
-           )
-         ORDER BY (btrim(cust_number) = %s) DESC
-         LIMIT 1
-        """,
-        (design_id, customer, customer),
-    )
-    if cursor.fetchone() is None:
+    if not design_available_to_store(cursor, store, design_id):
         return False
 
     cursor.execute(

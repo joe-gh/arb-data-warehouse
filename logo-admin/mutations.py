@@ -27,7 +27,11 @@ from commands import (
     SetStyleActiveCommand,
     UpdateStoreSettingsCommand,
 )
-from design_resolver import load_design_index, validate_design_asset
+from design_resolver import (
+    design_available_to_store,
+    load_design_index,
+    validate_design_asset,
+)
 from domain import Conflict, InvalidCommand, NotFound
 
 
@@ -285,6 +289,11 @@ def _validate_warehouse_keys(cursor, values: Mapping[str, Any]) -> None:
         design_id=design_id,
         scheme=scheme,
     ):
+        if not design_available_to_store(cursor, store, design_id):
+            raise InvalidCommand(
+                f"design {design_id} belongs to a different FDM4 customer"
+                " account and is not available to this store"
+            )
         raise InvalidCommand(
             f"design {design_id} has no color scheme {scheme}"
         )

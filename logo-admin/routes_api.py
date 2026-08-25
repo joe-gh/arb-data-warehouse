@@ -54,7 +54,7 @@ from commands import (
 )
 from config import get_settings
 from db import database
-from design_resolver import validate_design_asset
+from design_resolver import design_available_to_store, validate_design_asset
 from domain import Conflict, InvalidCommand, NotFound
 import legacy_import as legacy
 import mutations
@@ -440,6 +440,12 @@ def _validate_warehouse_keys(cursor, values: Dict[str, Any]) -> None:
     if not validate_design_asset(
         cursor, store=store, design_id=design_id, scheme=scheme
     ):
+        if not design_available_to_store(cursor, store, design_id):
+            raise ValidationMiss(
+                "foreign_design",
+                f"design {design_id} belongs to a different FDM4 customer"
+                " account and is not available to this store",
+            )
         raise ValidationMiss(
             "no_art", f"design {design_id} has no color scheme {scheme}"
         )
