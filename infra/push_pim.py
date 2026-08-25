@@ -146,25 +146,35 @@ def connect():
 # --------------------------------------------------------------------------
 # Diff engine
 
+# Sellable universe straight from FDM4 (web-active items with a positive
+# retail price and a UPC) - the same criteria the virtual catalog uses. The
+# earlier source, woo.store_product_state, only covered products carried by
+# Woo-synced stores and missed items added to non-synced FDM4 stores.
 WAREHOUSE_VARIANTS_SQL = """
-    SELECT upper(btrim(sku)) AS sku,
-           max(upper(btrim(style_code))) AS style_code,
-           max(NULLIF(btrim(color_code), '')) AS color_code,
-           max(NULLIF(btrim(color), ''))      AS color_name,
-           max(NULLIF(btrim(size_code), ''))  AS size_code,
-           max(NULLIF(btrim(size), ''))       AS size_name,
-           bool_or(is_active)                 AS is_active,
-           max(NULLIF(btrim(mill_code), ''))  AS mill_code,
-           max(NULLIF(btrim(brand), ''))      AS brand,
-           max(NULLIF(btrim(category), ''))   AS category,
-           max(NULLIF(btrim(name), ''))       AS product_name
-      FROM woo.store_product_state
-     WHERE kind = 'variation' AND NULLIF(btrim(sku), '') IS NOT NULL
+    SELECT upper(btrim(i."upc-code")) AS sku,
+           max(upper(btrim(i."style-code")))            AS style_code,
+           max(NULLIF(btrim(i."color-code"), ''))       AS color_code,
+           max(NULLIF(btrim(sc.description), ''))       AS color_name,
+           max(NULLIF(btrim(i."size-code"), ''))        AS size_code,
+           max(NULLIF(btrim(ss.description), ''))       AS size_name,
+           true                                         AS is_active,
+           max(NULLIF(btrim(i."mill-code"), ''))        AS mill_code,
+           max(NULLIF(btrim(m.description), ''))        AS brand,
+           max(NULLIF(btrim(i."product-category"), '')) AS category,
+           max(NULLIF(btrim(st.description), ''))       AS product_name
+      FROM fdm4.item i
+      LEFT JOIN fdm4."style-color" sc ON sc."style-code" = i."style-code" AND sc."color-code" = i."color-code"
+      LEFT JOIN fdm4."style-size"  ss ON ss."style-code" = i."style-code" AND ss."size-code"  = i."size-code"
+      LEFT JOIN fdm4.style st ON st."style-code" = i."style-code"
+      LEFT JOIN fdm4.mill  m  ON btrim(m."mill-code") = btrim(i."mill-code")
+     WHERE i."upc-code" IS NOT NULL AND btrim(i."upc-code") <> ''
+       AND btrim(i."web-active") = 'True'
+       AND btrim(i."retail-price") ~ '^[0-9]+(\\.[0-9]+)?$' AND i."retail-price"::numeric > 0
      GROUP BY 1
 """
 
 
-def run_diff(note, remove_skus=None):
+def run_diff(note, remove_skus=None, arborwear_only=False):
     connection = connect()
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("CREATE TEMP TABLE wh AS " + WAREHOUSE_VARIANTS_SQL)
@@ -182,10 +192,8 @@ def run_diff(note, remove_skus=None):
         """
         INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, frmt_ref, style_code, before, after)
         SELECT %(set_id)s,
-               CASE WHEN pim_code IS NULL OR pim_code = '' THEN 'a'
-                    WHEN lpad(pim_code, 4, '0') = wh_code THEN 'a'
-                    ELSE 'b' END,
-               CASE WHEN pim_code IS NULL OR pim_code = '' THEN 'color_fill' ELSE 'color_fix' END,
+               CASE WHEN pim_code IS NULL THEN 'a' ELSE 'b' END,
+               CASE WHEN pim_code IS NULL THEN 'color_fill' ELSE 'color_fix' END,
                prod_ref, frmt_ref, style_code,
                jsonb_build_object('frmt_colorcode', pim_code, 'frmt_colorname', pim_name),
                jsonb_build_object('frmt_colorcode', wh_code, 'frmt_colorname', wh_name)
@@ -199,7 +207,12 @@ def run_diff(note, remove_skus=None):
               JOIN wh w ON w.sku = upper(btrim(v.frmt_ref))
              WHERE w.color_code IS NOT NULL
           ) d
-         WHERE pim_code IS DISTINCT FROM wh_code
+         -- The PIM stores codes numerically (leading zeros cannot survive),
+         -- so compare pad-insensitively or every pushed code re-proposes
+         -- forever. Name-only differences are deliberately NOT staged: the
+         -- PIM team owns display names once a code is correct.
+         WHERE pim_code IS NULL
+            OR lpad(pim_code, 4, '0') IS DISTINCT FROM lpad(wh_code, 4, '0')
         """,
         {"set_id": set_id})
 
@@ -244,10 +257,13 @@ def run_diff(note, remove_skus=None):
         """,
         {"set_id": set_id})
 
-    # product_create (lane b): active Arborwear styles absent from the PIM,
-    # with content backfilled from the Woo mirror (lowest blog with content).
+    # product_create (lane b): active store-carried styles absent from the
+    # PIM, with content backfilled from the Woo mirror (lowest blog with
+    # content). The PIM manages every brand; --arborwear-only restores the
+    # original mill-22-only backfill scope.
+    mill_clause = "w.mill_code = '22' AND " if arborwear_only else ""
     cursor.execute(
-        """
+        f"""
         WITH missing AS (
             SELECT w.style_code,
                    max(w.brand) AS brand,
@@ -255,7 +271,7 @@ def run_diff(note, remove_skus=None):
                    max(w.product_name) AS wh_name,
                    count(*) AS variants
               FROM wh w
-             WHERE w.mill_code = '22' AND w.is_active
+             WHERE {mill_clause} w.is_active
                AND w.style_code NOT IN
                    (SELECT upper(btrim(style_number)) FROM pim.api_product WHERE btrim(style_number) <> '')
                AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant)
@@ -279,7 +295,7 @@ def run_diff(note, remove_skus=None):
                    'prod_ref', m.style_code,
                    'prod_stylenumber', m.style_code,
                    'prod_stat', 'd',  -- hidden; input enum is lowercase v/i/d/r
-                   'prod_brand', COALESCE(m.brand, 'Arborwear'),
+                   'prod_brand', m.brand,
                    'prod_title', COALESCE(c.name, m.wh_name, m.style_code),
                    'prod_description', c.description,
                    'prod_shortdescription', c.short_description,
@@ -512,6 +528,8 @@ def main(argv=None):
     parser.add_argument("--note", default="")
     parser.add_argument("--remove-skus", default=None,
                         help="path to a text/CSV file whose rows contain approved variant refs to remove")
+    parser.add_argument("--arborwear-only", action="store_true",
+                        help="limit product creation to Arborwear (mill 22) styles; default creates every brand")
     args = parser.parse_args(argv)
 
     if args.diff:
@@ -526,7 +544,7 @@ def main(argv=None):
                     and len(token.strip()) >= 10
                 })
             print(f"removal sheet: {len(remove_skus)} refs")
-        set_id, counts = run_diff(args.note or "diff run", remove_skus)
+        set_id, counts = run_diff(args.note or "diff run", remove_skus, args.arborwear_only)
         print(f"change set {set_id} written:")
         for k, v in sorted(counts.items()):
             print(f"  {k}: {v}")
