@@ -488,6 +488,13 @@ BEGIN
             LEFT JOIN _price pr ON pr.item_number = i."item-number"
             LEFT JOIN _store_tier st ON st.fdm4_store = sd.fdm4_store
             WHERE i."upc-code" IS NOT NULL AND i."upc-code" <> ''   -- skip items with no barcode
+              -- Honor FDM4's web flag on webstores (2026-08-26): unchecking
+              -- 'web' on an item (discontinued flow) removes it from every
+              -- regular store even while it lingers in a store catalog.
+              -- Virtual-catalog stores (Square/Davey) deliberately do NOT
+              -- check this flag - their Woo products exist so FDM4 order
+              -- pulls can match line items, discontinued included.
+              AND btrim(i."web-active") = 'True'
             -- Deterministic pick among duplicate (store,catalog,upc) rows (e.g. dup
             -- colour entries in storeData) so payload / content_hash / row_version is
             -- stable run-to-run for change-tracking.
@@ -531,7 +538,9 @@ BEGIN
             SELECT 1 FROM fdm4.item i
              WHERE i."style-code" = s."style-code"
                AND i."upc-code" IS NOT NULL AND i."upc-code" <> ''
-               AND btrim(i."web-active") = 'True'
+               -- No web-active check here (2026-08-26): virtual-catalog
+               -- stores back FDM4 order pulls, so discontinued (web
+               -- unchecked) items must stay matchable.
                AND btrim(i."retail-price") ~ '^[0-9]+(\.[0-9]+)?$' AND i."retail-price"::numeric > 0
         )
 
@@ -568,7 +577,7 @@ BEGIN
         LEFT JOIN _style_attrs sa ON sa.style_code   = i."style-code"
         LEFT JOIN _price pr       ON pr.item_number  = i."item-number"
         WHERE i."upc-code" IS NOT NULL AND i."upc-code" <> ''
-          AND btrim(i."web-active") = 'True'
+          -- No web-active check (see the synthetic-parents note above).
           AND btrim(i."retail-price") ~ '^[0-9]+(\.[0-9]+)?$' AND i."retail-price"::numeric > 0
     ) b;
 
