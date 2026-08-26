@@ -364,3 +364,49 @@ def feed_stores(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
         )
         rows = cursor.fetchall()
     return {"stores": rows}
+
+
+@router.get("/categories")
+def feed_categories(
+    blog_id: int = Query(1, ge=1),
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Manually curated Woo category tree + product memberships (additive,
+    2026-08-26). Snapshot semantics, NOT row_version paging: the source is a
+    full-replace import from the production blog's hand-curated product_cat
+    taxonomy (curated.* tables), so consumers replace their copy whenever
+    imported_at moves. Names arrive entity-decoded; the same name may appear
+    under different parents - (blog_id, term_id) is the identity and `path`
+    disambiguates. Memberships are keyed by parent-product SKU (style code);
+    rows with product_count 0 and no memberships are curation debris safe to
+    ignore. Entirely independent of FDM4's flat category vocabulary."""
+    _authenticate(authorization)
+    with database.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT term_id, slug, name, parent_term_id, depth, path,
+                   sort_order, product_count, imported_at
+              FROM curated.category
+             WHERE blog_id = %s
+             ORDER BY depth, path
+            """,
+            (blog_id,),
+        )
+        categories = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT term_id, sku, product_id
+              FROM curated.category_product
+             WHERE blog_id = %s
+             ORDER BY term_id, sku
+            """,
+            (blog_id,),
+        )
+        memberships = cursor.fetchall()
+    imported_at = max((c["imported_at"] for c in categories), default=None)
+    return {
+        "blog_id": blog_id,
+        "imported_at": imported_at,
+        "categories": categories,
+        "memberships": memberships,
+    }
