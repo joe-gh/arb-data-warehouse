@@ -47,8 +47,10 @@ API_BASE = "https://api2.saleslayer.com"
 TIMEOUT = 30
 MAX_RETRIES = 8
 # Sales Layer documents 50 requests per 10 seconds for the whole key, which
-# the hourly pull cron also shares. Pace requests well under that.
-MIN_REQUEST_INTERVAL = 0.25
+# the hourly pull cron also shares. Pace requests well under that. Raising
+# PIM_PUSH_MIN_INTERVAL also slows Sales Layer's downstream push fan-out to
+# the Woo stores, which lands on prod with real weight during big batches.
+MIN_REQUEST_INTERVAL = float(os.environ.get("PIM_PUSH_MIN_INTERVAL", "0.25"))
 REMOVAL_CAP = 200
 DB_NAME = "arb_warehouse"
 DB_SOCKET = "/var/run/postgresql"
