@@ -453,24 +453,64 @@ BEGIN
                 sa.street_date       AS street_date,
                 pr.price_levels      AS price_levels
             FROM (
-                SELECT d.site_id AS fdm4_store, d.catalog_id, d.product_id,
-                       CASE
-                           WHEN btrim(d.detail_value::jsonb #>> '{product,0,customPrice}')
-                                ~ '^[0-9]+(\.[0-9]+)?$'
+                -- storeData colour entries. FDM4 writes colorCode '0' when a
+                -- product is added to a team-store catalog with NO colour
+                -- restriction (observed at scale starting 2026-08-17/21: 257
+                -- all-zero products across 26 stores, which this join used to
+                -- project as ZERO variants). Wildcard rows are expanded to
+                -- every colour of the style via fdm4."style-color" in a
+                -- separate UNION branch so the item join below stays a plain
+                -- (style, colour) equality hash join - no OR conditions (see
+                -- the 2026-08-27 plan-regression note above).
+                SELECT * FROM (
+                    SELECT d.site_id AS fdm4_store, d.catalog_id, d.product_id,
+                           CASE
+                               WHEN btrim(d.detail_value::jsonb #>> '{product,0,customPrice}')
+                                    ~ '^[0-9]+(\.[0-9]+)?$'
+                               THEN btrim(d.detail_value::jsonb #>> '{product,0,customPrice}')
+                           END AS prod_price,
+                           col ->> 'colorCode'                                  AS color_code,
+                           CASE
+                               WHEN btrim(col ->> 'customPrice') ~ '^[0-9]+(\.[0-9]+)?$'
+                               THEN btrim(col ->> 'customPrice')
+                           END                                                  AS color_price
+                    FROM fdm4.catalog_product_detail d
+                    CROSS JOIN LATERAL jsonb_array_elements(d.detail_value::jsonb #> '{product,0,color}') AS col
+                    WHERE d.detail_type = 'storeData'
+                      AND d.site_id ~ '^S_'
+                      AND pg_input_is_valid(d.detail_value, 'jsonb')
+                      -- Virtual-catalog stores are generated wholesale below instead.
+                      AND d.site_id NOT IN (SELECT fdm4_store FROM woo.virtual_catalog_store)
+                ) sd_real
+                WHERE sd_real.color_code IS DISTINCT FROM '0'
+
+                UNION ALL
+
+                -- Wildcard branch: one deduped row per (store, catalog,
+                -- product) with any colorCode-'0' entry, fanned out to the
+                -- style's full colour list. Product-level customPrice is kept;
+                -- a colour-level customPrice on a wildcard row is meaningless
+                -- (it names no colour) and is deliberately dropped.
+                SELECT sz.fdm4_store, sz.catalog_id, sz.product_id, sz.prod_price,
+                       sc0."color-code" AS color_code,
+                       NULL::text       AS color_price
+                FROM (
+                    SELECT DISTINCT d.site_id AS fdm4_store, d.catalog_id, d.product_id,
+                           CASE
+                               WHEN btrim(d.detail_value::jsonb #>> '{product,0,customPrice}')
+                                    ~ '^[0-9]+(\.[0-9]+)?$'
                            THEN btrim(d.detail_value::jsonb #>> '{product,0,customPrice}')
-                       END AS prod_price,
-                       col ->> 'colorCode'                                  AS color_code,
-                       CASE
-                           WHEN btrim(col ->> 'customPrice') ~ '^[0-9]+(\.[0-9]+)?$'
-                           THEN btrim(col ->> 'customPrice')
-                       END                                                  AS color_price
-                FROM fdm4.catalog_product_detail d
-                CROSS JOIN LATERAL jsonb_array_elements(d.detail_value::jsonb #> '{product,0,color}') AS col
-                WHERE d.detail_type = 'storeData'
-                  AND d.site_id ~ '^S_'
-                  AND pg_input_is_valid(d.detail_value, 'jsonb')
-                  -- Virtual-catalog stores are generated wholesale below instead.
-                  AND d.site_id NOT IN (SELECT fdm4_store FROM woo.virtual_catalog_store)
+                           END AS prod_price
+                    FROM fdm4.catalog_product_detail d
+                    CROSS JOIN LATERAL jsonb_array_elements(d.detail_value::jsonb #> '{product,0,color}') AS col
+                    WHERE d.detail_type = 'storeData'
+                      AND d.site_id ~ '^S_'
+                      AND pg_input_is_valid(d.detail_value, 'jsonb')
+                      AND d.site_id NOT IN (SELECT fdm4_store FROM woo.virtual_catalog_store)
+                      AND col ->> 'colorCode' = '0'
+                ) sz
+                JOIN fdm4."style-color" sc0
+                  ON sc0."style-code" = sz.product_id
             ) sd
             JOIN fdm4.item i
               ON i."style-code" = sd.product_id
@@ -488,13 +528,11 @@ BEGIN
             LEFT JOIN _price pr ON pr.item_number = i."item-number"
             LEFT JOIN _store_tier st ON st.fdm4_store = sd.fdm4_store
             WHERE i."upc-code" IS NOT NULL AND i."upc-code" <> ''   -- skip items with no barcode
-              -- Honor FDM4's web flag on webstores (2026-08-26): unchecking
-              -- 'web' on an item (discontinued flow) removes it from every
-              -- regular store even while it lingers in a store catalog.
-              -- Virtual-catalog stores (Square/Davey) deliberately do NOT
-              -- check this flag - their Woo products exist so FDM4 order
-              -- pulls can match line items, discontinued included.
-              AND btrim(i."web-active") = 'True'
+              -- web-active filtering happens as a post-build DELETE on _base
+              -- (see below) - NOT as a join predicate here. btrim(...) = 'True'
+              -- in this join has no column statistics, so the planner assumed
+              -- near-zero rows and flipped to a nested-loop plan that turned
+              -- the refresh from minutes into 7+ hours (2026-08-27 outage).
             -- Deterministic pick among duplicate (store,catalog,upc) rows (e.g. dup
             -- colour entries in storeData) so payload / content_hash / row_version is
             -- stable run-to-run for change-tracking.
@@ -580,6 +618,18 @@ BEGIN
           -- No web-active check (see the synthetic-parents note above).
           AND btrim(i."retail-price") ~ '^[0-9]+(\.[0-9]+)?$' AND i."retail-price"::numeric > 0
     ) b;
+
+    -- Honor FDM4's web flag on webstores (2026-08-26): unchecking 'web' on an
+    -- item (discontinued flow) removes it from every regular store even while
+    -- it lingers in a store catalog. Virtual-catalog stores (Square/Davey)
+    -- deliberately keep everything - their Woo products back FDM4 order pulls,
+    -- so discontinued line items must stay matchable. Runs BEFORE the product
+    -- mix block so its drift candidates see the web-filtered mix, matching the
+    -- semantics of the original join-predicate version of this filter.
+    DELETE FROM _base b
+    WHERE b.kind = 'variation'
+      AND btrim(COALESCE(b.web_active, '')) <> 'True'
+      AND b.fdm4_store NOT IN (SELECT fdm4_store FROM woo.virtual_catalog_store);
 
     -- Product Mix Overrides (woo.store_mix_store / store_mix_item - the
     -- Warehouse Ops "Product Mix" tab). v1 is remove-only: mode='list' stores
