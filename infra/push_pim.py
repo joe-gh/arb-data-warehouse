@@ -251,7 +251,16 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                    'frmt_colorcode', w.color_code,
                    'frmt_colorname', w.color_name,
                    'frmt_sizecode', w.size_code,
-                   'frmt_sizelabel', w.size_name)
+                   'frmt_sizelabel', w.size_name,
+                   -- Display name: "<product title> <color name> <size label>",
+                   -- matching the legacy Woo-import variants. Prefer the PIM's
+                   -- own product title so variants read consistently with the
+                   -- product they hang under.
+                   'frmt_variantname', NULLIF(btrim(concat_ws(' ',
+                       COALESCE(NULLIF(btrim(p.payload ->> 'prod_title'), ''),
+                                NULLIF(btrim(p.payload ->> 'name'), ''),
+                                w.product_name, w.style_code),
+                       w.color_name, w.size_name)), ''))
           FROM wh w
           JOIN pim.api_product p ON upper(btrim(p.style_number)) = w.style_code
          WHERE w.is_active
@@ -320,7 +329,14 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                    'frmt_colorcode', w.color_code,
                    'frmt_colorname', w.color_name,
                    'frmt_sizecode', w.size_code,
-                   'frmt_sizelabel', w.size_name)
+                   'frmt_sizelabel', w.size_name,
+                   -- Display name (see the note on the existing-product
+                   -- variant_create above); here the product is being created
+                   -- in the same set, so its title comes from that change row.
+                   'frmt_variantname', NULLIF(btrim(concat_ws(' ',
+                       COALESCE(NULLIF(btrim(r.after ->> 'prod_title'), ''),
+                                w.product_name, w.style_code),
+                       w.color_name, w.size_name)), ''))
           FROM pim.push_change_row r
           JOIN wh w ON w.style_code = r.style_code AND w.is_active
          WHERE r.set_id = %(set_id)s AND r.action = 'product_create'
