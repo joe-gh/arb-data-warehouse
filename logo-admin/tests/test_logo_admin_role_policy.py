@@ -137,6 +137,34 @@ def test_role_policy_validates_current_catalog_before_revoking_authority():
         assert required_fragment in source
 
 
+def test_role_policy_ownership_gates_accept_superuser_owned_objects():
+    """Owner must be the database owner OR a superuser (production: etl_writer
+    owns arb_warehouse while postgres owns every object); other roles fail."""
+
+    source = ROLE_SQL.read_text()
+    gates = [
+        match.start()
+        for match in re.finditer(
+            r"\.(?:relowner|proowner) = database\.datdba", source
+        )
+    ]
+    # writable relations, logo.audit_row(), logo.prune_agent_history()
+    assert len(gates) == 3
+    for position in gates:
+        assert "rolsuper" in source[position:position + 160]
+    assert "JOIN pg_roles AS relation_owner" in source
+    assert "OR relation_owner.rolsuper" in source
+    assert "OR procedure_owner.rolsuper" in source
+    assert "owner_role.rolsuper AS owner_is_superuser" in source
+    assert "WHERE (proowner = datdba OR owner_is_superuser)" in source
+    assert "owned by the database owner or a superuser" in source
+    # The refusal to run while logo_admin owns the database is untouched.
+    assert (
+        "logo_admin owns the database; owner authority cannot be revoked"
+        in source
+    )
+
+
 def test_role_policy_pins_exact_undo_catalog_contract():
     source = ROLE_SQL.read_text()
     for required_fragment in (

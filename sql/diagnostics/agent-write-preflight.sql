@@ -195,8 +195,18 @@ SELECT namespace.nspname AS schema_name,
        relation.relkind,
        relation.relpersistence,
        relation.relispartition,
+       -- Ownership rule (deliberately relaxed, temporary): the owner passes
+       -- when it is the database owner (pg_database.datdba) OR a superuser
+       -- (pg_roles.rolsuper). On production arb_warehouse is owned by
+       -- etl_writer while every object is owned by postgres. Arbitrary roles
+       -- still fail. Every ownership check in this file applies this rule.
        owner.rolname AS owner_name,
+       owner.rolsuper AS owner_is_superuser,
        database_owner.rolname AS expected_owner,
+       (
+           relation.relowner = database.datdba
+           OR owner.rolsuper
+       ) AS owner_passes,
        relation.relrowsecurity,
        relation.relforcerowsecurity
   FROM pg_class AS relation
@@ -861,8 +871,12 @@ SELECT count(*) = 0 AS no_agent_sequences
 -- non-grantable, and unavailable to PUBLIC.
 SELECT procedure.oid::regprocedure AS signature,
        function_owner.rolname AS owner,
+       function_owner.rolsuper AS owner_is_superuser,
        database_owner.rolname AS expected_owner,
-       procedure.proowner = database.datdba AS owner_passes,
+       (
+           procedure.proowner = database.datdba
+           OR function_owner.rolsuper
+       ) AS owner_passes,
        procedure.prokind = 'f' AS function_kind_passes,
        procedure.pronargs = 0 AS zero_arguments_passes,
        language.lanname AS language,
@@ -1170,10 +1184,18 @@ WITH execution_contract AS (
                            relation.relkind <> 'r'
                            OR relation.relpersistence <> 'p'
                            OR relation.relispartition
-                           OR relation.relowner IS DISTINCT FROM (
-                               SELECT database.datdba
-                                 FROM pg_database AS database
-                                WHERE database.datname = current_database()
+                           OR (
+                               relation.relowner IS DISTINCT FROM (
+                                   SELECT database.datdba
+                                     FROM pg_database AS database
+                                    WHERE database.datname = current_database()
+                               )
+                               AND NOT EXISTS (
+                                   SELECT 1
+                                     FROM pg_roles AS relation_owner
+                                    WHERE relation_owner.oid = relation.relowner
+                                      AND relation_owner.rolsuper
+                               )
                            )
                        )
                    )
@@ -1679,7 +1701,10 @@ WITH execution_contract AS (
 ), audit_function_contract AS (
     SELECT count(*) = 1
            AND bool_and(
-               procedure.proowner = database.datdba
+               (
+                   procedure.proowner = database.datdba
+                   OR function_owner.rolsuper
+               )
                AND procedure.prokind = 'f'
                AND procedure.pronargs = 0
                AND language.lanname = 'plpgsql'
@@ -1701,6 +1726,8 @@ WITH execution_contract AS (
       JOIN pg_namespace AS namespace
         ON namespace.oid = procedure.pronamespace
       JOIN pg_language AS language ON language.oid = procedure.prolang
+      JOIN pg_roles AS function_owner
+        ON function_owner.oid = procedure.proowner
       JOIN pg_database AS database
         ON database.datname = current_database()
      WHERE procedure.oid = to_regprocedure('logo.audit_row()')
@@ -1716,7 +1743,10 @@ WITH execution_contract AS (
                relation.relkind = 'r'
                AND relation.relpersistence = 'p'
                AND NOT relation.relispartition
-               AND relation.relowner = database.datdba
+               AND (
+                   relation.relowner = database.datdba
+                   OR relation_owner.rolsuper
+               )
                AND access_method.amname = 'heap'
                AND relation.reloptions IS NULL
                AND relation.relreplident = 'd'
@@ -1743,6 +1773,8 @@ WITH execution_contract AS (
         ON relation.relnamespace = namespace.oid
        AND relation.relname = agent_table_policy.table_name
       JOIN pg_am AS access_method ON access_method.oid = relation.relam
+      JOIN pg_roles AS relation_owner
+        ON relation_owner.oid = relation.relowner
       JOIN pg_database AS database
         ON database.datname = current_database()
 ), agent_column_policy(
@@ -2367,7 +2399,10 @@ WITH execution_contract AS (
     SELECT namespace.nspname AS schema_name,
            procedure.proname AS function_name,
            oidvectortypes(procedure.proargtypes) AS argument_types,
-           procedure.proowner = database.datdba AS owner_passes,
+           (
+               procedure.proowner = database.datdba
+               OR function_owner.rolsuper
+           ) AS owner_passes,
            NOT has_function_privilege(
                'public', procedure.oid, 'EXECUTE'
            ) AS public_denied,
@@ -2388,6 +2423,8 @@ WITH execution_contract AS (
       FROM pg_proc AS procedure
       JOIN pg_namespace AS namespace
         ON namespace.oid = procedure.pronamespace
+      JOIN pg_roles AS function_owner
+        ON function_owner.oid = procedure.proowner
       JOIN pg_database AS database
         ON database.datname = current_database()
      WHERE namespace.nspname <> 'information_schema'
@@ -2420,7 +2457,10 @@ WITH execution_contract AS (
 ), prune_contract AS (
     SELECT count(*) = 1
            AND bool_and(
-               procedure.proowner = database.datdba
+               (
+                   procedure.proowner = database.datdba
+                   OR function_owner.rolsuper
+               )
                AND procedure.prokind = 'f'
                AND procedure.pronargs = 0
                AND language.lanname = 'plpgsql'
@@ -2446,6 +2486,8 @@ WITH execution_contract AS (
         ON namespace.oid = procedure.pronamespace
       JOIN pg_language AS language
         ON language.oid = procedure.prolang
+      JOIN pg_roles AS function_owner
+        ON function_owner.oid = procedure.proowner
       JOIN pg_database AS database
         ON database.datname = current_database()
      WHERE procedure.oid = to_regprocedure('logo.prune_agent_history()')
@@ -2456,7 +2498,10 @@ WITH execution_contract AS (
                count(*) = 1
                AND bool_and(
                    oidvectortypes(procedure.proargtypes) = 'text, boolean'
-                   AND procedure.proowner = database.datdba
+                   AND (
+                       procedure.proowner = database.datdba
+                       OR function_owner.rolsuper
+                   )
                    AND procedure.prokind = 'f'
                    AND language.lanname = 'plpgsql'
                    AND NOT procedure.prosecdef
@@ -2510,6 +2555,8 @@ WITH execution_contract AS (
         ON namespace.oid = procedure.pronamespace
       JOIN pg_language AS language
         ON language.oid = procedure.prolang
+      JOIN pg_roles AS function_owner
+        ON function_owner.oid = procedure.proowner
       JOIN pg_database AS database
         ON database.datname = current_database()
      WHERE namespace.nspname = 'logo'

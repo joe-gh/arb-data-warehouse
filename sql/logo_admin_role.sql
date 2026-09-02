@@ -6,7 +6,8 @@
 -- dump plus \dp/routine ACL snapshot, updating the validation and grant lists
 -- below, and running the disposable role/preflight tests before review.
 --
--- Run as the database owner AFTER sql/logo_schema.sql, sql/woo_transform.sql,
+-- Run as a superuser (or the database owner, where it also owns the objects)
+-- AFTER sql/logo_schema.sql, sql/woo_transform.sql,
 -- and every sql/migrations/*.sql file in lexical order. Every fail-closed
 -- validation runs before the first REVOKE, so a stale contract cannot strip a
 -- working deployment. The transaction makes the revoke/regrant phase atomic.
@@ -229,21 +230,35 @@ BEGIN
             'catmgr.redirect'
         ]::text[])
     )
+    -- Ownership gate, deliberately relaxed (temporary): on production the
+    -- arb_warehouse database is owned by etl_writer while every table and
+    -- function in logo/woo/fdm4/catmgr/curated/pim is owned by postgres (a
+    -- superuser), so "owned by the database owner" can never hold there and
+    -- this script could not be applied. Until the database owner is changed,
+    -- an object owner is acceptable when it is the database owner
+    -- (pg_database.datdba) OR a superuser (pg_roles.rolsuper). Arbitrary
+    -- roles are still rejected. The same rule is applied by every ownership
+    -- check below, by sql/diagnostics/agent-write-preflight.sql, and by
+    -- logo-admin/database_contract.py.
     SELECT bool_and(
                relation.relkind = 'r'
                AND relation.relpersistence = 'p'
                AND NOT relation.relispartition
                AND NOT relation.relrowsecurity
                AND NOT relation.relforcerowsecurity
-               AND relation.relowner = database.datdba
+               AND (
+                   relation.relowner = database.datdba
+                   OR relation_owner.rolsuper
+               )
            )
       INTO writable_contract_ok
       FROM writable
       JOIN pg_class AS relation ON relation.oid = to_regclass(writable.name)
+      JOIN pg_roles AS relation_owner ON relation_owner.oid = relation.relowner
       JOIN pg_database AS database ON database.datname = current_database();
     IF writable_contract_ok IS DISTINCT FROM true THEN
         RAISE EXCEPTION
-            'a writable relation is not a database-owner-owned ordinary permanent non-RLS table';
+            'a writable relation is not an ordinary permanent non-RLS table owned by the database owner or a superuser';
     END IF;
 
     WITH expected(
@@ -332,11 +347,16 @@ BEGIN
                    ON namespace.oid = procedure.pronamespace
                  JOIN pg_language AS language
                    ON language.oid = procedure.prolang
+                 JOIN pg_roles AS procedure_owner
+                   ON procedure_owner.oid = procedure.proowner
                  JOIN pg_database AS database
                    ON database.datname = current_database()
                 WHERE procedure.oid = 'logo.audit_row()'::regprocedure
                   AND namespace.nspname = 'logo'
-                  AND procedure.proowner = database.datdba
+                  AND (
+                      procedure.proowner = database.datdba
+                      OR procedure_owner.rolsuper
+                  )
                   AND procedure.prokind = 'f'
                   AND NOT procedure.prosecdef
                   AND language.lanname = 'plpgsql'
@@ -362,10 +382,15 @@ BEGIN
            SELECT 1
              FROM pg_proc AS procedure
              JOIN pg_language AS language ON language.oid = procedure.prolang
+             JOIN pg_roles AS procedure_owner
+               ON procedure_owner.oid = procedure.proowner
              JOIN pg_database AS database
                ON database.datname = current_database()
             WHERE procedure.oid = to_regprocedure('logo.prune_agent_history()')
-              AND procedure.proowner = database.datdba
+              AND (
+                  procedure.proowner = database.datdba
+                  OR procedure_owner.rolsuper
+              )
               AND procedure.prokind = 'f'
               AND procedure.prosecdef
               AND language.lanname = 'plpgsql'
@@ -394,6 +419,7 @@ $validate_live_contract$;
 WITH repull AS (
     SELECT procedure.oid,
            procedure.proowner,
+           owner_role.rolsuper AS owner_is_superuser,
            procedure.prokind,
            procedure.prosecdef,
            procedure.proconfig,
@@ -407,6 +433,7 @@ WITH repull AS (
            lower(:'repull_function_sha256') AS expected_repull_function_sha256
       FROM pg_proc AS procedure
       JOIN pg_language AS language ON language.oid = procedure.prolang
+      JOIN pg_roles AS owner_role ON owner_role.oid = procedure.proowner
       JOIN pg_database AS database ON database.datname = current_database()
      WHERE procedure.oid =
            to_regprocedure('logo.repull_display_name(text,boolean)')
@@ -414,7 +441,7 @@ WITH repull AS (
     SELECT to_regprocedure('logo.repull_display_name(text,boolean)') IS NULL
         OR EXISTS (
             SELECT 1 FROM repull
-             WHERE proowner = datdba
+             WHERE (proowner = datdba OR owner_is_superuser)
                AND prokind = 'f'
                AND NOT prosecdef
                AND (proconfig IS NULL OR proconfig = ARRAY[

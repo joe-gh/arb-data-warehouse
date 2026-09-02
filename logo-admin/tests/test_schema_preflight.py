@@ -266,6 +266,33 @@ def test_preflight_terminally_asserts_writable_semantics_and_exact_undo():
         assert f"SELECT passes FROM {contract_name}" in source
 
 
+def test_preflight_ownership_gates_accept_superuser_owned_objects():
+    """Owner passes when it is the database owner OR a superuser (production:
+    etl_writer owns arb_warehouse while postgres owns every object)."""
+
+    source = PREFLIGHT.read_text()
+    gates = [
+        match.start()
+        for match in re.finditer(
+            r"\.(?:relowner|proowner) = database\.datdba", source
+        )
+    ]
+    # writable inventory, prune diagnostic, audit_function_contract,
+    # agent_relation_contract, definer_inventory, prune_contract,
+    # repull_contract
+    assert len(gates) == 7
+    for position in gates:
+        assert "rolsuper" in source[position:position + 160]
+    distinct_gate = source.index("relation.relowner IS DISTINCT FROM (")
+    assert "relation_owner.rolsuper" in source[distinct_gate:distinct_gate + 800]
+    assert "owner.rolsuper AS owner_is_superuser" in source
+    assert "function_owner.rolsuper AS owner_is_superuser" in source
+    assert "OR owner.rolsuper" in source
+    assert "OR function_owner.rolsuper" in source
+    assert "OR relation_owner.rolsuper" in source
+    assert source.count(") AS owner_passes") == 3
+
+
 def test_preflight_pins_full_agent_table_catalog_signatures():
     source = PREFLIGHT.read_text()
     for required_fragment in (

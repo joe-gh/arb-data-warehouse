@@ -240,6 +240,21 @@ def test_writable_relation_contract_rejects_non_database_owner():
         _assert_write_relation_shapes(rows)
 
 
+def test_writable_relation_contract_accepts_superuser_owner():
+    rows = _safe_relation_rows()
+    rows[0]["owned_by_database_owner"] = False
+    rows[0]["owner_is_superuser"] = True
+    _assert_write_relation_shapes(rows)
+
+
+def test_writable_relation_contract_rejects_arbitrary_owner():
+    rows = _safe_relation_rows()
+    rows[0]["owned_by_database_owner"] = False
+    rows[0]["owner_is_superuser"] = False
+    with pytest.raises(RuntimeError, match="writable relation shape drift"):
+        _assert_write_relation_shapes(rows)
+
+
 def _safe_restore_column_rows():
     return [
         {
@@ -443,6 +458,27 @@ def test_audit_trigger_function_contract_rejects_body_drift():
         _assert_audit_function_contract(row)
 
 
+def test_audit_trigger_function_contract_accepts_superuser_owner():
+    row = _safe_audit_function_row()
+    row.update(
+        owner_name="postgres",
+        database_owner="etl_writer",
+        owner_is_superuser=True,
+    )
+    _assert_audit_function_contract(row)
+
+
+def test_audit_trigger_function_contract_rejects_arbitrary_owner():
+    row = _safe_audit_function_row()
+    row.update(
+        owner_name="etl_reader",
+        database_owner="etl_writer",
+        owner_is_superuser=False,
+    )
+    with pytest.raises(RuntimeError, match="audit trigger function owner drift"):
+        _assert_audit_function_contract(row)
+
+
 def _safe_agent_relation_rows():
     return [{
         "table_name": table_name,
@@ -463,6 +499,17 @@ def test_agent_relation_signature_rejects_non_owner_or_custom_storage():
     rows[0]["owner_name"] = "logo_admin"
     with pytest.raises(RuntimeError, match="agent relation metadata drift"):
         _assert_agent_relation_signatures(rows)
+
+
+def test_agent_relation_signature_accepts_superuser_owner():
+    rows = _safe_agent_relation_rows()
+    for row in rows:
+        row.update(
+            owner_name="postgres",
+            database_owner="etl_writer",
+            owner_is_superuser=True,
+        )
+    _assert_agent_relation_signatures(rows)
 
 
 def _safe_agent_column_rows():
@@ -635,6 +682,27 @@ def test_retention_contract_rejects_owner_acl_or_definer_drift(
         _assert_prune_contract(row)
 
 
+def test_retention_contract_accepts_superuser_owner():
+    row = _safe_prune_row()
+    row.update(
+        owner_name="postgres",
+        database_owner="etl_writer",
+        owner_is_superuser=True,
+    )
+    _assert_prune_contract(row)
+
+
+def test_retention_contract_rejects_arbitrary_owner_without_superuser():
+    row = _safe_prune_row()
+    row.update(
+        owner_name="etl_reader",
+        database_owner="etl_writer",
+        owner_is_superuser=False,
+    )
+    with pytest.raises(RuntimeError, match="retention owner drift"):
+        _assert_prune_contract(row)
+
+
 def test_security_definer_inventory_rejects_unreviewed_executable_function():
     rows = [{
         "schema_name": "logo",
@@ -693,6 +761,33 @@ def test_security_definer_inventory_rejects_legacy_repull_elevation():
     }]
     with pytest.raises(RuntimeError, match="repull_display_name"):
         _assert_security_definer_inventory(rows)
+
+
+def test_security_definer_inventory_accepts_superuser_owner():
+    _assert_security_definer_inventory([{
+        "schema_name": "logo",
+        "function_name": "prune_agent_history",
+        "argument_types": "",
+        "owner_name": "postgres",
+        "database_owner": "etl_writer",
+        "owner_is_superuser": True,
+        "public_execute": False,
+        "app_execute_grantable": False,
+    }])
+
+
+def test_security_definer_inventory_rejects_arbitrary_owner():
+    with pytest.raises(RuntimeError, match=r"unsafe=.*'owner'"):
+        _assert_security_definer_inventory([{
+            "schema_name": "logo",
+            "function_name": "prune_agent_history",
+            "argument_types": "",
+            "owner_name": "etl_reader",
+            "database_owner": "etl_writer",
+            "owner_is_superuser": False,
+            "public_execute": False,
+            "app_execute_grantable": False,
+        }])
 
 
 def _safe_repull_row():
@@ -756,6 +851,19 @@ def test_repull_contract_rejects_metadata_drift(field, unsafe_value):
             [row],
             expected_definition_sha256=_repull_hash(row),
         )
+
+
+def test_repull_contract_accepts_superuser_owner():
+    row = _safe_repull_row()
+    row.update(
+        owner_name="postgres",
+        database_owner="etl_writer",
+        owner_is_superuser=True,
+    )
+    _assert_repull_contract(
+        [row],
+        expected_definition_sha256=_repull_hash(row),
+    )
 
 
 def test_repull_contract_rejects_dynamic_sql():

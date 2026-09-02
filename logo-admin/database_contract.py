@@ -774,6 +774,44 @@ def _expect(
         )
 
 
+def _owner_is_acceptable(row: Mapping[str, Any] | None) -> bool:
+    """Apply the deliberately relaxed (temporary) object-ownership rule.
+
+    An object owner is acceptable when it is the database owner
+    (``pg_database.datdba``) OR a superuser (``pg_roles.rolsuper``).  On
+    production ``arb_warehouse`` is owned by ``etl_writer`` while every table
+    and function in logo/woo/fdm4/catmgr/curated/pim is owned by ``postgres``,
+    so a strict database-owner match can never hold there.  Arbitrary roles
+    are still rejected, and a row that carries no ownership evidence fails
+    closed.  ``sql/logo_admin_role.sql`` and
+    ``sql/diagnostics/agent-write-preflight.sql`` apply the same rule.
+    """
+
+    if row is None:
+        return False
+    if bool(row.get("owner_is_superuser")):
+        return True
+    if "owned_by_database_owner" in row:
+        return bool(row["owned_by_database_owner"])
+    owner_name = row.get("owner_name")
+    return owner_name is not None and owner_name == row.get("database_owner")
+
+
+def _expect_acceptable_owner(
+    row: Mapping[str, Any] | None,
+    label: str,
+) -> None:
+    if _owner_is_acceptable(row):
+        return
+    owner_name = None if row is None else row.get("owner_name")
+    database_owner = None if row is None else row.get("database_owner")
+    raise RuntimeError(
+        f"unsafe write-enabled database contract: {label}; "
+        f"owner={owner_name!r} must be the database owner "
+        f"({database_owner!r}) or a superuser"
+    )
+
+
 def _expected_table_privileges() -> dict[tuple[str, str], bool]:
     expected: dict[tuple[str, str], bool] = {}
     for table_name, allowed_privileges in TABLE_POLICIES.items():
@@ -1245,18 +1283,21 @@ def _assert_write_relation_shapes(rows: Iterable[Mapping[str, Any]]) -> None:
             row["relation_kind"],
             row["persistence"],
             bool(row["is_partition"]),
+            row.get("owner_name"),
             bool(row["owned_by_database_owner"]),
+            bool(row.get("owner_is_superuser")),
         )
         for table_name, row in relations.items()
         if row["relation_kind"] != "r"
         or row["persistence"] != "p"
         or bool(row["is_partition"])
-        or not bool(row["owned_by_database_owner"])
+        or not _owner_is_acceptable(row)
     )
     if missing or unsafe:
         raise RuntimeError(
             "unsafe write-enabled database contract: writable relation shape "
-            f"drift; missing={missing}, unsafe={unsafe}"
+            "drift (owner must be the database owner or a superuser); "
+            f"missing={missing}, unsafe={unsafe}"
         )
 
 
@@ -1358,7 +1399,7 @@ def _assert_agent_relation_signatures(
             row["relation_kind"] != "r"
             or row["persistence"] != "p"
             or bool(row["is_partition"])
-            or row["owner_name"] != row["database_owner"]
+            or not _owner_is_acceptable(row)
             or row["access_method"] != "heap"
             or row.get("relation_options") is not None
             or row["replica_identity"] != "d"
@@ -1644,13 +1685,20 @@ def _validate_write_relation_shapes(cursor) -> None:
                relation.relkind AS relation_kind,
                relation.relpersistence AS persistence,
                relation.relispartition AS is_partition,
+               relation_owner.rolname AS owner_name,
+               database_owner.rolname AS database_owner,
                relation.relowner = database.datdba
-                   AS owned_by_database_owner
+                   AS owned_by_database_owner,
+               relation_owner.rolsuper AS owner_is_superuser
           FROM pg_class AS relation
           JOIN pg_namespace AS namespace
             ON namespace.oid = relation.relnamespace
+          JOIN pg_roles AS relation_owner
+            ON relation_owner.oid = relation.relowner
           JOIN pg_database AS database
             ON database.datname = current_database()
+          JOIN pg_roles AS database_owner
+            ON database_owner.oid = database.datdba
          WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
          ORDER BY namespace.nspname, relation.relname
         """,
@@ -1795,6 +1843,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
                relation.relispartition AS is_partition,
                owner.rolname AS owner_name,
                database_owner.rolname AS database_owner,
+               owner.rolsuper AS owner_is_superuser,
                access_method.amname AS access_method,
                relation.reloptions AS relation_options,
                relation.relreplident AS replica_identity,
@@ -1993,12 +2042,12 @@ def _assert_trigger_inventory(rows: Iterable[Mapping[str, Any]]) -> None:
 
 
 def _assert_audit_function_contract(audit: Mapping[str, Any] | None) -> None:
+    if audit is None:
+        raise RuntimeError(
+            "unsafe write-enabled database contract: logo.audit_row() is missing"
+        )
+    _expect_acceptable_owner(audit, "audit trigger function owner drift")
     for key, expected, label in (
-        (
-            "owner_name",
-            None if audit is None else audit.get("database_owner"),
-            "owner",
-        ),
         ("procedure_kind", "f", "kind"),
         ("argument_count", 0, "arguments"),
         ("language_name", "plpgsql", "language"),
@@ -2099,7 +2148,8 @@ def _validate_write_semantics(cursor) -> None:
                ) AS app_execute,
                has_function_privilege(
                    'public', procedure.oid, 'EXECUTE'
-               ) AS public_execute
+               ) AS public_execute,
+               function_owner.rolsuper AS owner_is_superuser
           FROM pg_proc AS procedure
           JOIN pg_namespace AS namespace
             ON namespace.oid = procedure.pronamespace
@@ -2240,7 +2290,7 @@ def _assert_prune_contract(row: Mapping[str, Any] | None) -> None:
             "unsafe write-enabled database contract: "
             "logo.prune_agent_history() is missing"
         )
-    _expect(row, "owner_name", row.get("database_owner"), "retention owner drift")
+    _expect_acceptable_owner(row, "retention owner drift")
     if row.get("owner_name") == EXPECTED_ROLE:
         raise RuntimeError(
             "unsafe write-enabled database contract: retention function "
@@ -2299,7 +2349,7 @@ def _assert_security_definer_inventory(
     unexpected = sorted(set(inventory) - ALLOWED_EXECUTABLE_SECURITY_DEFINERS)
     unsafe = []
     for key, row in inventory.items():
-        if row.get("owner_name") != row.get("database_owner"):
+        if not _owner_is_acceptable(row):
             unsafe.append((key, "owner"))
         if bool(row.get("public_execute")):
             unsafe.append((key, "PUBLIC EXECUTE"))
@@ -2377,7 +2427,8 @@ def _validate_security_definer_inventory(cursor) -> None:
                     )
                       AND privilege.privilege_type = 'EXECUTE'
                       AND privilege.is_grantable
-               ) AS app_execute_grantable
+               ) AS app_execute_grantable,
+               function_owner.rolsuper AS owner_is_superuser
           FROM pg_proc AS procedure
           JOIN pg_namespace AS namespace
             ON namespace.oid = procedure.pronamespace
@@ -2415,7 +2466,7 @@ def _assert_repull_contract(
         )
     row = functions[0]
     _expect(row, "argument_types", "text, boolean", "repull signature drift")
-    _expect(row, "owner_name", row.get("database_owner"), "repull owner drift")
+    _expect_acceptable_owner(row, "repull owner drift")
     _expect(row, "procedure_kind", "f", "repull object is not a function")
     _expect(row, "language_name", "plpgsql", "repull language drift")
     _expect(
@@ -2507,6 +2558,7 @@ def _validate_repull_function(
                       AND privilege.privilege_type = 'EXECUTE'
                       AND privilege.is_grantable
                ) AS app_execute_grantable,
+               function_owner.rolsuper AS owner_is_superuser,
                pg_get_functiondef(procedure.oid) AS definition
           FROM pg_proc AS procedure
           JOIN pg_namespace AS namespace
@@ -2561,7 +2613,8 @@ def _validate_retention_function(cursor) -> None:
                     )
                       AND privilege.privilege_type = 'EXECUTE'
                       AND privilege.is_grantable
-               ) AS app_execute_grantable
+               ) AS app_execute_grantable,
+               function_owner.rolsuper AS owner_is_superuser
           FROM pg_proc AS procedure
           JOIN pg_namespace AS namespace
             ON namespace.oid = procedure.pronamespace
