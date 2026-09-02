@@ -104,6 +104,9 @@ CATMGR_PROD_USER=
 CATMGR_PROD_APP_PASSWORD=
 CATMGR_WP_TIMEOUT=120
 CATMGR_APPLY_USERS=
+# Optional: who can SEE the category editor at all (nav + API). Empty = everyone
+# with an app login; set to a few logins to keep it out of the team's way.
+CATMGR_VIEW_USERS=
 
 # Private spreadsheet staging. Files expire and are never publicly served.
 AGENT_UPLOAD_DIR=/var/lib/arb-logo-admin/agent-uploads

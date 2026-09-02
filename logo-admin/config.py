@@ -224,6 +224,7 @@ class Settings:
     catmgr_targets: Mapping[str, CatmgrTarget]
     catmgr_wp_timeout: int
     catmgr_apply_users: FrozenSet[str]
+    catmgr_view_users: FrozenSet[str]
     session_cookie_name: str = "arb_logo_admin_session"
     session_max_age: int = MAX_SESSION_SECONDS
     db_pool_min: int = 1
@@ -408,6 +409,7 @@ def get_settings() -> Settings:
         catmgr_targets=_catmgr_targets(catmgr_enabled),
         catmgr_wp_timeout=_integer("CATMGR_WP_TIMEOUT", 120, 5, 900),
         catmgr_apply_users=_user_allowlist("CATMGR_APPLY_USERS"),
+        catmgr_view_users=_user_allowlist("CATMGR_VIEW_USERS"),
         session_max_age=_integer(
             "SESSION_TTL_SECONDS", MAX_SESSION_SECONDS, 300, MAX_SESSION_SECONDS
         ),

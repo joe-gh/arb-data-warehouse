@@ -18,6 +18,7 @@ from auth import (
     verify_csrf,
 )
 from authorization import agent_access_allowed
+from categories_api import catmgr_visible
 from config import get_settings
 
 
@@ -134,6 +135,6 @@ def dashboard(request: Request):
             "wp_target_host": urlsplit(settings.wp_sync_url).netloc,
             # Category editor ships dark until CATMGR_ENABLED is set; the nav
             # entry, dashboard card, and view section are absent while off.
-            "categories_enabled": settings.catmgr_enabled,
+            "categories_enabled": catmgr_visible(user["user_login"]),
         },
     )

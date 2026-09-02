@@ -215,3 +215,25 @@ def test_draft_routes(client_as, monkeypatch):
     )
     assert delete.status_code == 200
     get_settings.cache_clear()
+
+
+def test_view_allowlist_hides_the_editor_from_other_logins(client_as, monkeypatch):
+    monkeypatch.setenv("CATMGR_ENABLED", "true")
+    monkeypatch.setenv("CATMGR_DEV_URL", "https://dev.example.test/base")
+    monkeypatch.setenv("CATMGR_DEV_USER", "svc")
+    monkeypatch.setenv("CATMGR_DEV_APP_PASSWORD", "pw")
+    from config import get_settings
+    monkeypatch.setenv("CATMGR_VIEW_USERS", "SOMEONE-ELSE")
+    get_settings.cache_clear()
+    hidden = client_as("admin-one")
+    assert hidden.get("/api/categories/tree").status_code == 404
+    assert 'data-view="categories"' not in hidden.get("/").text
+    monkeypatch.setenv("CATMGR_VIEW_USERS", "ADMIN-ONE")
+    get_settings.cache_clear()
+    shown = client_as("admin-one")
+    assert shown.get("/api/categories/tree").status_code == 200
+    assert 'data-view="categories"' in shown.get("/").text
+    monkeypatch.delenv("CATMGR_VIEW_USERS")
+    get_settings.cache_clear()
+    assert client_as("admin-one").get("/api/categories/tree").status_code == 200
+    get_settings.cache_clear()

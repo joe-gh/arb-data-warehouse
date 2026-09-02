@@ -31,8 +31,21 @@ from db import database
 router = APIRouter(prefix="/api/categories", tags=["categories"])
 
 
-def require_catmgr() -> None:
-    if not get_settings().catmgr_enabled:
+def catmgr_visible(user_login: str) -> bool:
+    """The category editor exists for an operator only when the feature is on
+    AND, if CATMGR_VIEW_USERS is set, their login is on it (empty = everyone).
+    Used by the page context (nav) and by every /api/categories route."""
+
+    settings = get_settings()
+    if not settings.catmgr_enabled:
+        return False
+    if not settings.catmgr_view_users:
+        return True
+    return str(user_login or "").strip().lower() in settings.catmgr_view_users
+
+
+def require_catmgr(user: Dict[str, str] = Depends(require_user)) -> None:
+    if not catmgr_visible(user.get("user_login", "")):
         raise HTTPException(status_code=404, detail="Not found")
 
 
