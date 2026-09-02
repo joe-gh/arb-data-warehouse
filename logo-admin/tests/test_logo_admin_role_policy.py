@@ -129,7 +129,7 @@ def test_role_policy_validates_current_catalog_before_revoking_authority():
     for required_fragment in (
         "required Warehouse Operations relations are absent",
         "attribute.attnum::integer AS ordinal_position",
-        "logo.assignment must match the live 18-column",
+        "logo.assignment must match the live 20-column",
         "required audit-trigger inventory has drifted",
         "writable trigger/rule/RLS semantics have drifted",
         "relation.relowner = database.datdba",
@@ -146,6 +146,12 @@ def test_role_policy_pins_exact_undo_catalog_contract():
         "logo.agent_action_journal",
     ):
         assert required_fragment in source
+
+
+def test_editor_preference_table_is_guarded():
+    source = ROLE_SQL.read_text()
+    assert "'logo.style_color_order'" in source
+    assert "logo.style_color_order," in source
 
 
 def test_runtime_retention_hash_matches_migration_body():

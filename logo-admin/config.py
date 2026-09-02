@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 import os
 from pathlib import Path
-from typing import FrozenSet, Optional
+from types import MappingProxyType
+from typing import FrozenSet, Mapping, Optional
 from urllib.parse import urlsplit
 
 
@@ -115,6 +116,71 @@ def _art_base() -> str:
 
 
 @dataclass(frozen=True)
+class CatmgrTarget:
+    """One category-editor WordPress environment (page-scoped, unlike WP_SYNC_URL)."""
+
+    env: str
+    base_url: str  # e.g. https://arb-dev.arborwear.com/wp-json/arb/v1/logo-admin/categories
+    user: str
+    app_password: str
+
+    @property
+    def host(self) -> str:
+        return urlsplit(self.base_url).netloc
+
+
+CATMGR_ENVS = ("dev", "prod")
+
+
+def _catmgr_targets(enabled: bool) -> Mapping[str, CatmgrTarget]:
+    """Parse CATMGR_DEV_URL/_USER/_APP_PASSWORD and CATMGR_PROD_* triples.
+
+    An environment exists iff its URL is set; a URL without complete
+    credentials is a deployment mistake and fails even when the feature is
+    disabled, so a half-finished env file never ships dark and broken.
+    """
+
+    targets = {}
+    for env in CATMGR_ENVS:
+        prefix = f"CATMGR_{env.upper()}"
+        url = os.environ.get(f"{prefix}_URL", "").strip()
+        user = os.environ.get(f"{prefix}_USER", "").strip()
+        app_password = os.environ.get(f"{prefix}_APP_PASSWORD", "").strip()
+        if not url:
+            if user or app_password:
+                raise ConfigurationError(
+                    f"{prefix}_USER/_APP_PASSWORD are set but {prefix}_URL is missing"
+                )
+            continue
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ConfigurationError(f"{prefix}_URL must be an absolute HTTPS URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ConfigurationError(
+                f"{prefix}_URL must not contain credentials, a query, or a fragment"
+            )
+        try:
+            parsed.port
+        except ValueError:
+            raise ConfigurationError(f"{prefix}_URL contains an invalid port") from None
+        if not user or not app_password:
+            raise ConfigurationError(
+                f"{prefix}_URL requires both {prefix}_USER and {prefix}_APP_PASSWORD"
+            )
+        targets[env] = CatmgrTarget(
+            env=env,
+            base_url=url.rstrip("/"),
+            user=user,
+            app_password=app_password,
+        )
+    if enabled and not targets:
+        raise ConfigurationError(
+            "CATMGR_ENABLED requires at least one CATMGR_DEV_URL / CATMGR_PROD_URL target"
+        )
+    return MappingProxyType(targets)
+
+
+@dataclass(frozen=True)
 class Settings:
     database_dsn: str
     session_secret: str
@@ -154,6 +220,10 @@ class Settings:
     agent_max_cell_chars: int
     agent_max_xlsx_entries: int
     agent_max_xlsx_uncompressed_bytes: int
+    catmgr_enabled: bool
+    catmgr_targets: Mapping[str, CatmgrTarget]
+    catmgr_wp_timeout: int
+    catmgr_apply_users: FrozenSet[str]
     session_cookie_name: str = "arb_logo_admin_session"
     session_max_age: int = MAX_SESSION_SECONDS
     db_pool_min: int = 1
@@ -202,6 +272,7 @@ def get_settings() -> Settings:
 
     agent_enabled = _boolean("AGENT_ENABLED", False)
     agent_writes_enabled = _boolean("AGENT_WRITES_ENABLED", False)
+    catmgr_enabled = _boolean("CATMGR_ENABLED", False)
     openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip() or None
     openai_model = os.environ.get("OPENAI_MODEL", "").strip() or None
     agent_repull_function_sha256 = os.environ.get(
@@ -333,6 +404,10 @@ def get_settings() -> Settings:
             1024,
             250 * 1024 * 1024,
         ),
+        catmgr_enabled=catmgr_enabled,
+        catmgr_targets=_catmgr_targets(catmgr_enabled),
+        catmgr_wp_timeout=_integer("CATMGR_WP_TIMEOUT", 120, 5, 900),
+        catmgr_apply_users=_user_allowlist("CATMGR_APPLY_USERS"),
         session_max_age=_integer(
             "SESSION_TTL_SECONDS", MAX_SESSION_SECONDS, 300, MAX_SESSION_SECONDS
         ),

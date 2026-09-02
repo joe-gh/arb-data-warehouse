@@ -1,5 +1,6 @@
 """Undo restores complete recorded business rows byte-for-byte."""
 
+import copy
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -140,3 +141,15 @@ def test_pricing_insert_undo_restores_absence_or_original_row():
     with database.cursor() as cursor:
         after = snapshot_scopes(cursor, (scope,))
     assert states_equal(after, before)
+
+
+def test_states_equal_ignores_trigger_managed_row_version_only():
+    left = [{
+        "scope": {"kind": "assignment_option_row", "key": {"fdm4_store": "S_TEST"}},
+        "rows": [{"ordinal": 1, "row": {"design_id": "DESIGN-1", "row_version": 5}}],
+    }]
+    right = copy.deepcopy(left)
+    right[0]["rows"][0]["row"]["row_version"] = 9
+    assert states_equal(left, right)
+    right[0]["rows"][0]["row"]["design_id"] = "DESIGN-2"
+    assert not states_equal(left, right)

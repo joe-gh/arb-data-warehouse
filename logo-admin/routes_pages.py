@@ -132,5 +132,8 @@ def dashboard(request: Request):
             # Which WordPress environment Sync pushes to - surfaced in the UI
             # so operators always know what a sync will touch.
             "wp_target_host": urlsplit(settings.wp_sync_url).netloc,
+            # Category editor ships dark until CATMGR_ENABLED is set; the nav
+            # entry, dashboard card, and view section are absent while off.
+            "categories_enabled": settings.catmgr_enabled,
         },
     )

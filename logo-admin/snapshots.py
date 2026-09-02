@@ -31,12 +31,22 @@ ASSIGNMENT_COLUMNS = (
     "row_version",
     "catalog_id",
 )
+# Columns a BEFORE-trigger rewrites on every write (feed versioning). They
+# are bookkeeping, not business state: restore lets the trigger stamp them
+# (a restored row MUST get a new row_version so feed consumers see the
+# rollback), and exactness comparisons ignore them.
+TRIGGER_MANAGED_COLUMNS = frozenset({"row_version"})
+ASSIGNMENT_INSERT_COLUMNS = tuple(
+    column for column in ASSIGNMENT_COLUMNS
+    if column not in TRIGGER_MANAGED_COLUMNS
+)
 STORE_SETTINGS_COLUMNS = (
     "fdm4_store",
     "enabled",
     "allows_none",
     "updated_by",
     "updated_at",
+    "extra_customers",
 )
 STORE_PRICING_COLUMNS = (
     "fdm4_store",
@@ -531,6 +541,13 @@ def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
             raise InvalidCommand("Journal store-settings text value is invalid")
         if type(row["enabled"]) is not bool or type(row["allows_none"]) is not bool:
             raise InvalidCommand("Journal store-settings boolean value is invalid")
+        extra = row.get("extra_customers")
+        if not isinstance(extra, list) or not all(
+            isinstance(item, str) for item in extra
+        ):
+            raise InvalidCommand(
+                "Journal row extra_customers must be a list of strings"
+            )
     elif table == "woo.store_pricing_tier":
         if any(
             not isinstance(row[column], str)
@@ -629,8 +646,22 @@ def validate_snapshot_state(
     return tuple(compacted)
 
 
+def _strip_trigger_managed(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_trigger_managed(item)
+            for key, item in value.items()
+            if key not in TRIGGER_MANAGED_COLUMNS
+        }
+    if isinstance(value, list):
+        return [_strip_trigger_managed(item) for item in value]
+    return value
+
+
 def states_equal(left: Any, right: Any) -> bool:
-    return canonical_json(left) == canonical_json(right)
+    return canonical_json(_strip_trigger_managed(left)) == canonical_json(
+        _strip_trigger_managed(right)
+    )
 
 
 def _delete_scope(cursor, scope: MutationScope) -> None:
@@ -664,10 +695,10 @@ def _delete_scope(cursor, scope: MutationScope) -> None:
 def _insert_assignment(cursor, row: Mapping[str, Any]) -> None:
     cursor.execute(
         f"""
-        INSERT INTO logo.assignment ({', '.join(ASSIGNMENT_COLUMNS)})
-        VALUES ({', '.join(['%s'] * len(ASSIGNMENT_COLUMNS))})
+        INSERT INTO logo.assignment ({', '.join(ASSIGNMENT_INSERT_COLUMNS)})
+        VALUES ({', '.join(['%s'] * len(ASSIGNMENT_INSERT_COLUMNS))})
         """,
-        tuple(row[column] for column in ASSIGNMENT_COLUMNS),
+        tuple(row[column] for column in ASSIGNMENT_INSERT_COLUMNS),
     )
 
 

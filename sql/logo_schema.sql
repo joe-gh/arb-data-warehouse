@@ -365,7 +365,302 @@ CREATE TABLE IF NOT EXISTS logo.bulk_batch_row (
   PRIMARY KEY (batch_id, product_style, garment_color_code, option_row, position)
 );
 
+-- Editor-only display order of garment colors inside one style's logo grid.
+-- Global per style (a garment's colors are the same in every store). Colors
+-- without a row sort after the ordered ones, alphabetically by name. This
+-- never reaches /feed or WordPress: storefront color order is WooCommerce
+-- attribute order, not a logo concern. Mirror of
+-- migrations/2026-09-02-style-color-order.sql for blank installs.
+CREATE TABLE IF NOT EXISTS logo.style_color_order (
+    product_style       text        NOT NULL CHECK (btrim(product_style) <> ''),
+    garment_color_code  text        NOT NULL CHECK (btrim(garment_color_code) <> ''),
+    sort_order          integer     NOT NULL CHECK (sort_order >= 0),
+    updated_by          text        NOT NULL DEFAULT '',
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (product_style, garment_color_code)
+);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE logo.style_color_order TO logo_admin;
+
 GRANT SELECT ON logo.color_class TO woo_reader, insights_reader;
 GRANT SELECT, INSERT, UPDATE, DELETE ON logo.color_class, logo.bulk_batch, logo.bulk_batch_row TO logo_admin, etl_writer;
+
+
+-- ---------------------------------------------------------------------------
+-- Category editor (catmgr): snapshot layer. Mirror of
+-- migrations/2026-09-01-category-editor-foundations.sql for blank installs.
+-- ---------------------------------------------------------------------------
+
+CREATE SCHEMA IF NOT EXISTS catmgr;
+
+CREATE TABLE IF NOT EXISTS catmgr.snapshot (
+    env              text        NOT NULL CHECK (env IN ('dev', 'prod')),
+    blog_id          integer     NOT NULL,
+    version          bigint      NOT NULL DEFAULT 1,
+    blog_path        text        NOT NULL DEFAULT '',
+    imported_at      timestamptz NOT NULL DEFAULT now(),
+    imported_by      text        NOT NULL DEFAULT '',
+    term_count       integer     NOT NULL DEFAULT 0,
+    membership_count integer     NOT NULL DEFAULT 0,
+    PRIMARY KEY (env, blog_id)
+);
+
+CREATE TABLE IF NOT EXISTS catmgr.wp_term (
+    env              text    NOT NULL CHECK (env IN ('dev', 'prod')),
+    blog_id          integer NOT NULL,
+    term_id          bigint  NOT NULL,
+    slug             text    NOT NULL,
+    name             text    NOT NULL,
+    parent_term_id   bigint  NOT NULL DEFAULT 0,
+    description      text    NOT NULL DEFAULT '',
+    count            integer NOT NULL DEFAULT 0,
+    sort_order       integer NOT NULL DEFAULT 0,
+    thumbnail_id     bigint  NOT NULL DEFAULT 0,
+    name_locked      boolean NOT NULL DEFAULT false,
+    snapshot_version bigint  NOT NULL,
+    PRIMARY KEY (env, blog_id, term_id)
+);
+CREATE INDEX IF NOT EXISTS wp_term_env_blog_slug ON catmgr.wp_term (env, blog_id, slug);
+
+CREATE TABLE IF NOT EXISTS catmgr.wp_term_product (
+    env              text    NOT NULL CHECK (env IN ('dev', 'prod')),
+    blog_id          integer NOT NULL,
+    term_id          bigint  NOT NULL,
+    product_id       bigint  NOT NULL,
+    sku              text    NOT NULL DEFAULT '',
+    snapshot_version bigint  NOT NULL,
+    PRIMARY KEY (env, blog_id, term_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS wp_term_product_env_blog_sku ON catmgr.wp_term_product (env, blog_id, sku);
+
+CREATE TABLE IF NOT EXISTS catmgr.audit_log (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at         timestamptz NOT NULL DEFAULT now(),
+    actor      text        NOT NULL DEFAULT '',
+    action     text        NOT NULL,
+    entity     text        NOT NULL DEFAULT '',
+    entity_key text        NOT NULL DEFAULT '',
+    detail     jsonb       NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS catmgr_audit_log_at ON catmgr.audit_log (at);
+
+GRANT USAGE ON SCHEMA catmgr TO logo_admin, etl_writer, woo_reader, insights_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA catmgr TO woo_reader, insights_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON catmgr.snapshot, catmgr.wp_term, catmgr.wp_term_product TO logo_admin;
+GRANT SELECT, INSERT ON catmgr.audit_log TO logo_admin;
+REVOKE UPDATE, DELETE, TRUNCATE ON catmgr.audit_log FROM logo_admin;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA catmgr TO logo_admin;
+
+-- ---------------------------------------------------------------------------
+-- Category editor (catmgr): draft tree + store overlays. Mirror of
+-- migrations/2026-09-01-category-editor-phase2-draft.sql.
+-- ---------------------------------------------------------------------------
+
+
+CREATE TABLE IF NOT EXISTS catmgr.node (
+    node_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    parent_id   bigint REFERENCES catmgr.node (node_id) ON DELETE RESTRICT,
+    name        text    NOT NULL CHECK (btrim(name) <> ''),
+    slug        text    NOT NULL UNIQUE
+                CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    sort_order  integer NOT NULL DEFAULT 0,
+    description text    NOT NULL DEFAULT '',
+    updated_by  text    NOT NULL DEFAULT '',
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS node_parent ON catmgr.node (parent_id);
+
+CREATE TABLE IF NOT EXISTS catmgr.node_store_override (
+    override_id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    blog_id             integer NOT NULL,
+    blog_path           text    NOT NULL DEFAULT '',
+    kind                text    NOT NULL
+                        CHECK (kind IN ('extra_node', 'rename', 'exclude')),
+    node_id             bigint REFERENCES catmgr.node (node_id) ON DELETE CASCADE,
+    name                text,
+    slug                text CHECK (slug IS NULL OR slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    parent_node_id      bigint REFERENCES catmgr.node (node_id) ON DELETE SET NULL,
+    include_descendants boolean NOT NULL DEFAULT true,
+    sort_order          integer NOT NULL DEFAULT 0,
+    updated_by          text    NOT NULL DEFAULT '',
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT override_shape CHECK (
+        (kind = 'extra_node' AND node_id IS NULL
+             AND name IS NOT NULL AND btrim(name) <> ''
+             AND slug IS NOT NULL)
+        OR (kind = 'rename' AND node_id IS NOT NULL
+             AND name IS NOT NULL AND btrim(name) <> ''
+             AND slug IS NULL AND parent_node_id IS NULL)
+        OR (kind = 'exclude' AND node_id IS NOT NULL
+             AND name IS NULL AND slug IS NULL AND parent_node_id IS NULL)
+    )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS override_rename_once
+    ON catmgr.node_store_override (blog_id, node_id) WHERE kind = 'rename';
+CREATE UNIQUE INDEX IF NOT EXISTS override_exclude_once
+    ON catmgr.node_store_override (blog_id, node_id) WHERE kind = 'exclude';
+CREATE UNIQUE INDEX IF NOT EXISTS override_extra_slug_once
+    ON catmgr.node_store_override (blog_id, slug) WHERE kind = 'extra_node';
+CREATE INDEX IF NOT EXISTS override_blog ON catmgr.node_store_override (blog_id);
+
+GRANT SELECT ON catmgr.node, catmgr.node_store_override
+    TO woo_reader, insights_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON catmgr.node, catmgr.node_store_override TO logo_admin;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA catmgr TO logo_admin;
+
+
+-- ---------------------------------------------------------------------------
+-- Category editor (catmgr): slug map, rules, product assignments. Mirror of
+-- migrations/2026-09-01-category-editor-phase3-mapping.sql.
+-- ---------------------------------------------------------------------------
+
+
+CREATE TABLE IF NOT EXISTS catmgr.slug_map (
+    old_slug       text PRIMARY KEY,
+    action         text NOT NULL
+                   CHECK (action IN ('map', 'delete', 'store_custom')),
+    target_node_id bigint REFERENCES catmgr.node (node_id) ON DELETE CASCADE,
+    is_primary     boolean NOT NULL DEFAULT false,
+    override_id    bigint REFERENCES catmgr.node_store_override (override_id)
+                   ON DELETE CASCADE,
+    note           text NOT NULL DEFAULT '',
+    updated_by     text NOT NULL DEFAULT '',
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT slug_map_shape CHECK (
+        (action = 'map' AND target_node_id IS NOT NULL AND override_id IS NULL)
+        OR (action = 'delete' AND target_node_id IS NULL
+            AND override_id IS NULL AND NOT is_primary)
+        OR (action = 'store_custom' AND target_node_id IS NULL
+            AND NOT is_primary)
+    )
+);
+-- Exactly one primary (in-place survivor) per target node.
+CREATE UNIQUE INDEX IF NOT EXISTS slug_map_one_primary
+    ON catmgr.slug_map (target_node_id) WHERE is_primary;
+CREATE INDEX IF NOT EXISTS slug_map_target ON catmgr.slug_map (target_node_id);
+
+CREATE TABLE IF NOT EXISTS catmgr.assignment_rule (
+    rule_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    node_id    bigint NOT NULL REFERENCES catmgr.node (node_id) ON DELETE CASCADE,
+    kind       text   NOT NULL DEFAULT 'filter' CHECK (kind IN ('filter')),
+    spec       jsonb  NOT NULL,
+    priority   integer NOT NULL DEFAULT 0,
+    note       text    NOT NULL DEFAULT '',
+    updated_by text    NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS assignment_rule_node ON catmgr.assignment_rule (node_id);
+
+CREATE TABLE IF NOT EXISTS catmgr.product_assignment (
+    id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    node_id  bigint NOT NULL REFERENCES catmgr.node (node_id) ON DELETE CASCADE,
+    sku      text   NOT NULL CHECK (btrim(sku) <> ''),
+    mode     text   NOT NULL CHECK (mode IN ('add', 'remove')),
+    source   text   NOT NULL CHECK (source IN ('manual', 'csv', 'ai', 'rule')),
+    note     text   NOT NULL DEFAULT '',
+    added_by text   NOT NULL DEFAULT '',
+    added_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (node_id, sku, mode)
+);
+CREATE INDEX IF NOT EXISTS product_assignment_sku ON catmgr.product_assignment (sku);
+
+GRANT SELECT ON catmgr.slug_map, catmgr.assignment_rule, catmgr.product_assignment
+    TO woo_reader, insights_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON catmgr.slug_map, catmgr.assignment_rule, catmgr.product_assignment
+    TO logo_admin;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA catmgr TO logo_admin;
+
+
+-- ---------------------------------------------------------------------------
+-- Category editor (catmgr): uncategorized acknowledgements. Mirror of
+-- migrations/2026-09-01-category-editor-phase4-planner.sql.
+-- ---------------------------------------------------------------------------
+
+
+CREATE TABLE IF NOT EXISTS catmgr.uncategorized_ack (
+    sku      text PRIMARY KEY CHECK (btrim(sku) <> ''),
+    note     text NOT NULL DEFAULT '',
+    added_by text NOT NULL DEFAULT '',
+    added_at timestamptz NOT NULL DEFAULT now()
+);
+
+GRANT SELECT ON catmgr.uncategorized_ack TO woo_reader, insights_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE ON catmgr.uncategorized_ack TO logo_admin;
+
+
+-- ---------------------------------------------------------------------------
+-- Category editor (catmgr): runs, jobs, snapshots, redirects. Mirror of
+-- migrations/2026-09-01-category-editor-phase5-runs.sql.
+-- ---------------------------------------------------------------------------
+
+
+CREATE TABLE IF NOT EXISTS catmgr.run (
+    run_id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    env                 text NOT NULL CHECK (env IN ('dev', 'prod')),
+    target_blogs        integer[] NOT NULL,
+    status              text NOT NULL DEFAULT 'queued'
+                        CHECK (status IN ('queued', 'running', 'paused',
+                                          'completed', 'failed', 'cancelled')),
+    plan_totals         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    snapshot_versions   jsonb NOT NULL DEFAULT '{}'::jsonb,
+    stop_on_failure     boolean NOT NULL DEFAULT true,
+    cancel_requested    boolean NOT NULL DEFAULT false,
+    created_by          text NOT NULL DEFAULT '',
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    started_at          timestamptz,
+    finished_at         timestamptz,
+    worker_heartbeat_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS run_env_status ON catmgr.run (env, status);
+
+CREATE TABLE IF NOT EXISTS catmgr.run_job (
+    job_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id     bigint NOT NULL REFERENCES catmgr.run (run_id) ON DELETE CASCADE,
+    blog_id    integer NOT NULL,
+    blog_path  text NOT NULL DEFAULT '',
+    seq        integer NOT NULL,
+    status     text NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending', 'running', 'done', 'failed',
+                                 'skipped', 'cancelled')),
+    payload    jsonb NOT NULL,
+    progress   jsonb NOT NULL DEFAULT '{}'::jsonb,
+    result     jsonb,
+    attempt    integer NOT NULL DEFAULT 0,
+    request_id text NOT NULL DEFAULT '',
+    started_at timestamptz,
+    finished_at timestamptz,
+    UNIQUE (run_id, blog_id)
+);
+CREATE INDEX IF NOT EXISTS run_job_run_seq ON catmgr.run_job (run_id, seq);
+
+CREATE TABLE IF NOT EXISTS catmgr.job_snapshot (
+    job_id   bigint PRIMARY KEY REFERENCES catmgr.run_job (job_id) ON DELETE CASCADE,
+    payload  jsonb NOT NULL,
+    taken_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS catmgr.redirect (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id     bigint NOT NULL REFERENCES catmgr.run (run_id) ON DELETE CASCADE,
+    blog_id    integer NOT NULL,
+    old_path   text NOT NULL,
+    new_path   text NOT NULL,
+    status     text NOT NULL DEFAULT 'planned'
+               CHECK (status IN ('planned', 'created', 'failed')),
+    detail     text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS redirect_run ON catmgr.redirect (run_id);
+
+GRANT SELECT ON catmgr.run, catmgr.run_job, catmgr.job_snapshot, catmgr.redirect
+    TO woo_reader, insights_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON catmgr.run, catmgr.run_job, catmgr.job_snapshot, catmgr.redirect
+    TO logo_admin;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA catmgr TO logo_admin;
+
 
 COMMIT;

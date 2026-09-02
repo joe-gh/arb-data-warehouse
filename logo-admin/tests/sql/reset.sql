@@ -19,6 +19,7 @@ TRUNCATE TABLE
     logo.default_cost,
     logo.design_ipc,
     logo.bulk_batch_row,
+    logo.style_color_order,
     logo.bulk_batch,
     logo.color_class,
     woo.price_rule_audit,
@@ -32,7 +33,21 @@ TRUNCATE TABLE
     woo.store_pricing_tier,
     woo.pricing_tier,
     woo.store_product_state,
-    woo.store_catalog
+    woo.store_catalog,
+    catmgr.snapshot,
+    catmgr.wp_term,
+    catmgr.wp_term_product,
+    catmgr.audit_log,
+    catmgr.node,
+    catmgr.node_store_override,
+    catmgr.slug_map,
+    catmgr.assignment_rule,
+    catmgr.product_assignment,
+    catmgr.uncategorized_ack,
+    catmgr.run,
+    catmgr.run_job,
+    catmgr.job_snapshot,
+    catmgr.redirect
 RESTART IDENTITY CASCADE;
 
 DELETE FROM logo.placement_vocab

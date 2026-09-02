@@ -8,7 +8,9 @@ TEMPLATE = (APP / "templates" / "dashboard.html").read_text()
 
 def _assistant_javascript() -> str:
     start = JAVASCRIPT.index("// ===== Allowlisted in-app assistant =====")
-    end = JAVASCRIPT.index("  function wireEvents()", start)
+    # The assistant module ends at the next section banner (the wiring block
+    # moved below unrelated modules in August).
+    end = JAVASCRIPT.index("// ===== Bulk-apply panel =====", start)
     return JAVASCRIPT[start:end]
 
 

@@ -17,7 +17,7 @@ import socket
 import ssl
 import struct
 import tempfile
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import (
@@ -599,6 +599,39 @@ def style_detail(
     return _read_service(read_queries.get_style, store=store, style=style)
 
 
+@router.get("/styles/similar")
+def similar_styles(
+    store: str = Query(..., min_length=1, max_length=100),
+    style: str = Query(..., min_length=1, max_length=100),
+    mode: str = Query("exact", pattern="^(exact|overlap)$"),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """Styles of the store carrying the same logo set as `style` (exact) or
+    sharing at least one logo tuple (overlap). Read-only."""
+    del user
+    return _read_service(
+        read_queries.find_similar_styles,
+        fdm4_store=store,
+        product_style=style,
+        mode=mode,
+    )
+
+
+@router.get("/styles/coverage")
+def styles_coverage(
+    store: str = Query(..., min_length=1, max_length=100),
+    unconfigured_only: bool = Query(True),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """Per live style: garment colors with / without active logo assignments."""
+    del user
+    return _read_service(
+        read_queries.store_logo_coverage,
+        fdm4_store=store,
+        unconfigured_only=unconfigured_only,
+    )
+
+
 @router.get("/designs")
 def designs(
     q: str = Query("", max_length=100),
@@ -749,6 +782,273 @@ def copy_style(
         CopyStyleCommand.model_validate(body.model_dump()),
         user,
     )
+
+
+# ---------------------------------------------------------------------------
+# Editor batch operations (reorder / paste / copy-to-many / design swap).
+# Standalone mutations following the bulk-apply precedent: explicit
+# lock_scopes here, journaled into logo.bulk_batch, undo via
+# POST /api/bulk-apply/undo. Not commands (the agent write surface is closed).
+# ---------------------------------------------------------------------------
+
+class ReorderBody(BaseModel):
+    store: str = Field(min_length=1, max_length=100)
+    style: str = Field(min_length=1, max_length=100)
+    garment_color_code: str = Field(min_length=1, max_length=100)
+    option_rows: List[int] = Field(min_length=1, max_length=999)
+    apply_to: Literal["color", "style"] = "color"
+
+
+def _editor_errors(exc: Exception) -> HTTPException:
+    if isinstance(exc, NotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, Conflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/assignments/reorder")
+def reorder_assignments(body: ReorderBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Drag-and-drop persistence: renumber sort_order for one color's option
+    rows (or every color with the same rows). Journaled as a bulk batch."""
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        lock_scopes(cursor, (mutations.assignment_style_scope(body.store, body.style),))
+        try:
+            return mutations.reorder_option_rows(
+                cursor,
+                fdm4_store=body.store,
+                product_style=body.style,
+                garment_color_code=body.garment_color_code,
+                option_rows=body.option_rows,
+                apply_to=body.apply_to,
+                actor=user["user_login"],
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+class StyleColorOrderBody(BaseModel):
+    style: str = Field(min_length=1, max_length=100)
+    colors: List[str] = Field(default_factory=list, max_length=500)
+
+
+@router.put("/style-color-order")
+def set_style_color_order(body: StyleColorOrderBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Editor-only garment color order for one style (all stores). Full
+    replace: colors omitted here fall back to alphabetical after the ordered
+    ones. Never synced anywhere."""
+    style = _clean(body.style, "style")
+    colors = _clean_list(body.colors, maxitems=500, field="colors")
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute("DELETE FROM logo.style_color_order WHERE product_style = %s", (style,))
+        for index, code in enumerate(colors):
+            cursor.execute(
+                """
+                INSERT INTO logo.style_color_order
+                    (product_style, garment_color_code, sort_order, updated_by, updated_at)
+                VALUES (%s, %s, %s, %s, now())
+                """,
+                (style, code, (index + 1) * 10, user["user_login"]),
+            )
+    return {"ok": True, "style": style, "colors": colors}
+
+
+class PasteRow(BaseModel):
+    option_row: int = Field(ge=1, le=999)
+    position: int = Field(ge=1, le=3)
+    design_id: str = Field(min_length=1, max_length=100)
+    logo_code: str = Field(default="", max_length=100)
+    color_scheme_id: str = Field(default="", max_length=100)
+    location: str = Field(default="", max_length=200)
+    optional: bool = False
+    background: str = Field(default="", max_length=200)
+    cost_override: Optional[float] = None
+    sort_order: int = Field(default=0, ge=-2147483648, le=2147483647)
+    image_url: str = Field(default="", max_length=2000)
+    name_override: Optional[str] = Field(default=None, max_length=200)
+    active: bool = True
+
+
+class PasteBody(BaseModel):
+    store: str = Field(min_length=1, max_length=100)
+    style: str = Field(min_length=1, max_length=100)
+    colors: List[str] = Field(min_length=1, max_length=500)
+    rows: List[PasteRow] = Field(min_length=1, max_length=2000)
+    overwrite: bool = False
+    as_new_rows: bool = False
+
+
+@router.post("/assignments/paste")
+def paste_assignments(body: PasteBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Clipboard paste onto colors of one style. Journaled; undo via
+    /api/bulk-apply/undo."""
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        lock_scopes(cursor, (mutations.assignment_style_scope(body.store, body.style),))
+        try:
+            return mutations.paste_assignments(
+                cursor,
+                fdm4_store=body.store,
+                product_style=body.style,
+                colors=_clean_list(body.colors, maxitems=500, field="colors"),
+                rows=[row.model_dump() for row in body.rows],
+                overwrite=body.overwrite,
+                as_new_rows=body.as_new_rows,
+                actor=user["user_login"],
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+class PasteBatchBody(BaseModel):
+    store: str = Field(min_length=1, max_length=100)
+    styles: List[str] = Field(min_length=1, max_length=200)
+    color_scope: Literal["match", "all", "light", "dark"] = "match"
+    match_color: Optional[str] = Field(default=None, max_length=100)
+    rows: List[PasteRow] = Field(min_length=1, max_length=2000)
+    overwrite: bool = False
+    as_new_rows: bool = False
+
+
+@router.post("/assignments/paste-batch")
+def paste_assignments_batch(body: PasteBatchBody, user: Dict[str, str] = Depends(require_csrf)):
+    styles = _clean_list(body.styles, upper=True, maxitems=200, field="styles")
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        lock_scopes(cursor, [mutations.assignment_style_scope(body.store, s) for s in styles])
+        try:
+            return mutations.paste_batch(
+                cursor, fdm4_store=body.store, styles=styles,
+                color_scope=body.color_scope, match_color=body.match_color,
+                rows=[row.model_dump() for row in body.rows],
+                overwrite=body.overwrite, as_new_rows=body.as_new_rows,
+                actor=user["user_login"],
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+class StyleActiveBatchBody(BaseModel):
+    store: str = Field(min_length=1, max_length=100)
+    styles: List[str] = Field(min_length=1, max_length=200)
+    active: bool
+
+
+@router.post("/style-active-batch")
+def style_active_batch(body: StyleActiveBatchBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Activate/deactivate many styles in one transaction (same handler as
+    /api/style-active, per style)."""
+    styles = _clean_list(body.styles, upper=True, maxitems=200, field="styles")
+    results = []
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        lock_scopes(cursor, [mutations.assignment_style_scope(body.store, s) for s in styles])
+        for style in styles:
+            command = SetStyleActiveCommand(store=body.store, style=style, active=body.active)
+            try:
+                outcome = mutations.set_style_active(cursor, user["user_login"], command).value
+                results.append({"style": style, "updated": outcome["updated"]})
+            except NotFound as exc:
+                results.append({"style": style, "updated": 0, "error": str(exc)})
+    return {"ok": True, "results": results}
+
+
+class CopyStyleBatchBody(BaseModel):
+    store: str = Field(min_length=1, max_length=100)
+    source_style: str = Field(min_length=1, max_length=100)
+    target_styles: List[str] = Field(min_length=1, max_length=200)
+    color_match: Literal["exact", "like"] = "exact"
+    mode: Literal["merge", "overwrite", "replace"] = "merge"
+
+
+@router.post("/copy-style-batch/preview")
+def copy_style_batch_preview(body: CopyStyleBatchBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Read-only plan: per target style, which source color feeds each
+    target color (exact code, or like light/dark class) and what it costs."""
+    del user
+    targets = _clean_list(body.target_styles, upper=True, maxitems=200, field="target_styles")
+    with database.cursor() as cursor:
+        try:
+            plan, _channels = mutations.plan_copy_style_batch(
+                cursor, fdm4_store=body.store, source_style=body.source_style,
+                target_styles=targets, color_match=body.color_match,
+            )
+        except (NotFound, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+    plan["mode"] = body.mode
+    return plan
+
+
+@router.post("/copy-style-batch")
+def copy_style_batch(body: CopyStyleBatchBody, user: Dict[str, str] = Depends(require_csrf)):
+    targets = _clean_list(body.target_styles, upper=True, maxitems=200, field="target_styles")
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        lock_scopes(cursor, [mutations.assignment_style_scope(body.store, s) for s in targets])
+        try:
+            return mutations.copy_style_batch(
+                cursor, fdm4_store=body.store, source_style=body.source_style,
+                target_styles=targets, color_match=body.color_match, mode=body.mode,
+                actor=user["user_login"],
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+class DesignSwapBody(BaseModel):
+    store: str = Field(min_length=1, max_length=100)
+    from_design_id: str = Field(min_length=1, max_length=100)
+    from_color_scheme_id: Optional[str] = Field(default=None, max_length=100)
+    to_design_id: str = Field(min_length=1, max_length=100)
+    to_color_scheme_id: str = Field(min_length=1, max_length=100)
+    to_logo_code: Optional[str] = Field(default=None, max_length=100)
+    styles: Optional[List[str]] = None
+
+
+def _design_swap_kwargs(body: DesignSwapBody) -> Dict[str, Any]:
+    # Style codes are matched exactly (no upper-casing): they only narrow.
+    return {
+        "fdm4_store": body.store,
+        "from_design_id": body.from_design_id,
+        "from_color_scheme_id": body.from_color_scheme_id,
+        "to_design_id": body.to_design_id,
+        "to_color_scheme_id": body.to_color_scheme_id,
+        "to_logo_code": body.to_logo_code,
+        "styles": _clean_list(body.styles, maxitems=200, field="styles") or None,
+    }
+
+
+@router.post("/design-swap/preview")
+def design_swap_preview(body: DesignSwapBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Dry run of a design swap: every assignment on the old design (and
+    optionally one scheme) with the verdict a manual save would give the new
+    values. Read-only; POSTed because the body is structured (same as
+    /bulk-apply/preview)."""
+    del user
+    with database.cursor() as cursor:
+        try:
+            return mutations.plan_design_swap(cursor, **_design_swap_kwargs(body))
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+@router.post("/design-swap")
+def design_swap(body: DesignSwapBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Move every assignment on one design (optionally one color scheme) to a
+    re-issued design / scheme / logo code. One journaled bulk batch; undo via
+    /api/bulk-apply/undo. Locks every affected style before planning."""
+    kwargs = _design_swap_kwargs(body)
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        try:
+            styles = mutations.design_swap_styles(
+                cursor, fdm4_store=kwargs["fdm4_store"],
+                from_design_id=kwargs["from_design_id"],
+                from_color_scheme_id=kwargs["from_color_scheme_id"],
+                styles=kwargs["styles"],
+            )
+            lock_scopes(cursor, [mutations.assignment_style_scope(kwargs["fdm4_store"], s)
+                                 for s in styles])
+            return mutations.design_swap(
+                cursor, **kwargs, actor=user["user_login"], locked_styles=styles,
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
 
 
 @router.get("/export")
@@ -2347,6 +2647,10 @@ class MixStoreModeBody(BaseModel):
     mode: str
 
 
+class MixExternalBody(BaseModel):
+    fdm4_store: str = Field(min_length=1, max_length=100)
+
+
 class MixStyleBody(BaseModel):
     store: str = Field(min_length=1, max_length=100)
     style_code: str = Field(min_length=1, max_length=100)
@@ -2574,12 +2878,15 @@ def mix_stores(user: Dict[str, str] = Depends(require_user)):
             """
             SELECT m.fdm4_store, m.mode, m.active, m.note, m.imported_at,
                    m.created_by, m.created_at,
-                   CASE WHEN m.mode = 'all' THEN 0 ELSE COALESCE(i.n, 0) END AS style_count
+                   CASE WHEN m.mode = 'all' THEN 0 ELSE COALESCE(i.n, 0) END AS style_count,
+                   (v.fdm4_store IS NOT NULL) AS external,
+                   v.catalog_id AS external_catalog
               FROM woo.store_mix_store m
               LEFT JOIN (
                     SELECT fdm4_store, count(*) AS n
                       FROM woo.store_mix_item GROUP BY 1
                    ) i USING (fdm4_store)
+              LEFT JOIN woo.virtual_catalog_store v USING (fdm4_store)
              ORDER BY m.fdm4_store
             """
         )
@@ -2685,6 +2992,84 @@ def disable_mix_store(
                 status_code=404,
                 detail=f"{store} is not using a custom product list")
     return {"ok": True}
+
+
+@router.put("/product-mix/external")
+def enroll_external_store(body: MixExternalBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Enroll a store as an external (BrightSites/POS-fronted) store: the
+    warehouse projects EVERY priced FDM4 style for it, always in stock (9999),
+    via woo.virtual_catalog_store. The transform ranks that catalog as the
+    store's suggested-primary, so the Woo sync engine picks it up on its own -
+    no WP-side sync-map edit needed (a brand-new blog still needs its one-time
+    Store Sync Map row in WP).
+    """
+    store = _mix_norm(body.fdm4_store)
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        _mix_known_store(cursor, store)
+        cursor.execute(
+            "SELECT catalog_id FROM woo.virtual_catalog_store WHERE fdm4_store = %s",
+            (store,))
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail=f"{store} is already an external all-products store")
+        registry = _mix_registry(cursor, store, required=False)
+        if registry and registry["active"] and registry["mode"] == "list":
+            raise HTTPException(
+                status_code=400,
+                detail=f"{store} uses a curated list; switch it to "
+                       "'All products - follow FDM4' before making it external")
+        catalog_id = f"{store}_Woo_1"
+        cursor.execute(
+            """
+            INSERT INTO woo.virtual_catalog_store
+                (fdm4_store, catalog_id, note, stock_override)
+            VALUES (%s, %s, %s, 9999)
+            """,
+            (store, catalog_id,
+             f"External all-products store; enrolled via Warehouse Ops by {user['user_login']}"),
+        )
+        cursor.execute(
+            """
+            INSERT INTO woo.store_mix_store
+                (fdm4_store, mode, active, note, created_by, updated_by)
+            VALUES (%s, 'all', true, %s, %s, %s)
+            ON CONFLICT (fdm4_store) DO UPDATE SET
+                mode = 'all', active = true,
+                updated_by = EXCLUDED.updated_by, updated_at = now()
+            """,
+            (store, "External store: all products, always in stock",
+             user["user_login"], user["user_login"]),
+        )
+    return {
+        "ok": True,
+        "catalog_id": catalog_id,
+        "note": ("Supply builds on the next hourly warehouse refresh; the "
+                 "storefront follows on its next sync (within ~1h15 total)."),
+    }
+
+
+@router.delete("/product-mix/external")
+def unenroll_external_store(
+    store: str = Query(min_length=1, max_length=100),
+    user: Dict[str, str] = Depends(require_csrf),
+):
+    store = _mix_norm(store)
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute(
+            "DELETE FROM woo.virtual_catalog_store WHERE fdm4_store = %s RETURNING catalog_id",
+            (store,))
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"{store} is not an external all-products store")
+    return {
+        "ok": True,
+        "note": ("The all-products supply retires on the next hourly refresh; "
+                 "the store's blog then re-syncs from its regular FDM4 catalog, "
+                 "which can deactivate most of its products. The product-mix "
+                 "registry entry is kept."),
+    }
 
 
 @router.get("/product-mix")

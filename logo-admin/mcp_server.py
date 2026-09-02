@@ -91,6 +91,27 @@ def get_style(store: str, style: str) -> Any:
 
 
 @mcp.tool()
+def find_similar_styles(fdm4_store: str, product_style: str, mode: str = "exact") -> Any:
+    """Styles of a store whose logo set (distinct design/scheme/position/
+    location tuples over active assignments, any garment color) matches the
+    given style: mode='exact' = identical set, mode='overlap' = shares at
+    least one tuple, with shared/only_in_source/only_in_target counts."""
+    return _call("GET", "/api/styles/similar", params={
+        "store": fdm4_store, "style": product_style, "mode": mode,
+    })
+
+
+@mcp.tool()
+def store_logo_coverage(fdm4_store: str, unconfigured_only: bool = True) -> Any:
+    """Per live style of a store: colors_total, colors_configured (>= 1 active
+    logo) and the unconfigured color codes. unconfigured_only=True lists only
+    styles with at least one color lacking logos."""
+    return _call("GET", "/api/styles/coverage", params={
+        "store": fdm4_store, "unconfigured_only": unconfigured_only,
+    })
+
+
+@mcp.tool()
 def search_designs(q: str = "", store: Optional[str] = None) -> Any:
     """Search FDM4 designs by description/id/logo code. With a store and empty
     q, browses designs used by that store and its owning FDM4 customers."""
@@ -424,6 +445,139 @@ def bulk_apply_undo(batch_id: int) -> Any:
     return _call("POST", "/api/bulk-apply/undo", json_body={"batch_id": batch_id})
 
 
+# -------------------------------------------------------- editor batch tools
+# Reorder / paste / copy-to-many / design swap: journaled like bulk apply,
+# undone through bulk_apply_undo(batch_id).
+
+@mcp.tool()
+def reorder_option_rows(fdm4_store: str, product_style: str, garment_color_code: str,
+                        option_rows: List[int], apply_to: str = "color") -> Any:
+    """Reorder the selectable logo rows on one color (the storefront order
+    follows). apply_to='style' applies the same order to every color of the
+    style that has the same rows. Undo through bulk_apply_undo(batch_id)."""
+    return _call("POST", "/api/assignments/reorder", json_body={
+        "store": fdm4_store, "style": product_style,
+        "garment_color_code": garment_color_code,
+        "option_rows": option_rows, "apply_to": apply_to,
+    })
+
+
+@mcp.tool()
+def set_style_color_order(product_style: str, colors: List[str]) -> Any:
+    """Editor-only order of garment colors in one style's logo grid (all
+    stores). Full replace; an empty list restores alphabetical order."""
+    return _call("PUT", "/api/style-color-order", json_body={
+        "style": product_style, "colors": colors,
+    })
+
+
+@mcp.tool()
+def paste_assignments(fdm4_store: str, product_style: str, colors: List[str],
+                      rows: List[Dict[str, Any]], overwrite: bool = False,
+                      as_new_rows: bool = False) -> Any:
+    """Paste clipboard rows (option_row, position, design_id, logo_code,
+    color_scheme_id, location, optional, background, cost_override,
+    sort_order, image_url, name_override, active) onto the listed colors of one
+    style. Each row is validated like a manual save; invalid rows are
+    reported. Undo through bulk_apply_undo(batch_id)."""
+    return _call("POST", "/api/assignments/paste", json_body={
+        "store": fdm4_store, "style": product_style, "colors": colors,
+        "rows": rows, "overwrite": overwrite, "as_new_rows": as_new_rows,
+    })
+
+
+@mcp.tool()
+def paste_assignments_batch(fdm4_store: str, styles: List[str], rows: List[Dict[str, Any]],
+                            color_scope: str = "match", match_color: Optional[str] = None,
+                            overwrite: bool = False, as_new_rows: bool = False) -> Any:
+    """Paste the same rows onto many styles of one store. color_scope: match
+    (only match_color), all, light or dark (logo.color_class). One undoable
+    batch; per-style problems are reported in results."""
+    body = {"store": fdm4_store, "styles": styles, "rows": rows, "color_scope": color_scope,
+            "overwrite": overwrite, "as_new_rows": as_new_rows}
+    if match_color is not None:
+        body["match_color"] = match_color
+    return _call("POST", "/api/assignments/paste-batch", json_body=body)
+
+
+@mcp.tool()
+def set_styles_active(fdm4_store: str, styles: List[str], active: bool) -> Any:
+    """Activate or deactivate every valid assignment on many styles at once."""
+    return _call("POST", "/api/style-active-batch", json_body={
+        "store": fdm4_store, "styles": styles, "active": active,
+    })
+
+
+@mcp.tool()
+def copy_style_batch_preview(fdm4_store: str, source_style: str, target_styles: List[str],
+                             color_match: str = "exact") -> Any:
+    """Plan copying one style's logos to many styles. color_match 'exact'
+    copies colors the target shares with the source; 'like' also maps the
+    rest by light/dark class. Read-only."""
+    return _call("POST", "/api/copy-style-batch/preview", json_body={
+        "store": fdm4_store, "source_style": source_style,
+        "target_styles": target_styles, "color_match": color_match,
+    })
+
+
+@mcp.tool()
+def copy_style_batch(fdm4_store: str, source_style: str, target_styles: List[str],
+                     color_match: str = "exact", mode: str = "merge") -> Any:
+    """Copy one style's logos to many styles in one undoable batch. mode:
+    merge (skip occupied), overwrite, or replace (clear each mapped color
+    first). Undo through bulk_apply_undo(batch_id)."""
+    return _call("POST", "/api/copy-style-batch", json_body={
+        "store": fdm4_store, "source_style": source_style,
+        "target_styles": target_styles, "color_match": color_match, "mode": mode,
+    })
+
+
+def _design_swap_body(fdm4_store: str, from_design_id: str, to_design_id: str,
+                      to_color_scheme_id: str, from_color_scheme_id: Optional[str],
+                      to_logo_code: Optional[str], styles: Optional[List[str]]) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "store": fdm4_store, "from_design_id": from_design_id,
+        "to_design_id": to_design_id, "to_color_scheme_id": to_color_scheme_id,
+    }
+    if from_color_scheme_id is not None:
+        body["from_color_scheme_id"] = from_color_scheme_id
+    if to_logo_code is not None:
+        body["to_logo_code"] = to_logo_code
+    if styles is not None:
+        body["styles"] = styles
+    return body
+
+
+@mcp.tool()
+def design_swap_preview(fdm4_store: str, from_design_id: str, to_design_id: str,
+                        to_color_scheme_id: str, from_color_scheme_id: Optional[str] = None,
+                        to_logo_code: Optional[str] = None,
+                        styles: Optional[List[str]] = None) -> Any:
+    """Dry run of replacing a design across one store: every assignment on
+    from_design_id (all schemes, or only from_color_scheme_id) with the
+    verdict (ok / unchanged / invalid + reason) it would get on to_design_id /
+    to_color_scheme_id. to_logo_code is derived from FDM4 art when the scheme
+    has exactly one code on file; otherwise it is required. styles narrows."""
+    return _call("POST", "/api/design-swap/preview", json_body=_design_swap_body(
+        fdm4_store, from_design_id, to_design_id, to_color_scheme_id,
+        from_color_scheme_id, to_logo_code, styles))
+
+
+@mcp.tool()
+def design_swap(fdm4_store: str, from_design_id: str, to_design_id: str,
+                to_color_scheme_id: str, from_color_scheme_id: Optional[str] = None,
+                to_logo_code: Optional[str] = None,
+                styles: Optional[List[str]] = None) -> Any:
+    """Replace a design across one store (same arguments as
+    design_swap_preview). Invalid rows are skipped and reported, never fatal.
+    Placement, price, order and name overrides are kept; the storefront image
+    is reused from the store's newest image for the new design/scheme or
+    cleared. Undo through bulk_apply_undo(batch_id)."""
+    return _call("POST", "/api/design-swap", json_body=_design_swap_body(
+        fdm4_store, from_design_id, to_design_id, to_color_scheme_id,
+        from_color_scheme_id, to_logo_code, styles))
+
+
 @mcp.tool()
 def list_logo_names(q: str = "", limit: int = 50, offset: int = 0) -> Any:
     """List/search the customer-facing logo names (logo.display_name), one row
@@ -451,6 +605,395 @@ def repull_logo_name(design_id: str, force: bool = False) -> Any:
     return _call("POST", "/api/logo-names/repull", json_body={
         "design_id": design_id, "force": force,
     })
+
+
+# ------------------------------------------------------- category editor tools
+
+
+@mcp.tool()
+def cat_targets() -> Any:
+    """List the category editor's configured WordPress environments (dev/prod)
+    with their hosts. The category editor is env-scoped: every other cat_*
+    tool takes one of these env values. 404 = the feature is disabled
+    (CATMGR_ENABLED)."""
+    return _call("GET", "/api/categories/targets")
+
+
+@mcp.tool()
+def cat_snapshot_status(env: str) -> Any:
+    """Per-blog category snapshot status for one environment: version,
+    imported_at, term/membership counts. A blog absent here has never been
+    imported."""
+    return _call("GET", "/api/categories/snapshots", params={"env": env})
+
+
+@mcp.tool()
+def cat_list_blogs(env: str) -> Any:
+    """Live blog list from the target WordPress environment (blog_id, path,
+    store name). Use to choose blog_ids for cat_snapshot_import."""
+    return _call("GET", "/api/categories/blogs", params={"env": env})
+
+
+@mcp.tool()
+def cat_wp_status(env: str) -> Any:
+    """Target WordPress preflight: freeze flag, Redirection/WP Rocket
+    presence, WP version."""
+    return _call("GET", "/api/categories/wp-status", params={"env": env})
+
+
+@mcp.tool()
+def cat_snapshot_import(env: str, blog_ids: List[int]) -> Any:
+    """Import (or re-import) live category snapshots for the given blogs from
+    the target WordPress environment. Full-replace per blog + version bump;
+    READS WordPress, never changes it. Returns per-blog results; a failed
+    blog does not stop the rest."""
+    return _call("POST", "/api/categories/snapshots/import", json_body={
+        "env": env, "blog_ids": blog_ids,
+    })
+
+
+@mcp.tool()
+def cat_tree_get(blog_id: Optional[int] = None) -> Any:
+    """The draft category tree (flat node list; build hierarchy by parent_id).
+    With blog_id: that store's EFFECTIVE tree - global nodes minus its
+    excludes, renames applied, store-local extra nodes appended - plus the
+    store's override rows."""
+    if blog_id is None:
+        return _call("GET", "/api/categories/tree")
+    return _call("GET", "/api/categories/tree/effective", params={"blog_id": blog_id})
+
+
+@mcp.tool()
+def cat_node_create(name: str, parent_id: Optional[int] = None,
+                    slug: Optional[str] = None, description: str = "",
+                    position: Optional[int] = None) -> Any:
+    """Create a draft category node. slug defaults to a normalized form of the
+    name (unique; -2 suffix on clash). position = index among siblings
+    (default: append)."""
+    body: Dict[str, Any] = {"name": name, "parent_id": parent_id,
+                            "description": description}
+    if slug is not None:
+        body["slug"] = slug
+    if position is not None:
+        body["position"] = position
+    return _call("POST", "/api/categories/nodes", json_body=body)
+
+
+@mcp.tool()
+def cat_node_update(node_id: int, name: Optional[str] = None,
+                    slug: Optional[str] = None,
+                    description: Optional[str] = None) -> Any:
+    """Rename / re-slug / re-describe a draft node. Only provided fields
+    change. Slug collisions return 409."""
+    body: Dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if slug is not None:
+        body["slug"] = slug
+    if description is not None:
+        body["description"] = description
+    return _call("PUT", f"/api/categories/nodes/{node_id}", json_body=body)
+
+
+@mcp.tool()
+def cat_node_move(node_id: int, parent_id: Optional[int],
+                  position: Optional[int] = None) -> Any:
+    """Move a draft node under a new parent (None = top level) at the given
+    sibling index. Refuses cycles."""
+    return _call("POST", f"/api/categories/nodes/{node_id}/move", json_body={
+        "parent_id": parent_id, "position": position,
+    })
+
+
+@mcp.tool()
+def cat_node_delete(node_id: int, cascade: bool = False) -> Any:
+    """Delete a draft node. Refuses when it has children unless cascade=True
+    (which deletes the whole subtree). Store overrides on deleted nodes are
+    removed automatically."""
+    return _call("DELETE", f"/api/categories/nodes/{node_id}",
+                 params={"cascade": cascade})
+
+
+@mcp.tool()
+def cat_draft_seed(env: str, blog_id: int, force: bool = False) -> Any:
+    """Replace the draft tree with one blog's imported snapshot (usually
+    prod blog 1) so editing starts from live reality. Refuses when the draft
+    is non-empty unless force=True (force also clears all store overrides)."""
+    return _call("POST", "/api/categories/draft/seed", json_body={
+        "env": env, "blog_id": blog_id, "force": force,
+    })
+
+
+@mcp.tool()
+def cat_overrides_list(blog_id: Optional[int] = None) -> Any:
+    """List per-store overrides (extra_node / rename / exclude), optionally
+    for one blog."""
+    params = {} if blog_id is None else {"blog_id": blog_id}
+    return _call("GET", "/api/categories/overrides", params=params)
+
+
+@mcp.tool()
+def cat_override_set(blog_id: int, kind: str, node_id: Optional[int] = None,
+                     name: Optional[str] = None, slug: Optional[str] = None,
+                     parent_node_id: Optional[int] = None,
+                     include_descendants: bool = True, sort_order: int = 0,
+                     override_id: Optional[int] = None) -> Any:
+    """Create or update one store override. kind: extra_node (store-local
+    category; name required, parent_node_id = graft point), rename (node_id +
+    name), exclude (node_id; include_descendants hides the subtree). Pass
+    override_id to update an existing row."""
+    return _call("PUT", "/api/categories/overrides", json_body={
+        "override_id": override_id, "blog_id": blog_id, "kind": kind,
+        "node_id": node_id, "name": name, "slug": slug,
+        "parent_node_id": parent_node_id,
+        "include_descendants": include_descendants, "sort_order": sort_order,
+    })
+
+
+@mcp.tool()
+def cat_override_delete(override_id: int) -> Any:
+    """Delete one store override by id."""
+    return _call("DELETE", f"/api/categories/overrides/{override_id}")
+
+
+@mcp.tool()
+def cat_mapping_status(env: str) -> Any:
+    """The slug-map workbench data for one environment: every live slug with
+    its blog/product counts and current disposition (map / delete /
+    store_custom), plus a progress summary. Preview cannot run until every
+    slug has a disposition."""
+    return _call("GET", "/api/categories/mapping", params={"env": env})
+
+
+@mcp.tool()
+def cat_mapping_suggest(env: str) -> Any:
+    """Auto-match proposals for unmapped slugs (exact slug or exact cleaned
+    name against draft nodes). Nothing is persisted - accept via
+    cat_mapping_bulk."""
+    return _call("GET", "/api/categories/mapping/suggest", params={"env": env})
+
+
+@mcp.tool()
+def cat_mapping_set(old_slug: str, action: str,
+                    target_node_id: Optional[int] = None,
+                    is_primary: Optional[bool] = None,
+                    note: str = "") -> Any:
+    """Set one live slug's disposition. action=map requires target_node_id
+    (first map into a node auto-becomes primary = the in-place survivor
+    keeping its term_id); delete = debris; store_custom = preserved as a
+    store-local category."""
+    return _call("PUT", "/api/categories/mapping", json_body={"rows": [{
+        "old_slug": old_slug, "action": action,
+        "target_node_id": target_node_id, "is_primary": is_primary,
+        "note": note,
+    }]})
+
+
+@mcp.tool()
+def cat_mapping_bulk(rows: List[Dict[str, Any]]) -> Any:
+    """Bulk slug dispositions (up to 500 rows of
+    {old_slug, action, target_node_id?, is_primary?, note?}); per-row results,
+    failures don't stop the rest."""
+    return _call("PUT", "/api/categories/mapping", json_body={"rows": rows})
+
+
+@mcp.tool()
+def cat_mapping_clear(old_slug: str) -> Any:
+    """Remove a slug's disposition (back to unmapped)."""
+    return _call("DELETE", f"/api/categories/mapping/{old_slug}")
+
+
+@mcp.tool()
+def cat_rules_list(node_id: Optional[int] = None) -> Any:
+    """List assignment rules (optionally for one node)."""
+    params = {} if node_id is None else {"node_id": node_id}
+    return _call("GET", "/api/categories/rules", params=params)
+
+
+@mcp.tool()
+def cat_rule_evaluate(env: str, spec: Dict[str, Any], limit: int = 50) -> Any:
+    """Dry-run a rule spec against the env's product universe:
+    {from: 'all'|[old_slug,...], field: name|brand|mill_code|category|sku,
+    op: equals|prefix|regex, value}. Returns match count + sample skus."""
+    return _call("POST", "/api/categories/rules/evaluate", json_body={
+        "env": env, "spec": spec, "limit": limit,
+    })
+
+
+@mcp.tool()
+def cat_rule_set(node_id: int, spec: Dict[str, Any], priority: int = 0,
+                 note: str = "", rule_id: Optional[int] = None) -> Any:
+    """Create/update an assignment rule on a node (spec as in
+    cat_rule_evaluate). Rule matches join the node's membership."""
+    return _call("PUT", "/api/categories/rules", json_body={
+        "rule_id": rule_id, "node_id": node_id, "spec": spec,
+        "priority": priority, "note": note,
+    })
+
+
+@mcp.tool()
+def cat_rule_delete(rule_id: int) -> Any:
+    """Delete an assignment rule."""
+    return _call("DELETE", f"/api/categories/rules/{rule_id}")
+
+
+@mcp.tool()
+def cat_assignments_list(node_id: int) -> Any:
+    """Explicit style-level add/remove assignments on one node."""
+    return _call("GET", "/api/categories/assignments", params={"node_id": node_id})
+
+
+@mcp.tool()
+def cat_assign(node_id: int, skus: List[str], mode: str = "add",
+               source: str = "manual", note: str = "") -> Any:
+    """Add or remove styles (SKUs) on a node explicitly. Opposite-mode rows
+    for the same skus are replaced."""
+    return _call("PUT", "/api/categories/assignments", json_body={
+        "node_id": node_id, "skus": skus, "mode": mode, "source": source,
+        "note": note,
+    })
+
+
+@mcp.tool()
+def cat_membership(env: str, node_id: int) -> Any:
+    """A node's effective style membership in one env:
+    carried (from mapped old slugs) ∪ rule matches ∪ adds − removes,
+    with per-source counts and a sample."""
+    return _call("GET", "/api/categories/membership",
+                 params={"env": env, "node_id": node_id})
+
+
+@mcp.tool()
+def cat_preview(env: str, blog_ids: Optional[List[int]] = None) -> Any:
+    """Full migration preview for one environment (all snapshotted blogs, or a
+    subset): blockers (unmapped slugs, slug collisions, zero-category styles),
+    warnings (code items, blog-1 slug changes, redirect count), per-blog stats
+    and totals. ok=true means apply is possible. Read-only."""
+    return _call("POST", "/api/categories/preview", json_body={
+        "env": env, "blog_ids": blog_ids,
+    })
+
+
+@mcp.tool()
+def cat_preview_blog(env: str, blog_id: int) -> Any:
+    """One blog's full declarative plan: term updates (in-place, fenced by
+    expected_slug), creates, deletes (merge/delete/excluded), membership
+    changes (per product final slug sets), redirects (blog 1). This exact
+    payload is what apply will converge WordPress toward."""
+    return _call("GET", "/api/categories/preview/blog",
+                 params={"env": env, "blog_id": blog_id})
+
+
+@mcp.tool()
+def cat_ack_list() -> Any:
+    """List intentionally-uncategorized acknowledgements (skus excluded from
+    the zero-category blocker)."""
+    return _call("GET", "/api/categories/uncategorized-ack")
+
+
+@mcp.tool()
+def cat_ack_set(skus: List[str], note: str = "") -> Any:
+    """Acknowledge styles as intentionally uncategorized (converts their
+    zero-category blocker into a warning)."""
+    return _call("PUT", "/api/categories/uncategorized-ack", json_body={
+        "skus": skus, "note": note,
+    })
+
+
+@mcp.tool()
+def cat_ack_delete(sku: str) -> Any:
+    """Remove an intentionally-uncategorized acknowledgement."""
+    return _call("DELETE", f"/api/categories/uncategorized-ack/{sku}")
+
+
+@mcp.tool()
+def cat_runs(env: Optional[str] = None) -> Any:
+    """List apply runs (newest first), optionally for one environment."""
+    params = {} if env is None else {"env": env}
+    return _call("GET", "/api/categories/runs", params=params)
+
+
+@mcp.tool()
+def cat_run_status(run_id: int) -> Any:
+    """One run with its per-blog jobs (status, attempts, progress, stats,
+    results, pre-apply snapshot presence)."""
+    return _call("GET", f"/api/categories/runs/{run_id}")
+
+
+@mcp.tool()
+def cat_run_create(env: str, blog_ids: Optional[List[int]] = None,
+                   stop_on_failure: bool = True, start: bool = True) -> Any:
+    """Create (and by default start) an apply run: freezes per-blog plans
+    (blog 1 first) and works through them via the WP broker. Refused while the
+    preview has blockers or another run is active for the env. APPLY-GATED:
+    requires the CATMGR_APPLY_USERS allowlist."""
+    return _call("POST", "/api/categories/runs", json_body={
+        "env": env, "blog_ids": blog_ids, "stop_on_failure": stop_on_failure,
+        "start": start,
+    })
+
+
+@mcp.tool()
+def cat_run_start(run_id: int) -> Any:
+    """(Re)start the worker for a queued run. Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/start")
+
+
+@mcp.tool()
+def cat_run_pause(run_id: int) -> Any:
+    """Pause a run after the current job finishes. Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/pause")
+
+
+@mcp.tool()
+def cat_run_resume(run_id: int) -> Any:
+    """Resume a paused/failed run (pending jobs continue). Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/resume")
+
+
+@mcp.tool()
+def cat_run_cancel(run_id: int) -> Any:
+    """Cancel a paused/queued run; pending jobs become cancelled. Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/cancel")
+
+
+@mcp.tool()
+def cat_job_retry(run_id: int, job_id: int) -> Any:
+    """Re-queue a failed/skipped job and restart the worker (progress made
+    before the failure is not repeated). Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/jobs/{job_id}/retry")
+
+
+@mcp.tool()
+def cat_job_skip(run_id: int, job_id: int) -> Any:
+    """Mark a failed job skipped so the run can complete without that blog.
+    Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/jobs/{job_id}/skip")
+
+
+@mcp.tool()
+def cat_restore_blog(run_id: int, job_id: int) -> Any:
+    """EMERGENCY: converge one blog back to its pre-apply snapshot (deleted
+    terms recreate with new ids). Apply-gated."""
+    return _call("POST", f"/api/categories/runs/{run_id}/jobs/{job_id}/restore")
+
+
+@mcp.tool()
+def cat_freeze_set(env: str, on: bool) -> Any:
+    """Toggle the WordPress-native category-edit freeze for an environment
+    (blocks wp-admin product_cat changes during the migration window).
+    Apply-gated."""
+    return _call("POST", "/api/categories/freeze", json_body={
+        "env": env, "on": on,
+    })
+
+
+@mcp.tool()
+def cat_drift_audit(env: str) -> Any:
+    """Re-import every snapshotted blog live, then report what a plan would
+    still change. converged=true and empty pending = WordPress matches the
+    draft exactly."""
+    return _call("POST", "/api/categories/drift-audit", json_body={"env": env})
 
 
 def tool_names() -> List[str]:

@@ -250,3 +250,43 @@ def test_disable_and_reenable_keeps_configuration(client_as):
     by_style = {row["style_code"]: row for row in listing["styles"]}
     assert by_style["MIX-1"]["colors"] == ["RED"]
     assert by_style["MIX-1"]["size_excludes"] == {"RED": ["L"]}
+
+
+def test_external_enroll_and_unenroll(client_as):
+    client = client_as()
+    # Unknown store refused.
+    assert client.put(
+        "/api/product-mix/external",
+        json={"fdm4_store": "S_NOPE"}).status_code == 400
+    # A curated-list store must go back to 'all' before becoming external.
+    assert client.put(
+        "/api/product-mix/external",
+        json={"fdm4_store": "S_MIXED"}).status_code == 400
+    # Enroll: creates the virtual catalog + forces an active 'all' registry row.
+    payload = client.put(
+        "/api/product-mix/external", json={"fdm4_store": "S_TEST"}).json()
+    assert payload["ok"] is True
+    assert payload["catalog_id"] == "S_TEST_Woo_1"
+    stores = {
+        row["fdm4_store"]: row
+        for row in client.get("/api/product-mix/stores").json()["stores"]
+    }
+    assert stores["S_TEST"]["external"] is True
+    assert stores["S_TEST"]["external_catalog"] == "S_TEST_Woo_1"
+    assert stores["S_TEST"]["mode"] == "all"
+    # Enrolling twice is an explicit error, not an idempotent no-op.
+    assert client.put(
+        "/api/product-mix/external",
+        json={"fdm4_store": "S_TEST"}).status_code == 400
+    # Unenroll drops the supply row but keeps the registry entry.
+    assert client.delete(
+        "/api/product-mix/external", params={"store": "S_TEST"}).json()["ok"]
+    stores = {
+        row["fdm4_store"]: row
+        for row in client.get("/api/product-mix/stores").json()["stores"]
+    }
+    assert stores["S_TEST"]["external"] is False
+    assert stores["S_TEST"]["mode"] == "all"
+    assert client.delete(
+        "/api/product-mix/external",
+        params={"store": "S_TEST"}).status_code == 404

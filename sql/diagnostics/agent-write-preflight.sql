@@ -143,6 +143,7 @@ WITH writable_table(schema_name, table_name) AS (
         ('logo', 'color_class'),
         ('logo', 'bulk_batch'),
         ('logo', 'bulk_batch_row'),
+        ('logo', 'style_color_order'),
         ('logo', 'default_cost'),
         ('logo', 'design_ipc'),
         ('logo', 'admin_session'),
@@ -159,6 +160,25 @@ WITH writable_table(schema_name, table_name) AS (
         ('woo', 'store_mix_item'),
         ('woo', 'store_mix_audit'),
         ('woo', 'feed_consumer'),
+        ('woo', 'app_flag'),
+        ('woo', 'brand_stock_rule'),
+        ('woo', 'stock_override'),
+        ('woo', 'virtual_catalog_store'),
+        ('logo', 'assignment_tombstone'),
+        ('catmgr', 'snapshot'),
+        ('catmgr', 'wp_term'),
+        ('catmgr', 'wp_term_product'),
+        ('catmgr', 'audit_log'),
+        ('catmgr', 'node'),
+        ('catmgr', 'node_store_override'),
+        ('catmgr', 'slug_map'),
+        ('catmgr', 'assignment_rule'),
+        ('catmgr', 'product_assignment'),
+        ('catmgr', 'uncategorized_ack'),
+        ('catmgr', 'run'),
+        ('catmgr', 'run_job'),
+        ('catmgr', 'job_snapshot'),
+        ('catmgr', 'redirect'),
         ('logo', 'agent_chat_session'),
         ('logo', 'agent_chat_message'),
         ('logo', 'agent_change_set'),
@@ -196,12 +216,23 @@ WITH writable_table(schema_name, table_name) AS (
         ('logo', 'import_report'), ('logo', 'display_name'),
         ('logo', 'audit_log'), ('logo', 'color_class'),
         ('logo', 'bulk_batch'), ('logo', 'bulk_batch_row'),
+        ('logo', 'style_color_order'),
         ('logo', 'default_cost'), ('logo', 'design_ipc'),
         ('logo', 'admin_session'), ('woo', 'price_rule'),
         ('woo', 'price_rule_audit'), ('woo', 'pricing_tier'),
         ('woo', 'store_pricing_tier'), ('woo', 'sync_exclusion'),
         ('woo', 'store_mix_store'), ('woo', 'store_mix_item'),
         ('woo', 'store_mix_audit'), ('woo', 'feed_consumer'),
+        ('woo', 'app_flag'), ('woo', 'brand_stock_rule'),
+        ('woo', 'stock_override'), ('woo', 'virtual_catalog_store'),
+        ('logo', 'assignment_tombstone'),
+        ('catmgr', 'snapshot'), ('catmgr', 'wp_term'),
+        ('catmgr', 'wp_term_product'), ('catmgr', 'audit_log'),
+        ('catmgr', 'node'), ('catmgr', 'node_store_override'),
+        ('catmgr', 'slug_map'), ('catmgr', 'assignment_rule'),
+        ('catmgr', 'product_assignment'), ('catmgr', 'uncategorized_ack'),
+        ('catmgr', 'run'), ('catmgr', 'run_job'),
+        ('catmgr', 'job_snapshot'), ('catmgr', 'redirect'),
         ('logo', 'agent_chat_session'), ('logo', 'agent_chat_message'),
         ('logo', 'agent_change_set'), ('logo', 'agent_change_set_item'),
         ('logo', 'agent_spreadsheet_job'), ('logo', 'agent_usage_daily'),
@@ -235,12 +266,23 @@ WITH writable_table(schema_name, table_name) AS (
         ('logo', 'import_report'), ('logo', 'display_name'),
         ('logo', 'audit_log'), ('logo', 'color_class'),
         ('logo', 'bulk_batch'), ('logo', 'bulk_batch_row'),
+        ('logo', 'style_color_order'),
         ('logo', 'default_cost'), ('logo', 'design_ipc'),
         ('logo', 'admin_session'), ('woo', 'price_rule'),
         ('woo', 'price_rule_audit'), ('woo', 'pricing_tier'),
         ('woo', 'store_pricing_tier'), ('woo', 'sync_exclusion'),
         ('woo', 'store_mix_store'), ('woo', 'store_mix_item'),
         ('woo', 'store_mix_audit'), ('woo', 'feed_consumer'),
+        ('woo', 'app_flag'), ('woo', 'brand_stock_rule'),
+        ('woo', 'stock_override'), ('woo', 'virtual_catalog_store'),
+        ('logo', 'assignment_tombstone'),
+        ('catmgr', 'snapshot'), ('catmgr', 'wp_term'),
+        ('catmgr', 'wp_term_product'), ('catmgr', 'audit_log'),
+        ('catmgr', 'node'), ('catmgr', 'node_store_override'),
+        ('catmgr', 'slug_map'), ('catmgr', 'assignment_rule'),
+        ('catmgr', 'product_assignment'), ('catmgr', 'uncategorized_ack'),
+        ('catmgr', 'run'), ('catmgr', 'run_job'),
+        ('catmgr', 'job_snapshot'), ('catmgr', 'redirect'),
         ('logo', 'agent_chat_session'), ('logo', 'agent_chat_message'),
         ('logo', 'agent_change_set'), ('logo', 'agent_change_set_item'),
         ('logo', 'agent_spreadsheet_job'), ('logo', 'agent_usage_daily'),
@@ -262,12 +304,23 @@ WITH writable_table(schema_name, table_name) AS (
         ('logo', 'import_report'), ('logo', 'display_name'),
         ('logo', 'audit_log'), ('logo', 'color_class'),
         ('logo', 'bulk_batch'), ('logo', 'bulk_batch_row'),
+        ('logo', 'style_color_order'),
         ('logo', 'default_cost'), ('logo', 'design_ipc'),
         ('logo', 'admin_session'), ('woo', 'price_rule'),
         ('woo', 'price_rule_audit'), ('woo', 'pricing_tier'),
         ('woo', 'store_pricing_tier'), ('woo', 'sync_exclusion'),
         ('woo', 'store_mix_store'), ('woo', 'store_mix_item'),
         ('woo', 'store_mix_audit'), ('woo', 'feed_consumer'),
+        ('woo', 'app_flag'), ('woo', 'brand_stock_rule'),
+        ('woo', 'stock_override'), ('woo', 'virtual_catalog_store'),
+        ('logo', 'assignment_tombstone'),
+        ('catmgr', 'snapshot'), ('catmgr', 'wp_term'),
+        ('catmgr', 'wp_term_product'), ('catmgr', 'audit_log'),
+        ('catmgr', 'node'), ('catmgr', 'node_store_override'),
+        ('catmgr', 'slug_map'), ('catmgr', 'assignment_rule'),
+        ('catmgr', 'product_assignment'), ('catmgr', 'uncategorized_ack'),
+        ('catmgr', 'run'), ('catmgr', 'run_job'),
+        ('catmgr', 'job_snapshot'), ('catmgr', 'redirect'),
         ('logo', 'agent_chat_session'), ('logo', 'agent_chat_message'),
         ('logo', 'agent_change_set'), ('logo', 'agent_change_set_item'),
         ('logo', 'agent_spreadsheet_job'), ('logo', 'agent_usage_daily'),
@@ -360,7 +413,7 @@ SELECT namespace.nspname AS schema_name,
        NOT attribute.attnotnull AS nullable,
        attribute.attgenerated,
        attribute.attidentity,
-       collation.collname AS collation_name,
+       pg_collation.collname AS collation_name,
        pg_get_expr(
            default_row.adbin, default_row.adrelid, true
        ) AS default_expression
@@ -370,8 +423,8 @@ SELECT namespace.nspname AS schema_name,
     ON attribute.attrelid = relation.oid
    AND attribute.attnum > 0
    AND NOT attribute.attisdropped
-  LEFT JOIN pg_collation AS collation
-    ON collation.oid = attribute.attcollation
+  LEFT JOIN pg_collation
+    ON pg_collation.oid = attribute.attcollation
   LEFT JOIN pg_attrdef AS default_row
     ON default_row.adrelid = relation.oid
    AND default_row.adnum = attribute.attnum
@@ -523,11 +576,12 @@ WITH table_policy(schema_name, table_name, policy) AS (
     VALUES
         ('logo', 'assignment', 'crud'),
         ('logo', 'art_record', 'read'),
-        ('logo', 'store_settings', 'cru'),
+        ('logo', 'store_settings', 'crud'),
         ('logo', 'placement_vocab', 'crud'),
         ('logo', 'color_class', 'crud'),
         ('logo', 'bulk_batch', 'crud'),
         ('logo', 'bulk_batch_row', 'crud'),
+        ('logo', 'style_color_order', 'crud'),
         ('logo', 'default_cost', 'crud'),
         ('logo', 'design_ipc', 'crud'),
         ('logo', 'admin_session', 'crud'),
@@ -540,6 +594,29 @@ WITH table_policy(schema_name, table_name, policy) AS (
         ('woo', 'pricing_tier', 'crud'),
         ('woo', 'store_pricing_tier', 'crud'),
         ('woo', 'sync_exclusion', 'crud'),
+        ('woo', 'store_mix_store', 'crud'),
+        ('woo', 'store_mix_item', 'crud'),
+        ('woo', 'store_mix_audit', 'append'),
+        ('woo', 'feed_consumer', 'crud'),
+        ('woo', 'app_flag', 'crud'),
+        ('woo', 'brand_stock_rule', 'crud'),
+        ('woo', 'stock_override', 'crud'),
+        ('woo', 'virtual_catalog_store', 'crud'),
+        ('logo', 'assignment_tombstone', 'crud'),
+        ('catmgr', 'snapshot', 'crud'),
+        ('catmgr', 'wp_term', 'crud'),
+        ('catmgr', 'wp_term_product', 'crud'),
+        ('catmgr', 'node', 'crud'),
+        ('catmgr', 'node_store_override', 'crud'),
+        ('catmgr', 'slug_map', 'crud'),
+        ('catmgr', 'assignment_rule', 'crud'),
+        ('catmgr', 'product_assignment', 'crud'),
+        ('catmgr', 'uncategorized_ack', 'crud'),
+        ('catmgr', 'run', 'crud'),
+        ('catmgr', 'run_job', 'crud'),
+        ('catmgr', 'job_snapshot', 'crud'),
+        ('catmgr', 'redirect', 'crud'),
+        ('catmgr', 'audit_log', 'append'),
         ('logo', 'agent_chat_session', 'crud'),
         ('logo', 'agent_chat_message', 'crud'),
         ('logo', 'agent_change_set', 'crud'),
@@ -571,8 +648,13 @@ WITH table_policy(schema_name, table_name, policy) AS (
                    THEN true
                WHEN policy = 'read' AND privilege_name = 'SELECT'
                    THEN true
+               -- Unlisted relations: warehouse reads (woo/fdm4) plus the
+               -- read-only pim/curated surfaces sql/logo_admin_role.sql grants.
                WHEN policy IS NULL THEN
-                   namespace.nspname IN ('woo', 'fdm4')
+                   (
+                       namespace.nspname IN ('woo', 'fdm4')
+                       OR namespace.nspname IN ('pim', 'curated')
+                   )
                    AND privilege_name = 'SELECT'
                ELSE false
            END AS expected,
@@ -606,11 +688,12 @@ WITH table_policy(schema_name, table_name, policy) AS (
     VALUES
         ('logo', 'assignment', 'crud'),
         ('logo', 'art_record', 'read'),
-        ('logo', 'store_settings', 'cru'),
+        ('logo', 'store_settings', 'crud'),
         ('logo', 'placement_vocab', 'crud'),
         ('logo', 'color_class', 'crud'),
         ('logo', 'bulk_batch', 'crud'),
         ('logo', 'bulk_batch_row', 'crud'),
+        ('logo', 'style_color_order', 'crud'),
         ('logo', 'default_cost', 'crud'),
         ('logo', 'design_ipc', 'crud'),
         ('logo', 'admin_session', 'crud'),
@@ -623,6 +706,29 @@ WITH table_policy(schema_name, table_name, policy) AS (
         ('woo', 'pricing_tier', 'crud'),
         ('woo', 'store_pricing_tier', 'crud'),
         ('woo', 'sync_exclusion', 'crud'),
+        ('woo', 'store_mix_store', 'crud'),
+        ('woo', 'store_mix_item', 'crud'),
+        ('woo', 'store_mix_audit', 'append'),
+        ('woo', 'feed_consumer', 'crud'),
+        ('woo', 'app_flag', 'crud'),
+        ('woo', 'brand_stock_rule', 'crud'),
+        ('woo', 'stock_override', 'crud'),
+        ('woo', 'virtual_catalog_store', 'crud'),
+        ('logo', 'assignment_tombstone', 'crud'),
+        ('catmgr', 'snapshot', 'crud'),
+        ('catmgr', 'wp_term', 'crud'),
+        ('catmgr', 'wp_term_product', 'crud'),
+        ('catmgr', 'node', 'crud'),
+        ('catmgr', 'node_store_override', 'crud'),
+        ('catmgr', 'slug_map', 'crud'),
+        ('catmgr', 'assignment_rule', 'crud'),
+        ('catmgr', 'product_assignment', 'crud'),
+        ('catmgr', 'uncategorized_ack', 'crud'),
+        ('catmgr', 'run', 'crud'),
+        ('catmgr', 'run_job', 'crud'),
+        ('catmgr', 'job_snapshot', 'crud'),
+        ('catmgr', 'redirect', 'crud'),
+        ('catmgr', 'audit_log', 'append'),
         ('logo', 'agent_chat_session', 'crud'),
         ('logo', 'agent_chat_message', 'crud'),
         ('logo', 'agent_change_set', 'crud'),
@@ -652,7 +758,10 @@ WITH table_policy(schema_name, table_name, policy) AS (
                    'SELECT', 'INSERT'
                )
                WHEN policy = 'read' THEN privilege_name = 'SELECT'
-               ELSE namespace.nspname IN ('woo', 'fdm4')
+               ELSE (
+                        namespace.nspname IN ('woo', 'fdm4')
+                        OR namespace.nspname IN ('pim', 'curated')
+                    )
                     AND privilege_name = 'SELECT'
            END AS expected,
            has_column_privilege(
@@ -691,7 +800,17 @@ WITH sequence_policy(schema_name, sequence_name, policy) AS (
         ('logo', 'audit_log_id_seq', 'usage_select'),
         ('logo', 'import_report_id_seq', 'usage_select'),
         ('woo', 'price_rule_rule_id_seq', 'usage'),
-        ('woo', 'price_rule_audit_id_seq', 'usage')
+        ('woo', 'price_rule_audit_id_seq', 'usage'),
+        ('woo', 'store_mix_audit_id_seq', 'usage'),
+        ('logo', 'assignment_version_seq', 'usage'),
+        ('catmgr', 'assignment_rule_rule_id_seq', 'usage'),
+        ('catmgr', 'audit_log_id_seq', 'usage'),
+        ('catmgr', 'node_node_id_seq', 'usage'),
+        ('catmgr', 'node_store_override_override_id_seq', 'usage'),
+        ('catmgr', 'product_assignment_id_seq', 'usage'),
+        ('catmgr', 'redirect_id_seq', 'usage'),
+        ('catmgr', 'run_job_job_id_seq', 'usage'),
+        ('catmgr', 'run_run_id_seq', 'usage')
 ), sequence_privilege(privilege_name) AS (
     VALUES ('USAGE'), ('SELECT'), ('UPDATE')
 ), inventory AS (
@@ -904,11 +1023,12 @@ WITH execution_contract AS (
     VALUES
         ('logo', 'assignment', 'crud', true),
         ('logo', 'art_record', 'read', true),
-        ('logo', 'store_settings', 'cru', true),
+        ('logo', 'store_settings', 'crud', true),
         ('logo', 'placement_vocab', 'crud', true),
         ('logo', 'color_class', 'crud', true),
         ('logo', 'bulk_batch', 'crud', true),
         ('logo', 'bulk_batch_row', 'crud', true),
+        ('logo', 'style_color_order', 'crud', true),
         ('logo', 'default_cost', 'crud', true),
         ('logo', 'design_ipc', 'crud', true),
         ('logo', 'admin_session', 'crud', true),
@@ -921,6 +1041,29 @@ WITH execution_contract AS (
         ('woo', 'pricing_tier', 'crud', true),
         ('woo', 'store_pricing_tier', 'crud', true),
         ('woo', 'sync_exclusion', 'crud', true),
+        ('woo', 'store_mix_store', 'crud', true),
+        ('woo', 'store_mix_item', 'crud', true),
+        ('woo', 'store_mix_audit', 'append', true),
+        ('woo', 'feed_consumer', 'crud', true),
+        ('woo', 'app_flag', 'crud', true),
+        ('woo', 'brand_stock_rule', 'crud', true),
+        ('woo', 'stock_override', 'crud', true),
+        ('woo', 'virtual_catalog_store', 'crud', true),
+        ('logo', 'assignment_tombstone', 'crud', true),
+        ('catmgr', 'snapshot', 'crud', true),
+        ('catmgr', 'wp_term', 'crud', true),
+        ('catmgr', 'wp_term_product', 'crud', true),
+        ('catmgr', 'node', 'crud', true),
+        ('catmgr', 'node_store_override', 'crud', true),
+        ('catmgr', 'slug_map', 'crud', true),
+        ('catmgr', 'assignment_rule', 'crud', true),
+        ('catmgr', 'product_assignment', 'crud', true),
+        ('catmgr', 'uncategorized_ack', 'crud', true),
+        ('catmgr', 'run', 'crud', true),
+        ('catmgr', 'run_job', 'crud', true),
+        ('catmgr', 'job_snapshot', 'crud', true),
+        ('catmgr', 'redirect', 'crud', true),
+        ('catmgr', 'audit_log', 'append', true),
         ('logo', 'agent_chat_session', 'crud', true),
         ('logo', 'agent_chat_message', 'crud', true),
         ('logo', 'agent_change_set', 'crud', true),
@@ -982,7 +1125,10 @@ WITH execution_contract AS (
                        privilege_name = 'SELECT'
                    )
                    ELSE actual = (
-                       schema_name IN ('woo', 'fdm4')
+                       (
+                           schema_name IN ('woo', 'fdm4')
+                           OR schema_name IN ('pim', 'curated')
+                       )
                        AND privilege_name = 'SELECT'
                    )
                END
@@ -1066,11 +1212,20 @@ WITH execution_contract AS (
                    WHEN policy = 'crud' THEN actual = (
                        privilege_name IN ('SELECT', 'INSERT', 'UPDATE')
                    )
+                   WHEN policy = 'cru' THEN actual = (
+                       privilege_name IN ('SELECT', 'INSERT', 'UPDATE')
+                   )
                    WHEN policy = 'append' THEN actual = (
                        privilege_name IN ('SELECT', 'INSERT')
                    )
+                   WHEN policy = 'read' THEN actual = (
+                       privilege_name = 'SELECT'
+                   )
                    ELSE actual = (
-                       schema_name IN ('woo', 'fdm4')
+                       (
+                           schema_name IN ('woo', 'fdm4')
+                           OR schema_name IN ('pim', 'curated')
+                       )
                        AND privilege_name = 'SELECT'
                    )
                END
@@ -1129,6 +1284,7 @@ WITH execution_contract AS (
         ('logo', 'store_settings', 'allows_none', 'boolean', false, 'false'),
         ('logo', 'store_settings', 'updated_by', 'text', false, ''''''),
         ('logo', 'store_settings', 'updated_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'store_settings', 'extra_customers', 'text[]', false, '''{}''[]'),
         ('woo', 'store_pricing_tier', 'fdm4_store', 'text', false, NULL),
         ('woo', 'store_pricing_tier', 'tier_name', 'text', false, NULL),
         ('woo', 'store_pricing_tier', 'note', 'text', false, ''''''),
@@ -1143,7 +1299,8 @@ WITH execution_contract AS (
             'option_row', 'name_override', 'row_version', 'catalog_id'
         ]::text[]),
         ('logo', 'store_settings', ARRAY[
-            'fdm4_store', 'enabled', 'allows_none', 'updated_by', 'updated_at'
+            'fdm4_store', 'enabled', 'allows_none', 'updated_by', 'updated_at',
+            'extra_customers'
         ]::text[]),
         ('woo', 'store_pricing_tier', ARRAY[
             'fdm4_store', 'tier_name', 'note', 'updated_at'
@@ -1159,7 +1316,7 @@ WITH execution_contract AS (
            NOT attribute.attnotnull AS nullable,
            attribute.attgenerated AS generated_kind,
            attribute.attidentity AS identity_kind,
-           collation.collname AS collation_name,
+           pg_collation.collname AS collation_name,
            CASE WHEN default_row.oid IS NULL THEN NULL ELSE regexp_replace(
                regexp_replace(
                    lower(pg_get_expr(
@@ -1168,7 +1325,7 @@ WITH execution_contract AS (
                    '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
                    '', 'g'
                ),
-               '[[:space:]()]', '', 'g'
+               '[[:space:]()"]', '', 'g'
            ) END AS default_signature
       FROM pg_class AS relation
       JOIN pg_namespace AS namespace
@@ -1177,8 +1334,8 @@ WITH execution_contract AS (
         ON attribute.attrelid = relation.oid
        AND attribute.attnum > 0
        AND NOT attribute.attisdropped
-      LEFT JOIN pg_collation AS collation
-        ON collation.oid = attribute.attcollation
+      LEFT JOIN pg_collation
+        ON pg_collation.oid = attribute.attcollation
       LEFT JOIN pg_attrdef AS default_row
         ON default_row.adrelid = relation.oid
        AND default_row.adnum = attribute.attnum
@@ -1201,7 +1358,8 @@ WITH execution_contract AS (
                    OR actual.generated_kind <> ''
                    OR actual.identity_kind <> ''
                    OR actual.collation_name IS DISTINCT FROM CASE
-                       WHEN expected.formatted_type = 'text' THEN 'default'
+                       WHEN expected.formatted_type IN ('text', 'text[]')
+                           THEN 'default'
                        ELSE NULL
                    END
                    OR actual.default_signature IS DISTINCT FROM
@@ -1248,7 +1406,7 @@ WITH execution_contract AS (
            constraint_row.confupdtype AS update_action,
            constraint_row.confdeltype AS delete_action,
            constraint_row.confmatchtype AS match_type,
-           constraint_row.condeferrable AS deferrable,
+           constraint_row.condeferrable AS is_deferrable,
            constraint_row.condeferred AS initially_deferred,
            constraint_row.convalidated AS validated,
            constraint_row.connoinherit AS no_inherit,
@@ -1261,7 +1419,7 @@ WITH execution_contract AS (
                    )),
                    '::smallint', ''
                ), '::integer', ''), '::bigint', ''),
-               '[[:space:]()]', '', 'g'
+               '[[:space:]()"]', '', 'g'
            ) AS check_expression
       FROM pg_constraint AS constraint_row
       JOIN pg_class AS source ON source.oid = constraint_row.conrelid
@@ -1289,10 +1447,12 @@ WITH execution_contract AS (
 ), restore_constraint_contract AS (
     SELECT count(*) = 7
            AND bool_and(
-               NOT deferrable
+               NOT is_deferrable
                AND NOT initially_deferred
                AND validated
-               AND NOT no_inherit
+               -- PostgreSQL marks index-backed and foreign-key constraints
+               -- NO INHERIT; the flag is only a policy signal on CHECKs.
+               AND (constraint_type <> 'c' OR NOT no_inherit)
                AND CASE
                    WHEN source_schema = 'logo'
                     AND source_table = 'assignment'
@@ -1395,7 +1555,11 @@ WITH execution_contract AS (
        AND table_policy.table_name = relation.relname
      WHERE NOT trigger.tgisinternal
 ), trigger_contract AS (
-    SELECT count(*) = 7
+    -- Mirrors EXPECTED_TRIGGERS in logo-admin/database_contract.py: the
+    -- audit triggers (tgtype 29) plus the feed-versioning triggers on
+    -- logo.assignment (stamp 23 = BEFORE INSERT OR UPDATE, tombstone 9 =
+    -- AFTER DELETE).
+    SELECT count(*) = 9
            AND count(*) FILTER (
                WHERE schema_name = 'logo'
                  AND table_name = 'assignment'
@@ -1431,20 +1595,51 @@ WITH execution_contract AS (
                  AND table_name = 'price_rule'
                  AND trigger_name = 'price_rule_audit'
            ) = 1
+           AND count(*) FILTER (
+               WHERE schema_name = 'woo'
+                 AND table_name = 'store_mix_store'
+                 AND trigger_name = 'store_mix_store_audit'
+           ) = 1
+           AND count(*) FILTER (
+               WHERE schema_name = 'woo'
+                 AND table_name = 'store_mix_item'
+                 AND trigger_name = 'store_mix_item_audit'
+           ) = 1
            AND bool_and(
-               trigger_type = 29
-               AND enabled = 'O'
-               AND (
-                   (schema_name = 'logo' AND table_name IN (
+               enabled = 'O'
+               AND CASE
+                   WHEN schema_name = 'logo' AND table_name = 'assignment'
+                    AND trigger_name = 'assignment_feed_stamp'
+                       THEN trigger_type = 23
+                            AND function_schema = 'logo'
+                            AND function_name = 'assignment_feed_stamp'
+                   WHEN schema_name = 'logo' AND table_name = 'assignment'
+                    AND trigger_name = 'assignment_feed_tombstone'
+                       THEN trigger_type = 9
+                            AND function_schema = 'logo'
+                            AND function_name = 'assignment_feed_tombstone'
+                   WHEN schema_name = 'logo' AND table_name IN (
                        'assignment', 'store_settings', 'color_class'
-                    ) AND function_schema = 'logo' AND function_name = 'audit_row')
-                   OR (schema_name = 'logo' AND table_name = 'display_name'
-                       AND function_schema = 'logo'
-                       AND function_name = 'audit_display_name_row')
-                   OR (schema_name = 'woo' AND table_name = 'price_rule'
-                       AND function_schema = 'woo'
-                       AND function_name = 'audit_price_rule_row')
-               )
+                   )
+                       THEN trigger_type = 29
+                            AND function_schema = 'logo'
+                            AND function_name = 'audit_row'
+                   WHEN schema_name = 'logo' AND table_name = 'display_name'
+                       THEN trigger_type = 29
+                            AND function_schema = 'logo'
+                            AND function_name = 'audit_display_name_row'
+                   WHEN schema_name = 'woo' AND table_name = 'price_rule'
+                       THEN trigger_type = 29
+                            AND function_schema = 'woo'
+                            AND function_name = 'audit_price_rule_row'
+                   WHEN schema_name = 'woo' AND table_name IN (
+                       'store_mix_store', 'store_mix_item'
+                   )
+                       THEN trigger_type = 29
+                            AND function_schema = 'woo'
+                            AND function_name = 'audit_store_mix_row'
+                   ELSE false
+               END
                AND argument_types = ''
                AND argument_count = 0
                AND no_when_clause
@@ -1706,7 +1901,7 @@ WITH execution_contract AS (
            NOT attribute.attnotnull AS nullable,
            attribute.attgenerated AS generated_kind,
            attribute.attidentity AS identity_kind,
-           collation.collname AS collation_name,
+           pg_collation.collname AS collation_name,
            CASE WHEN default_row.oid IS NULL THEN NULL ELSE regexp_replace(
                regexp_replace(
                    lower(pg_get_expr(
@@ -1715,7 +1910,7 @@ WITH execution_contract AS (
                    '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
                    '', 'g'
                ),
-               '[[:space:]()]', '', 'g'
+               '[[:space:]()"]', '', 'g'
            ) END AS default_signature
       FROM agent_table_policy
       JOIN pg_namespace AS namespace
@@ -1727,8 +1922,8 @@ WITH execution_contract AS (
         ON attribute.attrelid = relation.oid
        AND attribute.attnum > 0
        AND NOT attribute.attisdropped
-      LEFT JOIN pg_collation AS collation
-        ON collation.oid = attribute.attcollation
+      LEFT JOIN pg_collation
+        ON pg_collation.oid = attribute.attcollation
       LEFT JOIN pg_attrdef AS default_row
         ON default_row.adrelid = relation.oid
        AND default_row.adnum = attribute.attnum
@@ -1832,10 +2027,10 @@ WITH execution_contract AS (
                        '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
                        '', 'g'
                    ),
-                   '[[:space:]()]', '', 'g'
+                   '[[:space:]()"]', '', 'g'
                ) ELSE '' END
            ) AS signature,
-           constraint_row.condeferrable AS deferrable,
+           constraint_row.condeferrable AS is_deferrable,
            constraint_row.condeferred AS initially_deferred,
            constraint_row.convalidated AS validated,
            constraint_row.connoinherit AS no_inherit
@@ -1926,10 +2121,12 @@ WITH execution_contract AS (
         'logo.agent_usage_monthly|agent_usage_monthly_usage_month_check|c|usage_month||||||date_trunc''month'',usage_month=usage_month'
     ]::text[]
            AND bool_and(
-               NOT deferrable
+               NOT is_deferrable
                AND NOT initially_deferred
                AND validated
-               AND NOT no_inherit
+               -- PostgreSQL marks index-backed and foreign-key constraints
+               -- NO INHERIT; the flag is only a policy signal on CHECKs.
+               AND (split_part(signature, '|', 3) <> 'c' OR NOT no_inherit)
            ) AS passes
       FROM agent_constraint_inventory
 ), agent_index_inventory AS (
@@ -1964,7 +2161,7 @@ WITH execution_contract AS (
                            '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
                            '', 'g'
                        ),
-                       '[[:space:]()]', '', 'g'
+                       '[[:space:]()"]', '', 'g'
                    )
                END
            ) AS signature,
@@ -2036,7 +2233,17 @@ WITH execution_contract AS (
         ('logo', 'audit_log_id_seq', 'usage_select'),
         ('logo', 'import_report_id_seq', 'usage_select'),
         ('woo', 'price_rule_rule_id_seq', 'usage'),
-        ('woo', 'price_rule_audit_id_seq', 'usage')
+        ('woo', 'price_rule_audit_id_seq', 'usage'),
+        ('woo', 'store_mix_audit_id_seq', 'usage'),
+        ('logo', 'assignment_version_seq', 'usage'),
+        ('catmgr', 'assignment_rule_rule_id_seq', 'usage'),
+        ('catmgr', 'audit_log_id_seq', 'usage'),
+        ('catmgr', 'node_node_id_seq', 'usage'),
+        ('catmgr', 'node_store_override_override_id_seq', 'usage'),
+        ('catmgr', 'product_assignment_id_seq', 'usage'),
+        ('catmgr', 'redirect_id_seq', 'usage'),
+        ('catmgr', 'run_job_job_id_seq', 'usage'),
+        ('catmgr', 'run_run_id_seq', 'usage')
 ), sequence_privilege(privilege_name) AS (
     VALUES ('USAGE'), ('SELECT'), ('UPDATE')
 ), sequence_inventory AS (

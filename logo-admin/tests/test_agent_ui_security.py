@@ -37,7 +37,10 @@ def _render_dashboard(
 def _assistant_javascript() -> str:
     source = JAVASCRIPT.read_text()
     start = source.index("// ===== Allowlisted in-app assistant =====")
-    end = source.index("  function wireEvents()", start)
+    # The assistant module ends where the next section banner begins; the
+    # wiring block moved below other modules in August, which silently
+    # widened this scan to unrelated code.
+    end = source.index("// ===== Bulk-apply panel =====", start)
     return source[start:end]
 
 

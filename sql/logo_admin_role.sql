@@ -92,6 +92,7 @@ BEGIN
           'logo.audit_log',
           'logo.bulk_batch',
           'logo.bulk_batch_row',
+          'logo.style_color_order',
           'logo.color_class',
           'logo.default_cost',
           'logo.design_ipc',
@@ -111,6 +112,7 @@ BEGIN
           'logo.agent_rate_window',
           'logo.agent_quota_reservation',
           'logo.agent_action_journal',
+          'logo.assignment_tombstone',
           'woo.price_rule',
           'woo.price_rule_audit',
           'woo.pricing_tier',
@@ -119,7 +121,33 @@ BEGIN
           'woo.store_product_state',
           'woo.sync_control',
           'woo.sync_exclusion',
-          'woo.virtual_catalog_store'
+          'woo.virtual_catalog_store',
+          'woo.app_flag',
+          'woo.brand_stock_rule',
+          'woo.feed_consumer',
+          'woo.stock_override',
+          'woo.store_blog_map',
+          'woo.store_mix_audit',
+          'woo.store_mix_candidate',
+          'woo.store_mix_item',
+          'woo.store_mix_store',
+          'pim.product_state',
+          'curated.category',
+          'curated.category_product',
+          'catmgr.snapshot',
+          'catmgr.wp_term',
+          'catmgr.wp_term_product',
+          'catmgr.audit_log',
+          'catmgr.node',
+          'catmgr.node_store_override',
+          'catmgr.slug_map',
+          'catmgr.assignment_rule',
+          'catmgr.product_assignment',
+          'catmgr.uncategorized_ack',
+          'catmgr.run',
+          'catmgr.run_job',
+          'catmgr.job_snapshot',
+          'catmgr.redirect'
       ]::text[]) AS required(name)
      WHERE to_regclass(required.name) IS NULL;
     IF missing_relations IS NOT NULL THEN
@@ -146,7 +174,9 @@ BEGIN
             (15, 'updated_by', 'text', false),
             (16, 'updated_at', 'timestamp with time zone', false),
             (17, 'option_row', 'integer', false),
-            (18, 'name_override', 'text', true)
+            (18, 'name_override', 'text', true),
+            (19, 'row_version', 'bigint', false),
+            (20, 'catalog_id', 'text', true)
     ), actual AS (
         SELECT attribute.attnum::integer AS ordinal_position,
                attribute.attname AS column_name,
@@ -160,7 +190,8 @@ BEGIN
     )
     SELECT (SELECT count(*) FROM actual) = (SELECT count(*) FROM expected)
        AND NOT EXISTS (
-           SELECT 1 FROM expected
+           SELECT ordinal_position, column_name, formatted_type, nullable
+             FROM expected
            EXCEPT
            SELECT ordinal_position, column_name, formatted_type, nullable
              FROM actual
@@ -168,13 +199,14 @@ BEGIN
       INTO assignment_contract_ok;
     IF assignment_contract_ok IS DISTINCT FROM true THEN
         RAISE EXCEPTION
-            'logo.assignment must match the live 18-column name/type/null contract';
+            'logo.assignment must match the live 20-column name/type/null contract';
     END IF;
 
     WITH writable(name) AS (
         SELECT unnest(ARRAY[
             'logo.assignment', 'logo.audit_log', 'logo.bulk_batch',
-            'logo.bulk_batch_row', 'logo.color_class', 'logo.default_cost',
+            'logo.bulk_batch_row', 'logo.style_color_order',
+            'logo.color_class', 'logo.default_cost',
             'logo.design_ipc', 'logo.display_name', 'logo.image_import',
             'logo.import_report', 'logo.placement_vocab', 'logo.store_settings',
             'logo.admin_session', 'logo.agent_chat_session',
@@ -182,9 +214,19 @@ BEGIN
             'logo.agent_change_set_item', 'logo.agent_spreadsheet_job',
             'logo.agent_usage_daily', 'logo.agent_usage_monthly',
             'logo.agent_rate_window', 'logo.agent_quota_reservation',
-            'logo.agent_action_journal', 'woo.price_rule',
-            'woo.price_rule_audit',
-            'woo.pricing_tier', 'woo.store_pricing_tier', 'woo.sync_exclusion'
+            'logo.agent_action_journal', 'logo.assignment_tombstone',
+            'woo.price_rule', 'woo.price_rule_audit',
+            'woo.pricing_tier', 'woo.store_pricing_tier', 'woo.sync_exclusion',
+            'woo.app_flag', 'woo.brand_stock_rule', 'woo.feed_consumer',
+            'woo.stock_override', 'woo.store_mix_audit',
+            'woo.store_mix_item', 'woo.store_mix_store',
+            'woo.virtual_catalog_store',
+            'catmgr.snapshot', 'catmgr.wp_term', 'catmgr.wp_term_product',
+            'catmgr.audit_log', 'catmgr.node', 'catmgr.node_store_override',
+            'catmgr.slug_map', 'catmgr.assignment_rule',
+            'catmgr.product_assignment', 'catmgr.uncategorized_ack',
+            'catmgr.run', 'catmgr.run_job', 'catmgr.job_snapshot',
+            'catmgr.redirect'
         ]::text[])
     )
     SELECT bool_and(
@@ -211,6 +253,10 @@ BEGIN
         VALUES
             ('logo.assignment', 'logo_assignment_audit', 29, 'O',
              'logo', 'audit_row'),
+            ('logo.assignment', 'assignment_feed_stamp', 23, 'O',
+             'logo', 'assignment_feed_stamp'),
+            ('logo.assignment', 'assignment_feed_tombstone', 9, 'O',
+             'logo', 'assignment_feed_tombstone'),
             ('logo.store_settings', 'logo_store_settings_audit', 29, 'O',
              'logo', 'audit_row'),
             ('logo.color_class', 'logo_color_class_audit', 29, 'O',
@@ -218,12 +264,16 @@ BEGIN
             ('logo.display_name', 'logo_display_name_audit', 29, 'O',
              'logo', 'audit_display_name_row'),
             ('woo.price_rule', 'price_rule_audit', 29, 'O',
-             'woo', 'audit_price_rule_row')
+             'woo', 'audit_price_rule_row'),
+            ('woo.store_mix_store', 'store_mix_store_audit', 29, 'O',
+             'woo', 'audit_store_mix_row'),
+            ('woo.store_mix_item', 'store_mix_item_audit', 29, 'O',
+             'woo', 'audit_store_mix_row')
     ), actual AS (
         SELECT format('%I.%I', namespace.nspname, relation.relname),
                trigger.tgname,
                trigger.tgtype::integer,
-               trigger.tgenabled,
+               trigger.tgenabled::text,
                function_namespace.nspname,
                procedure.proname
           FROM pg_trigger AS trigger
@@ -495,16 +545,23 @@ $clear_direct_authority$;
 REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA logo FROM PUBLIC;
 REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA woo FROM PUBLIC;
 REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA fdm4 FROM PUBLIC;
+REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA pim FROM PUBLIC;
+REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA curated FROM PUBLIC;
+REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA catmgr FROM PUBLIC;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
-    ON ALL TABLES IN SCHEMA logo, woo, fdm4 FROM PUBLIC;
+    ON ALL TABLES IN SCHEMA logo, woo, fdm4, pim, curated, catmgr FROM PUBLIC;
 
-GRANT USAGE ON SCHEMA logo, woo, fdm4 TO logo_admin;
+GRANT USAGE ON SCHEMA logo, woo, fdm4, pim, curated, catmgr TO logo_admin;
 GRANT SELECT ON ALL TABLES IN SCHEMA woo, fdm4 TO logo_admin;
+-- pim and curated are read-only surfaces for the application; catmgr write
+-- grants are explicit below.
+GRANT SELECT ON ALL TABLES IN SCHEMA pim, curated TO logo_admin;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE logo.assignment TO logo_admin;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     logo.bulk_batch,
     logo.bulk_batch_row,
+    logo.style_color_order,
     logo.color_class,
     logo.default_cost,
     logo.design_ipc,
@@ -521,7 +578,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     logo.agent_rate_window,
     logo.agent_quota_reservation
     TO logo_admin;
-GRANT SELECT, INSERT, UPDATE ON TABLE logo.store_settings TO logo_admin;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE logo.store_settings TO logo_admin;
 GRANT SELECT, INSERT ON TABLE
     logo.audit_log,
     logo.import_report,
@@ -534,9 +591,35 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     woo.price_rule,
     woo.pricing_tier,
     woo.store_pricing_tier,
-    woo.sync_exclusion
+    woo.sync_exclusion,
+    woo.app_flag,
+    woo.brand_stock_rule,
+    woo.feed_consumer,
+    woo.stock_override,
+    woo.store_mix_item,
+    woo.store_mix_store,
+    woo.virtual_catalog_store
     TO logo_admin;
-GRANT SELECT, INSERT ON TABLE woo.price_rule_audit TO logo_admin;
+GRANT SELECT, INSERT ON TABLE woo.price_rule_audit, woo.store_mix_audit TO logo_admin;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE logo.assignment_tombstone TO logo_admin;
+
+-- Category editor (catmgr): snapshots are app-owned; audit is append-only.
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+    catmgr.snapshot,
+    catmgr.wp_term,
+    catmgr.wp_term_product,
+    catmgr.node,
+    catmgr.node_store_override,
+    catmgr.slug_map,
+    catmgr.assignment_rule,
+    catmgr.product_assignment,
+    catmgr.uncategorized_ack,
+    catmgr.run,
+    catmgr.run_job,
+    catmgr.job_snapshot,
+    catmgr.redirect
+    TO logo_admin;
+GRANT SELECT, INSERT ON TABLE catmgr.audit_log TO logo_admin;
 
 GRANT SELECT, USAGE ON SEQUENCE
     logo.audit_log_id_seq,
@@ -544,8 +627,11 @@ GRANT SELECT, USAGE ON SEQUENCE
     TO logo_admin;
 GRANT USAGE ON SEQUENCE
     woo.price_rule_rule_id_seq,
-    woo.price_rule_audit_id_seq
+    woo.price_rule_audit_id_seq,
+    woo.store_mix_audit_id_seq,
+    logo.assignment_version_seq
     TO logo_admin;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA catmgr TO logo_admin;
 
 GRANT EXECUTE ON FUNCTION
     woo.eval_price_rules(
@@ -567,11 +653,11 @@ BEGIN
 END
 $optional_function_grants$;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA woo, fdm4
+ALTER DEFAULT PRIVILEGES IN SCHEMA woo, fdm4, pim, curated
     GRANT SELECT ON TABLES TO logo_admin;
-ALTER DEFAULT PRIVILEGES IN SCHEMA logo, woo, fdm4
+ALTER DEFAULT PRIVILEGES IN SCHEMA logo, woo, fdm4, pim, curated, catmgr
     REVOKE ALL ON TABLES FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES IN SCHEMA logo, woo, fdm4
+ALTER DEFAULT PRIVILEGES IN SCHEMA logo, woo, fdm4, pim, curated, catmgr
     REVOKE EXECUTE ON ROUTINES FROM PUBLIC;
 
 COMMIT;

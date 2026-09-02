@@ -65,6 +65,10 @@ RESTORE_COLUMN_CONTRACTS = {
         "allows_none": ("boolean", False, "false"),
         "updated_by": ("text", False, "''"),
         "updated_at": ("timestamp with time zone", False, "now"),
+        # format_type() spells the column text[]; the catalog default is
+        # '{}'::text[], which _normalized_sql_expression reduces to '{}'[]
+        # (the ::text cast is stripped, the array brackets are kept).
+        "extra_customers": ("text[]", False, "'{}'[]"),
     },
     "woo.store_pricing_tier": {
         "fdm4_store": ("text", False, None),
@@ -232,7 +236,10 @@ EXPECTED_TRIGGERS = frozenset({
         "woo", "audit_store_mix_row",
     ),
 })
-WAREHOUSE_READ_SCHEMAS = frozenset({"woo", "fdm4"})
+# Schemas where every unlisted relation is readable and nothing else:
+# warehouse facts (woo/fdm4) and the read-only pim/curated surfaces that
+# sql/logo_admin_role.sql grants with GRANT SELECT ON ALL TABLES.
+WAREHOUSE_READ_SCHEMAS = frozenset({"woo", "fdm4", "pim", "curated"})
 EXPECTED_PRIMARY_KEYS = {
     "logo.assignment": (
         "assignment_pkey",
@@ -590,11 +597,12 @@ TABLE_POLICIES = {
     # with sql/logo_admin_role.sql and the SQL write preflight.
     "logo.assignment": CRUD_ALLOWED,
     "logo.art_record": READ_ALLOWED,
-    "logo.store_settings": CRU_ALLOWED,
+    "logo.store_settings": CRUD_ALLOWED,
     "logo.placement_vocab": CRUD_ALLOWED,
     "logo.color_class": CRUD_ALLOWED,
     "logo.bulk_batch": CRUD_ALLOWED,
     "logo.bulk_batch_row": CRUD_ALLOWED,
+    "logo.style_color_order": CRUD_ALLOWED,
     "logo.default_cost": CRUD_ALLOWED,
     "logo.design_ipc": CRUD_ALLOWED,
     "logo.display_name": CRUD_ALLOWED,
@@ -602,7 +610,7 @@ TABLE_POLICIES = {
     "logo.image_import": CRU_ALLOWED,
     "logo.import_report": APPEND_ALLOWED,
     "logo.audit_log": APPEND_ALLOWED,
-    "logo.assignment_tombstone": READ_ALLOWED,
+    "logo.assignment_tombstone": CRUD_ALLOWED,
     "woo.price_rule": CRUD_ALLOWED,
     "woo.price_rule_audit": APPEND_ALLOWED,
     "woo.pricing_tier": CRUD_ALLOWED,
@@ -613,6 +621,25 @@ TABLE_POLICIES = {
     "woo.store_mix_candidate": READ_ALLOWED,
     "woo.store_mix_audit": APPEND_ALLOWED,
     "woo.feed_consumer": CRUD_ALLOWED,
+    "woo.app_flag": CRUD_ALLOWED,
+    "woo.brand_stock_rule": CRUD_ALLOWED,
+    "woo.stock_override": CRUD_ALLOWED,
+    "woo.virtual_catalog_store": CRUD_ALLOWED,
+    # Category editor (catmgr): snapshots are app-owned; audit is append-only.
+    "catmgr.snapshot": CRUD_ALLOWED,
+    "catmgr.wp_term": CRUD_ALLOWED,
+    "catmgr.wp_term_product": CRUD_ALLOWED,
+    "catmgr.node": CRUD_ALLOWED,
+    "catmgr.node_store_override": CRUD_ALLOWED,
+    "catmgr.slug_map": CRUD_ALLOWED,
+    "catmgr.assignment_rule": CRUD_ALLOWED,
+    "catmgr.product_assignment": CRUD_ALLOWED,
+    "catmgr.uncategorized_ack": CRUD_ALLOWED,
+    "catmgr.run": CRUD_ALLOWED,
+    "catmgr.run_job": CRUD_ALLOWED,
+    "catmgr.job_snapshot": CRUD_ALLOWED,
+    "catmgr.redirect": CRUD_ALLOWED,
+    "catmgr.audit_log": APPEND_ALLOWED,
     # Agent-local state and immutable action history.
     "logo.agent_chat_session": CRUD_ALLOWED,
     "logo.agent_chat_message": CRUD_ALLOWED,
@@ -633,6 +660,14 @@ SEQUENCE_POLICIES = {
     "woo.price_rule_audit_id_seq": frozenset({"USAGE"}),
     "woo.store_mix_audit_id_seq": frozenset({"USAGE"}),
     "logo.assignment_version_seq": frozenset({"USAGE"}),
+    "catmgr.assignment_rule_rule_id_seq": frozenset({"USAGE"}),
+    "catmgr.audit_log_id_seq": frozenset({"USAGE"}),
+    "catmgr.node_node_id_seq": frozenset({"USAGE"}),
+    "catmgr.node_store_override_override_id_seq": frozenset({"USAGE"}),
+    "catmgr.product_assignment_id_seq": frozenset({"USAGE"}),
+    "catmgr.redirect_id_seq": frozenset({"USAGE"}),
+    "catmgr.run_job_job_id_seq": frozenset({"USAGE"}),
+    "catmgr.run_run_id_seq": frozenset({"USAGE"}),
 }
 SEQUENCE_PRIVILEGES = ("USAGE", "SELECT", "UPDATE")
 ALLOWED_EXECUTABLE_SECURITY_DEFINERS = frozenset({
@@ -1259,7 +1294,9 @@ def _assert_restore_column_contract(
                 nullable,
                 "",
                 "",
-                "default" if formatted_type == "text" else None,
+                # Arrays of a collatable element type carry the element
+                # collation, so text[] columns report "default" like text.
+                "default" if formatted_type in ("text", "text[]") else None,
                 (
                     None
                     if default is None
@@ -1288,7 +1325,9 @@ def _normalized_sql_expression(value: Any) -> str:
         "",
         str(value or "").lower(),
     )
-    return re.sub(r"[\s()]+", "", normalized)
+    # Whitespace, parentheses, and identifier quotes are presentation only
+    # (pg_get_expr quotes keyword columns such as "position").
+    return re.sub(r'[\s()"]+', "", normalized)
 
 
 def _normalized_check_expression(value: Any) -> str:
@@ -1419,7 +1458,9 @@ def _assert_agent_constraint_signatures(
             bool(row["deferrable"])
             or bool(row["initially_deferred"])
             or not bool(row["validated"])
-            or bool(row["no_inherit"])
+            # PostgreSQL marks index-backed and foreign-key constraints
+            # NO INHERIT; the flag is only a policy signal on CHECKs.
+            or (constraint_type == "c" and bool(row["no_inherit"]))
         ):
             unsafe_metadata.append((table_name, constraint_name))
         descriptor = (table_name, constraint_name, key_columns)
@@ -1544,7 +1585,9 @@ def _assert_restore_constraint_contract(
             bool(row["deferrable"])
             or bool(row["initially_deferred"])
             or not bool(row["validated"])
-            or bool(row["no_inherit"])
+            # PostgreSQL marks index-backed and foreign-key constraints
+            # NO INHERIT; the flag is only a policy signal on CHECKs.
+            or (constraint_type == "c" and bool(row["no_inherit"]))
         ):
             unsafe_metadata.append((table_name, constraint_name))
         if constraint_type == "p":
@@ -1596,7 +1639,7 @@ def _validate_write_relation_shapes(cursor) -> None:
     policy_names = sorted(TABLE_POLICIES | OPTIONAL_TABLE_POLICIES)
     cursor.execute(
         """
-        SELECT format('%I.%I', namespace.nspname, relation.relname)
+        SELECT format('%%I.%%I', namespace.nspname, relation.relname)
                    AS table_name,
                relation.relkind AS relation_kind,
                relation.relpersistence AS persistence,
@@ -1608,7 +1651,7 @@ def _validate_write_relation_shapes(cursor) -> None:
             ON namespace.oid = relation.relnamespace
           JOIN pg_database AS database
             ON database.datname = current_database()
-         WHERE format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+         WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
          ORDER BY namespace.nspname, relation.relname
         """,
         (policy_names,),
@@ -1617,7 +1660,7 @@ def _validate_write_relation_shapes(cursor) -> None:
 
     cursor.execute(
         """
-        SELECT format('%I.%I', namespace.nspname, relation.relname)
+        SELECT format('%%I.%%I', namespace.nspname, relation.relname)
                    AS table_name,
                attribute.attname AS column_name,
                attribute.attnum::integer AS ordinal_position,
@@ -1626,7 +1669,7 @@ def _validate_write_relation_shapes(cursor) -> None:
                NOT attribute.attnotnull AS nullable,
                attribute.attgenerated AS generated_kind,
                attribute.attidentity AS identity_kind,
-               collation.collname AS collation_name,
+               pg_collation.collname AS collation_name,
                pg_get_expr(
                    default_row.adbin, default_row.adrelid, true
                ) AS default_expression
@@ -1637,12 +1680,12 @@ def _validate_write_relation_shapes(cursor) -> None:
             ON attribute.attrelid = relation.oid
            AND attribute.attnum > 0
            AND NOT attribute.attisdropped
-          LEFT JOIN pg_collation AS collation
-            ON collation.oid = attribute.attcollation
+          LEFT JOIN pg_collation
+            ON pg_collation.oid = attribute.attcollation
           LEFT JOIN pg_attrdef AS default_row
             ON default_row.adrelid = relation.oid
            AND default_row.adnum = attribute.attnum
-         WHERE format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+         WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
          ORDER BY namespace.nspname, relation.relname, attribute.attnum
         """,
         (sorted(RESTORE_COLUMN_CONTRACTS),),
@@ -1653,7 +1696,7 @@ def _validate_write_relation_shapes(cursor) -> None:
     cursor.execute(
         """
         SELECT format(
-                   '%I.%I', source_namespace.nspname, source.relname
+                   '%%I.%%I', source_namespace.nspname, source.relname
                ) AS table_name,
                constraint_row.conname AS constraint_name,
                constraint_row.contype AS constraint_type,
@@ -1667,7 +1710,7 @@ def _validate_write_relation_shapes(cursor) -> None:
                     ORDER BY key_column.ordinal_position
                ) AS key_columns,
                CASE WHEN target.oid IS NULL THEN NULL ELSE format(
-                   '%I.%I', target_namespace.nspname, target.relname
+                   '%%I.%%I', target_namespace.nspname, target.relname
                ) END AS referenced_table,
                ARRAY(
                    SELECT attribute.attname
@@ -1697,14 +1740,14 @@ def _validate_write_relation_shapes(cursor) -> None:
             ON target_namespace.oid = target.relnamespace
          WHERE (
                    format(
-                       '%I.%I', source_namespace.nspname, source.relname
+                       '%%I.%%I', source_namespace.nspname, source.relname
                    ) = ANY (%s)
                    AND constraint_row.contype IN ('p', 'c', 'f', 'u', 'x')
                )
             OR (
                    target.oid IS NOT NULL
                    AND format(
-                       '%I.%I', target_namespace.nspname, target.relname
+                       '%%I.%%I', target_namespace.nspname, target.relname
                    ) = ANY (%s)
                    AND constraint_row.contype = 'f'
                )
@@ -1723,7 +1766,7 @@ def _validate_write_relation_shapes(cursor) -> None:
             ON relation.oid = index_row.indrelid
           JOIN pg_namespace AS namespace
             ON namespace.oid = relation.relnamespace
-         WHERE format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+         WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
            AND index_row.indisunique
            AND NOT EXISTS (
                SELECT 1
@@ -1776,7 +1819,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
 
     cursor.execute(
         """
-        SELECT format('%I.%I', namespace.nspname, relation.relname)
+        SELECT format('%%I.%%I', namespace.nspname, relation.relname)
                    AS table_name,
                attribute.attname AS column_name,
                attribute.attnum::integer AS ordinal_position,
@@ -1785,7 +1828,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
                NOT attribute.attnotnull AS nullable,
                attribute.attgenerated AS generated_kind,
                attribute.attidentity AS identity_kind,
-               collation.collname AS collation_name,
+               pg_collation.collname AS collation_name,
                pg_get_expr(
                    default_row.adbin, default_row.adrelid, true
                ) AS default_expression
@@ -1796,12 +1839,12 @@ def _validate_agent_schema_signatures(cursor) -> None:
             ON attribute.attrelid = relation.oid
            AND attribute.attnum > 0
            AND NOT attribute.attisdropped
-          LEFT JOIN pg_collation AS collation
-            ON collation.oid = attribute.attcollation
+          LEFT JOIN pg_collation
+            ON pg_collation.oid = attribute.attcollation
           LEFT JOIN pg_attrdef AS default_row
             ON default_row.adrelid = relation.oid
            AND default_row.adnum = attribute.attnum
-         WHERE format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+         WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
          ORDER BY namespace.nspname, relation.relname, attribute.attnum
         """,
         (agent_tables,),
@@ -1811,7 +1854,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
     cursor.execute(
         """
         SELECT format(
-                   '%I.%I', source_namespace.nspname, source.relname
+                   '%%I.%%I', source_namespace.nspname, source.relname
                ) AS table_name,
                constraint_row.conname AS constraint_name,
                constraint_row.contype AS constraint_type,
@@ -1825,7 +1868,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
                     ORDER BY key_column.ordinal_position
                ) AS key_columns,
                CASE WHEN target.oid IS NULL THEN NULL ELSE format(
-                   '%I.%I', target_namespace.nspname, target.relname
+                   '%%I.%%I', target_namespace.nspname, target.relname
                ) END AS referenced_table,
                ARRAY(
                    SELECT attribute.attname::text
@@ -1855,14 +1898,14 @@ def _validate_agent_schema_signatures(cursor) -> None:
             ON target_namespace.oid = target.relnamespace
          WHERE (
                    format(
-                       '%I.%I', source_namespace.nspname, source.relname
+                       '%%I.%%I', source_namespace.nspname, source.relname
                    ) = ANY (%s)
                    AND constraint_row.contype IN ('p', 'u', 'c', 'f', 'x')
                )
             OR (
                    target.oid IS NOT NULL
                    AND format(
-                       '%I.%I', target_namespace.nspname, target.relname
+                       '%%I.%%I', target_namespace.nspname, target.relname
                    ) = ANY (%s)
                    AND constraint_row.contype = 'f'
                )
@@ -1875,7 +1918,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
 
     cursor.execute(
         """
-        SELECT format('%I.%I', namespace.nspname, relation.relname)
+        SELECT format('%%I.%%I', namespace.nspname, relation.relname)
                    AS table_name,
                index_class.relname AS index_name,
                index_row.indisunique AS is_unique,
@@ -1912,7 +1955,7 @@ def _validate_agent_schema_signatures(cursor) -> None:
           JOIN pg_class AS index_class
             ON index_class.oid = index_row.indexrelid
           JOIN pg_am AS index_method ON index_method.oid = index_class.relam
-         WHERE format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+         WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
          ORDER BY namespace.nspname, relation.relname, index_class.relname
         """,
         (agent_tables,),
@@ -1973,7 +2016,7 @@ def _validate_write_semantics(cursor) -> None:
     policy_names = sorted(TABLE_POLICIES | OPTIONAL_TABLE_POLICIES)
     cursor.execute(
         """
-        SELECT format('%I.%I', namespace.nspname, relation.relname)
+        SELECT format('%%I.%%I', namespace.nspname, relation.relname)
                    AS table_name,
                trigger.tgname AS trigger_name,
                trigger.tgtype::integer AS trigger_type,
@@ -1992,7 +2035,7 @@ def _validate_write_semantics(cursor) -> None:
           JOIN pg_namespace AS function_namespace
             ON function_namespace.oid = function_row.pronamespace
          WHERE NOT trigger.tgisinternal
-           AND format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+           AND format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
          ORDER BY namespace.nspname, relation.relname, trigger.tgname
         """,
         (policy_names,),
@@ -2007,7 +2050,7 @@ def _validate_write_semantics(cursor) -> None:
           JOIN pg_namespace AS namespace
             ON namespace.oid = relation.relnamespace
          WHERE rewrite.rulename <> '_RETURN'
-           AND format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+           AND format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
         """,
         (policy_names,),
     )
@@ -2019,7 +2062,7 @@ def _validate_write_semantics(cursor) -> None:
           FROM pg_class AS relation
           JOIN pg_namespace AS namespace
             ON namespace.oid = relation.relnamespace
-         WHERE format('%I.%I', namespace.nspname, relation.relname) = ANY (%s)
+         WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
            AND (
                relation.relrowsecurity
                OR relation.relforcerowsecurity

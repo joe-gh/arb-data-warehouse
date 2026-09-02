@@ -14,6 +14,11 @@
   {% if agent_access_allowed %}
   <script defer src="{{ url_for('static', path='/agent_async_guard.js') }}?v={{ asset_version }}"></script>
   {% endif %}
+  {% if categories_enabled %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/vendor/tabulator.min.css') }}?v={{ asset_version }}">
+  <script defer src="{{ url_for('static', path='/vendor/sortable.min.js') }}?v={{ asset_version }}"></script>
+  <script defer src="{{ url_for('static', path='/vendor/tabulator.min.js') }}?v={{ asset_version }}"></script>
+  {% endif %}
   <script defer src="{{ url_for('static', path='/app.js') }}?v={{ asset_version }}"></script>
 </head>
 <body class="app-page" data-wp-host="{{ wp_target_host }}">
@@ -44,6 +49,9 @@
           <button id="legacy-images-button" class="main-nav__item" type="button">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
         </div>
       </div>
+      {% if categories_enabled %}
+      <button class="main-nav__link" type="button" data-view="categories">Categories</button>
+      {% endif %}
       <div class="main-nav__group" data-group="pricing,prices,blocks,mix,stock">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-store">Store<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu" id="nav-menu-store" hidden>
@@ -134,6 +142,17 @@
             </button>
           </div>
         </div>
+        {% if categories_enabled %}
+        <div class="dashboard__section">
+          <div class="dash-section-head"><h2>Categories</h2><p class="muted">Restructure the store category tree: import the live structure, redesign it, and publish the result.</p></div>
+          <div class="dashboard__cards">
+            <button class="dash-card" type="button" data-view="categories">
+              <span class="dash-card__title">Category Editor</span>
+              <span class="dash-card__desc">Import live category snapshots from dev or production, then plan and apply the new category tree.</span>
+            </button>
+          </div>
+        </div>
+        {% endif %}
         <div class="dashboard__section">
           <div class="dash-section-head"><h2>Status and help</h2><p class="muted">Check that everything is running, and learn how it all works.</p></div>
           <div class="dashboard__cards">
@@ -193,6 +212,22 @@
           <div id="style-options" class="combobox__options" role="listbox" hidden></div>
         </div>
       </div>
+      <div id="batch-bar" class="batch-bar">
+        <button id="batch-select" class="button button--ghost button--small" type="button">Select styles…</button>
+        <span id="batch-count" class="muted">No styles selected</span>
+        <select id="batch-scope" title="Which colors of each selected style receive the paste">
+          <option value="match">Same color as copied</option>
+          <option value="all">All colors</option>
+          <option value="light">Light colors</option>
+          <option value="dark">Dark colors</option>
+        </select>
+        <button id="batch-paste" class="button button--secondary button--small" type="button" disabled>Paste clipboard <span class="badge badge--writes">Makes changes</span></button>
+        <button id="batch-activate" class="button button--ghost button--small" type="button" disabled>Set active</button>
+        <button id="batch-deactivate" class="button button--ghost button--small" type="button" disabled>Set inactive</button>
+        <button id="batch-bulk-apply" class="button button--ghost button--small" type="button" disabled>Bulk Apply to selection…</button>
+        <button id="batch-copy-from-open" class="button button--ghost button--small" type="button" disabled>Copy open style to selection…</button>
+        <button id="batch-clear" class="icon-button" type="button" aria-label="Clear selection" hidden><span aria-hidden="true">×</span></button>
+      </div>
       <p id="selection-status" class="selection-status" aria-live="polite">Loading available storefronts...</p>
     </section>
 
@@ -210,6 +245,13 @@
           <div class="title-row">
             <h2 id="style-title">Style</h2>
             <span id="style-state-badge" class="badge">-</span>
+            <span id="clipboard-chip" class="clipboard-chip" hidden>
+              <span id="clipboard-label"></span>
+              <label class="check-row check-row--inline"><input id="clipboard-overwrite" type="checkbox"><span>Overwrite occupied</span></label>
+              <button id="clipboard-paste-all" class="button button--ghost button--small" type="button">Paste to all colors</button>
+              <button id="clipboard-clear" class="icon-button" type="button" aria-label="Clear clipboard"><span aria-hidden="true">×</span></button>
+            </span>
+            <button id="undo-last-batch" class="button button--ghost button--small" type="button" hidden></button>
           </div>
           <p id="style-summary" class="muted"></p>
         </div>
@@ -225,6 +267,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V3h13v13h-5v5H3V8h5Zm2 0h6v6h3V5h-9v3Zm4 2H5v9h9v-9Z"/></svg>
             Copy config
           </button>
+          <button id="copy-many-button" class="button button--secondary" type="button">Copy to many styles…</button>
           <div class="split-action">
             <button id="sync-style-button" class="button button--primary" type="button" title="Push this style's logo assignments to {{ wp_target_host }}">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10V4l5 5-5 5v-3H7V7Zm10 10H7v3l-5-5 5-5v3h10v4Z"/></svg>
@@ -254,6 +297,10 @@
             <span><i class="status-dot status-dot--active"></i>Active</span>
             <span><i class="status-dot status-dot--inactive"></i>Inactive</span>
           </div>
+        </div>
+        <div class="grid-toolbar">
+          <span class="muted">Drag the ⋮⋮ handle to reorder logo rows (shoppers see that order) or garment colors (editor only). With the box checked, the same order is applied to every color that carries those logos.</span>
+          <label class="check-row check-row--inline"><input id="reorder-all-colors" type="checkbox" checked><span>Row order applies to every color on this style (matched by logo)</span></label>
         </div>
         <div id="assignment-grid" class="assignment-grid" aria-live="polite"></div>
       </section>
@@ -555,6 +602,240 @@
     </section>
 
     <!-- System health -->
+    {% if categories_enabled %}
+    <!-- Category editor -->
+    <section id="view-categories" class="view" hidden aria-label="Category editor">
+      <div class="pricing">
+        <div class="pricing__head">
+          <p class="eyebrow">Category editor</p>
+          <h1>Categories</h1>
+          <p class="muted">Restructure the WooCommerce category tree. Work happens here in the warehouse; nothing changes on a store until a planned run is applied.</p>
+        </div>
+        <div id="cat-env-banner" class="cat-env-banner" hidden>
+          <span id="cat-env-banner-label"></span>
+          <span id="cat-env-banner-host" class="cat-env-banner__host"></span>
+        </div>
+        <div class="cat-tabs" role="tablist" aria-label="Category editor sections">
+          <button class="cat-tab is-active" type="button" data-cattab="snapshots">Snapshots</button>
+          <button class="cat-tab" type="button" data-cattab="tree">Tree</button>
+          <button class="cat-tab" type="button" data-cattab="mapping">Mapping</button>
+          <button class="cat-tab" type="button" data-cattab="products">Products</button>
+          <button class="cat-tab" type="button" data-cattab="preview">Preview &amp; Apply</button>
+          <button class="cat-tab" type="button" data-cattab="runs">Runs</button>
+        </div>
+        <section class="card" id="cat-snapshots-panel">
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Import</p><h3>Live category snapshots</h3></div>
+            <div class="cat-env-pills" id="cat-env-pills" role="group" aria-label="Environment"></div>
+          </div>
+          <div class="card__body">
+            <p class="muted">Each blog's live product_cat state, copied into the warehouse. Re-import any time - imports fully replace a blog's snapshot and bump its version, so plans built on older snapshots show as stale.</p>
+            <div id="cat-wp-status" class="muted"></div>
+            <div class="form-row cat-actions">
+              <button id="cat-import-all" class="button" type="button">Import all blogs</button>
+              <button id="cat-import-selected" class="button button--ghost" type="button">Import selected</button>
+              <span id="cat-import-progress" class="muted" aria-live="polite"></span>
+            </div>
+            <div id="cat-snapshot-table" class="cat-table-wrap"></div>
+          </div>
+        </section>
+
+        <section class="card" id="cat-tree-panel" hidden>
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Draft</p><h3>Draft category tree</h3></div>
+            <div class="cat-tree-scope">
+              <label class="muted" for="cat-tree-store">View</label>
+              <select id="cat-tree-store">
+                <option value="">Global draft (all stores)</option>
+              </select>
+            </div>
+          </div>
+          <div class="card__body">
+            <div id="cat-seed-box" class="cat-seed" hidden>
+              <p class="muted">The draft is empty. Seed it from a live snapshot so editing starts from reality.</p>
+              <div class="form-row">
+                <label class="field field--xs"><span>Environment</span>
+                  <select id="cat-seed-env"></select>
+                </label>
+                <label class="field field--xs"><span>Blog</span>
+                  <input id="cat-seed-blog" type="number" min="1" value="1">
+                </label>
+                <button id="cat-seed-run" class="button" type="button">Seed draft</button>
+              </div>
+            </div>
+            <div class="cat-tree-layout">
+              <div class="cat-tree-col">
+                <div class="cat-tree-toolbar">
+                  <button id="cat-add-root" class="button button--ghost button--small" type="button">+ Top-level category</button>
+                  <span class="muted" id="cat-tree-hint">Drag to move or reorder. Double-click a name to rename.</span>
+                </div>
+                <div id="cat-tree" class="cat-tree-box"></div>
+              </div>
+              <aside class="cat-detail" id="cat-node-detail" hidden>
+                <h3 id="cat-detail-title">Category</h3>
+                <label class="field"><span>Name</span>
+                  <input id="cat-detail-name" type="text" maxlength="200">
+                </label>
+                <label class="field"><span>Slug</span>
+                  <input id="cat-detail-slug" type="text" maxlength="200" spellcheck="false">
+                </label>
+                <label class="field"><span>Description</span>
+                  <textarea id="cat-detail-description" rows="3" maxlength="5000"></textarea>
+                </label>
+                <div class="form-row">
+                  <button id="cat-detail-save" class="button" type="button">Save</button>
+                  <button id="cat-detail-add-child" class="button button--ghost" type="button">+ Child</button>
+                  <button id="cat-detail-delete" class="button button--ghost cat-danger" type="button">Delete</button>
+                </div>
+                <div id="cat-detail-overrides" class="muted"></div>
+              </aside>
+            </div>
+            <div id="cat-store-overrides" class="cat-overrides" hidden>
+              <h3>Store overrides</h3>
+              <div id="cat-override-list"></div>
+              <div class="form-row cat-override-form">
+                <label class="field field--xs"><span>Kind</span>
+                  <select id="cat-ov-kind">
+                    <option value="rename">Rename</option>
+                    <option value="exclude">Exclude</option>
+                    <option value="extra_node">Extra category</option>
+                  </select>
+                </label>
+                <label class="field"><span>Category</span>
+                  <select id="cat-ov-node"></select>
+                </label>
+                <label class="field"><span>Name (rename / extra)</span>
+                  <input id="cat-ov-name" type="text" maxlength="200">
+                </label>
+                <button id="cat-ov-save" class="button button--ghost" type="button">Add override</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" id="cat-mapping-panel" hidden>
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Dispositions</p><h3>Slug mapping</h3></div>
+            <div id="cat-mapping-progress" class="cat-progress"><span id="cat-mapping-progress-label"></span><div class="cat-progress__track"><div id="cat-mapping-progress-bar"></div></div></div>
+          </div>
+          <div class="card__body">
+            <p class="muted">Every live slug needs a disposition before a plan can be previewed: <strong>map</strong> into a draft category (first mapped slug is the in-place survivor), <strong>delete</strong> (debris), or <strong>store custom</strong> (kept as a store-local category).</p>
+            <div class="form-row cat-actions">
+              <label class="field"><span>Map selected to</span>
+                <select id="cat-map-target"></select>
+              </label>
+              <button id="cat-map-apply" class="button" type="button">Map</button>
+              <button id="cat-map-delete" class="button button--ghost" type="button">Mark delete</button>
+              <button id="cat-map-custom" class="button button--ghost" type="button">Store custom</button>
+              <button id="cat-map-clear" class="button button--ghost" type="button">Clear</button>
+              <button id="cat-map-suggest" class="button button--ghost" type="button">Accept suggestions</button>
+            </div>
+            <div id="cat-mapping-table"></div>
+          </div>
+        </section>
+
+        <section class="card" id="cat-products-panel" hidden>
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Membership</p><h3>Product membership</h3></div>
+            <div class="cat-tree-scope">
+              <label class="muted" for="cat-prod-node">Category</label>
+              <select id="cat-prod-node"></select>
+            </div>
+          </div>
+          <div class="card__body">
+            <div id="cat-membership" class="cat-membership"></div>
+            <div class="cat-products-grid">
+              <div>
+                <h3>Explicit assignments</h3>
+                <div id="cat-assignment-list" class="cat-table-wrap"></div>
+                <div class="form-row">
+                  <label class="field"><span>Styles (one SKU per line)</span>
+                    <textarea id="cat-assign-skus" rows="3" spellcheck="false"></textarea>
+                  </label>
+                </div>
+                <div class="form-row">
+                  <button id="cat-assign-add" class="button button--ghost" type="button">Add styles</button>
+                  <button id="cat-assign-remove" class="button button--ghost" type="button">Remove styles</button>
+                </div>
+                <div class="form-row">
+                  <a id="cat-assign-export" class="button button--ghost" href="/api/categories/assignments/export">Export CSV</a>
+                  <button id="cat-assign-import" class="button button--ghost" type="button">Import CSV&hellip;</button>
+                </div>
+              </div>
+              <div>
+                <h3>Rules</h3>
+                <div id="cat-rule-list"></div>
+                <div class="cat-rule-form">
+                  <div class="form-row">
+                    <label class="field field--xs"><span>Field</span>
+                      <select id="cat-rule-field">
+                        <option value="name">Product name</option>
+                        <option value="brand">Brand</option>
+                        <option value="mill_code">Mill code</option>
+                        <option value="category">FDM4 category</option>
+                        <option value="sku">SKU</option>
+                      </select>
+                    </label>
+                    <label class="field field--xs"><span>Match</span>
+                      <select id="cat-rule-op">
+                        <option value="prefix">starts with</option>
+                        <option value="equals">equals</option>
+                        <option value="regex">regex</option>
+                      </select>
+                    </label>
+                    <label class="field"><span>Value</span>
+                      <input id="cat-rule-value" type="text" maxlength="200">
+                    </label>
+                  </div>
+                  <div class="form-row">
+                    <label class="field"><span>Only products from old slugs (optional, comma-separated)</span>
+                      <input id="cat-rule-from" type="text" placeholder="footwear-work-boots, footwear-socks">
+                    </label>
+                  </div>
+                  <div class="form-row">
+                    <button id="cat-rule-test" class="button button--ghost" type="button">Test rule</button>
+                    <button id="cat-rule-save" class="button" type="button">Save rule</button>
+                    <span id="cat-rule-result" class="muted"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" id="cat-preview-panel" hidden>
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Plan</p><h3>Preview &amp; apply</h3></div>
+            <div class="cat-header-actions">
+              <button id="cat-preview-run" class="button" type="button">Run preview</button>
+              <button id="cat-apply-run" class="button cat-apply-button" type="button" disabled>Apply to WordPress&hellip;</button>
+            </div>
+          </div>
+          <div class="card__body">
+            <p class="muted">Preview computes every blog's exact plan against the current snapshots. Apply is refused while blockers exist, while snapshots are stale, or for operators outside the apply allowlist.</p>
+            <div id="cat-preview-result"></div>
+          </div>
+        </section>
+
+        <section class="card" id="cat-runs-panel" hidden>
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Execution</p><h3>Apply runs</h3></div>
+            <div class="cat-header-actions">
+              <button id="cat-freeze-toggle" class="button button--ghost" type="button">Freeze WP category edits</button>
+              <button id="cat-drift-run" class="button button--ghost" type="button">Drift audit</button>
+            </div>
+          </div>
+          <div class="card__body">
+            <div id="cat-drift-result" class="muted"></div>
+            <div id="cat-runs-list"></div>
+          </div>
+        </section>
+
+
+      </div>
+    </section>
+    {% endif %}
+
     <section id="view-health" class="view" hidden aria-label="System health">
       <div class="health">
         <div class="health__head">
@@ -1013,12 +1294,89 @@
         </div>
       </div>
 
+      <div class="bulk-step">
+        <p class="bulk-step__label">Other store-wide tools</p>
+        <div class="inline-row">
+          <button type="button" id="design-swap-open" class="button button--secondary">Replace a design…</button>
+          <span class="muted text-small">Move every assignment on one FDM4 design (or one of its color schemes) to a re-issued design id or scheme. Preview first; undo from the batch list below.</span>
+        </div>
+      </div>
+
       <section aria-labelledby="bulk-history-title" class="bulk-step">
         <p class="bulk-step__label" id="bulk-history-title">Recent bulk batches</p>
         <div id="bulk-history" class="stack" aria-live="polite"></div>
       </section>
     </div>
     <div class="dialog__footer"><span class="muted text-small">Nothing reaches the website until you press Sync on this store.</span><button class="button button--primary dialog-close" type="button">Done</button></div>
+  </dialog>
+
+  <dialog id="design-swap-dialog" class="dialog dialog--wide" aria-labelledby="design-swap-title">
+    <div class="dialog__header">
+      <div>
+        <p class="eyebrow">Whole store</p>
+        <h2 id="design-swap-title">Replace a design - <span id="swap-store-name"></span></h2>
+        <p class="muted text-small">Every assignment in this store that uses the old design (optionally only one color scheme) moves to the new design, color scheme and logo code. Placement, price, row order and name overrides stay. Rows the new design cannot validate are skipped and listed. Nothing reaches the website until you sync.</p>
+        <p id="swap-scope" class="muted text-small"></p>
+      </div>
+      <button class="icon-button dialog-close" type="button" aria-label="Close replace design"><span aria-hidden="true">×</span></button>
+    </div>
+    <div class="dialog__body stack">
+
+      <div class="bulk-step">
+        <p class="bulk-step__label">Step 1 · Old design (what to replace)</p>
+        <div class="form-row">
+          <div class="field combobox field--grow">
+            <label class="field__label" for="swap-from-search">Design used in this store</label>
+            <div class="input-with-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-4.5-4.5a8 8 0 1 0-1.4 1.4l4.5 4.5 1.4-1.4ZM4 10a6 6 0 1 1 12 0 6 6 0 0 1-12 0Z"/></svg>
+              <input id="swap-from-search" type="search" autocomplete="off" placeholder="Search this store's logos by description, design ID, or code" aria-autocomplete="list" aria-controls="swap-from-options" aria-expanded="false">
+            </div>
+            <div id="swap-from-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div>
+            <input id="swap-from-design" type="hidden">
+          </div>
+          <label class="field field--md"><span class="field__label">Color scheme</span><select id="swap-from-scheme"><option value="">Any color scheme</option></select><span class="field__help">Leave on "Any" to move every scheme of the old design, including legacy schemes with no art on file.</span></label>
+        </div>
+        <div id="swap-from-note" class="muted picked-note" hidden></div>
+      </div>
+
+      <div class="bulk-step">
+        <p class="bulk-step__label">Step 2 · New design (what to replace it with)</p>
+        <div class="form-row">
+          <div class="field combobox field--grow">
+            <label class="field__label" for="swap-to-search">FDM4 design</label>
+            <div class="input-with-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 19.6-4.5-4.5a8 8 0 1 0-1.4 1.4l4.5 4.5 1.4-1.4ZM4 10a6 6 0 1 1 12 0 6 6 0 0 1-12 0Z"/></svg>
+              <input id="swap-to-search" type="search" autocomplete="off" placeholder="Search all designs by description, design ID, or code" aria-autocomplete="list" aria-controls="swap-to-options" aria-expanded="false">
+            </div>
+            <div id="swap-to-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div>
+            <input id="swap-to-design" type="hidden">
+          </div>
+          <label class="field field--md"><span class="field__label">Color scheme</span><select id="swap-to-scheme"><option value="">Choose a design first</option></select></label>
+          <label class="field field--sm"><span class="field__label">Logo code</span><input id="swap-to-logo-code" autocapitalize="characters" spellcheck="false" placeholder="auto from FDM4 art"><span class="field__help">Blank = derived from the design's art files. Required when the scheme has several codes on file.</span></label>
+        </div>
+        <div id="swap-to-note" class="muted picked-note" hidden></div>
+      </div>
+
+      <div class="bulk-step">
+        <p class="bulk-step__label">Step 3 · Preview, then replace</p>
+        <div class="inline-row">
+          <button type="button" id="swap-preview-btn" class="button button--secondary">Preview affected assignments</button>
+          <span id="swap-preview-summary" class="muted text-small"></span>
+        </div>
+        <div id="swap-preview-wrap" class="table-wrap bulk-preview-scroll" hidden>
+          <table class="data-table" id="swap-preview-table">
+            <thead><tr><th>Style</th><th>Color</th><th>Row · Pos</th><th>Was</th><th>Image</th><th>Result</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="inline-row">
+          <button type="button" id="swap-execute-btn" class="button button--primary" disabled>Replace design</button>
+          <span id="swap-result"></span>
+        </div>
+      </div>
+
+    </div>
+    <div class="dialog__footer"><span class="muted text-small">Undo any batch from "Recent bulk batches" in the Bulk apply panel.</span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>
 
   <dialog id="copy-dialog" class="dialog" aria-labelledby="copy-title">
@@ -1199,6 +1557,46 @@
     <div class="dialog__header"><div><p class="eyebrow">Website sync</p><h2 id="sync-title">Sync results</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
     <div id="sync-results" class="dialog__body"></div>
     <div class="dialog__footer"><span></span><button class="button button--primary dialog-close" type="button">Done</button></div>
+  </dialog>
+
+  <dialog id="batch-dialog" class="dialog dialog--wide" aria-labelledby="batch-title">
+    <div class="dialog__header">
+      <div><p class="eyebrow">Batch</p><h2 id="batch-title">Select styles</h2><p id="batch-context" class="muted"></p></div>
+      <button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button>
+    </div>
+    <div class="dialog__body">
+      <div class="field"><input id="batch-search" type="search" placeholder="Filter by style number or name..." autocomplete="off"></div>
+      <div class="batch-filters">
+        <label class="check-row check-row--inline"><input id="batch-assigned-only" type="checkbox" checked><span>Only styles with logos</span></label>
+        <label class="check-row check-row--inline"><input id="batch-unconfigured-only" type="checkbox"><span>Only styles with unconfigured colors</span></label>
+        <button id="batch-select-similar" class="button button--ghost button--small" type="button" disabled>Select styles with the same logos as the open style</button>
+      </div>
+      <div id="batch-table" class="table-wrap"></div>
+    </div>
+    <div class="dialog__footer"><span id="batch-dialog-count" class="muted"></span><div class="footer-actions"><button id="batch-select-visible" class="button button--ghost" type="button">Select all shown</button><button id="batch-apply" class="button button--primary" type="button">Use selection</button></div></div>
+  </dialog>
+
+  <dialog id="copy-many-dialog" class="dialog dialog--wide" aria-labelledby="copy-many-title">
+    <div class="dialog__header">
+      <div><p class="eyebrow">Bulk helper</p><h2 id="copy-many-title">Copy this style's logos to many styles</h2><p id="copy-many-context" class="muted"></p></div>
+      <button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button>
+    </div>
+    <div class="dialog__body">
+      <div class="copy-many-options">
+        <fieldset><legend>Colors</legend>
+          <label class="check-row"><input type="radio" name="copy-many-match" value="exact" checked><span><strong>Matching colors</strong><small>Only colors the target also has (same color code)</small></span></label>
+          <label class="check-row"><input type="radio" name="copy-many-match" value="like"><span><strong>Like colors</strong><small>Also map the target's other colors by light/dark class</small></span></label>
+        </fieldset>
+        <fieldset><legend>Existing logos on targets</legend>
+          <label class="check-row"><input type="radio" name="copy-many-mode" value="merge" checked><span><strong>Keep</strong><small>Skip slots that already have a logo</small></span></label>
+          <label class="check-row"><input type="radio" name="copy-many-mode" value="overwrite"><span><strong>Overwrite</strong><small>Replace slots that already have a logo</small></span></label>
+          <label class="check-row"><input type="radio" name="copy-many-mode" value="replace"><span><strong>Replace</strong><small>Clear each mapped color first, then copy - the target ends up exactly like the source</small></span></label>
+        </fieldset>
+      </div>
+      <p class="muted"><span id="copy-many-targets"></span> <button id="copy-many-choose" class="button button--ghost button--small" type="button">Choose styles…</button></p>
+      <div id="copy-many-preview" class="table-wrap"></div>
+    </div>
+    <div class="dialog__footer"><span id="copy-many-summary" class="muted"></span><div class="footer-actions"><button id="copy-many-preview-btn" class="button button--secondary" type="button">Preview</button><button id="copy-many-run" class="button button--primary" type="button" disabled>Copy <span class="badge badge--writes">Makes changes</span></button></div></div>
   </dialog>
 
   <dialog id="confirm-dialog" class="dialog dialog--compact" aria-labelledby="confirm-title">

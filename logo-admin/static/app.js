@@ -18,6 +18,11 @@
     vocab: null,
     audit: { beforeId: null, filters: {} },
   };
+  // Drag-and-drop ordering: live SortableJS instances on the assignment grid
+  // (destroyed on every re-render) and the "row order applies to all colors"
+  // preference key.
+  const gridSortables = [];
+  const REORDER_ALL_KEY = "logo-admin:reorder-all-colors";
 
   const els = {
     storeSearch: $("#store-search"),
@@ -555,6 +560,11 @@
     els.empty.hidden = false;
     els.workspace.hidden = true;
     els.ownershipWarning.hidden = true;
+    // A batch selection and the inline undo belong to the store they were
+    // made in - never let them cross stores.
+    batchState.selected.clear();
+    renderBatchBar();
+    noteBatch(null);
     // A Bulk Apply preview belongs to the store it was built for - clear it so
     // a stale preview can't be applied against the newly selected store.
     const bulkPanel = $("#bulk-apply-panel");
@@ -651,6 +661,8 @@
     state.styleRecord = record;
     els.styleSearch.value = `${code}${styleName(record) ? ` - ${styleName(record)}` : ""}`;
     updateUrl();
+    noteBatch(null);
+    renderBatchBar();
     els.empty.hidden = true;
     els.workspace.hidden = false;
     els.styleTitle.textContent = code;
@@ -733,6 +745,8 @@
   }
 
   function renderGrid(colors, assignments) {
+    gridSortables.forEach((s) => { try { s.destroy(); } catch (e) {} });
+    gridSortables.length = 0;
     els.grid.replaceChildren();
     if (!colors.length) {
       const empty = document.createElement("div");
@@ -761,14 +775,36 @@
     });
     els.grid.append(header);
 
+    const handle = (kind, title) => {
+      const span = document.createElement("span");
+      span.className = `drag-handle drag-handle--${kind}`;
+      span.textContent = "⋮⋮";
+      span.title = title;
+      span.setAttribute("aria-hidden", "true");
+      return span;
+    };
+
     colors.forEach((color, colorIndex) => {
       const code = colorCode(color);
       const editable = color.warehouse_active !== false;
       const colorAssignments = assignments.filter((assignment) => text(assignment.garment_color_code) === code);
-      const rowNumbers = [...new Set(
-        colorAssignments.map((assignment) => Math.max(1, Number(assignment.option_row) || 1))
-      )].sort((a, b) => a - b);
+      // Option rows follow sort_order (the storefront's key): a row sorts by
+      // its lowest sort_order, ties by row number.
+      const rowSort = new Map();
+      colorAssignments.forEach((assignment) => {
+        const rowNumber = Math.max(1, Number(assignment.option_row) || 1);
+        const sort = Number(assignment.sort_order) || 0;
+        rowSort.set(rowNumber, rowSort.has(rowNumber) ? Math.min(rowSort.get(rowNumber), sort) : sort);
+      });
+      const rowNumbers = [...rowSort.keys()].sort((a, b) => (rowSort.get(a) - rowSort.get(b)) || (a - b));
       if (!rowNumbers.length) rowNumbers.push(1);
+      const nextSort = colorAssignments.length ? Math.max(...colorAssignments.map((a) => Number(a.sort_order) || 0)) + 10 : 0;
+
+      // One wrapper per color: the drag unit for color ordering and the
+      // sortable container for its option rows.
+      const group = document.createElement("div");
+      group.className = "grid-group";
+      group.dataset.color = code;
 
       const hex = text(color.hex ?? color.hex_code);
       const accent = /^#[0-9a-f]{3,8}$/i.test(hex) ? hex : "";
@@ -785,10 +821,12 @@
       rowNumbers.forEach((optionRow, subIndex) => {
         const row = document.createElement("div");
         row.className = `grid-row${subIndex > 0 ? " grid-row--suboption" : ""}`;
+        row.dataset.optionRow = String(optionRow);
         decorate(row, subIndex === 0);
         const colorCell = document.createElement("div");
         colorCell.className = "grid-cell grid-cell--color";
         if (subIndex === 0) {
+          colorCell.append(handle("color", `Drag to move ${colorName(color)} in the editor`));
           const swatch = document.createElement("span");
           swatch.className = "color-swatch";
           if (accent) swatch.style.backgroundColor = accent;
@@ -808,6 +846,21 @@
           marker.textContent = `↳ ${colorName(color)} · row ${optionRow}`;
           colorCell.append(marker);
         }
+        if (rowNumbers.length > 1 && colorAssignments.length) {
+          colorCell.append(handle("row", "Drag to reorder this logo row"));
+        }
+        if (colorAssignments.some((a) => Number(a.option_row) === optionRow)) {
+          const copyRow = document.createElement("button");
+          copyRow.type = "button";
+          copyRow.className = "copy-row";
+          copyRow.textContent = "Copy row";
+          copyRow.title = `Copy row ${optionRow} of ${colorName(color)} to the clipboard`;
+          copyRow.addEventListener("click", () => {
+            setClipboard({ kind: "row", source: { store: state.store, style: state.style, color: code, option_row: optionRow }, rows: clipboardRows(code, optionRow) });
+            toast(`Copied row ${optionRow} of ${colorName(color)}.`);
+          });
+          colorCell.append(copyRow);
+        }
         row.append(colorCell);
 
         for (let position = 1; position <= 3; position += 1) {
@@ -819,11 +872,12 @@
           else cell.append(addButton(color, position, optionRow));
           row.append(cell);
         }
-        els.grid.append(row);
+        group.append(row);
       });
 
       // Group footer: add-row for live colors, clear-color whenever data
-      // exists (retired colors included - that is the cleanup case).
+      // exists (retired colors included - that is the cleanup case), plus
+      // clipboard copy/paste for the color channel.
       if (editable || colorAssignments.length) {
         const addRow = document.createElement("div");
         addRow.className = "grid-row grid-row--add-option";
@@ -837,7 +891,10 @@
           button.className = "add-option-row";
           button.innerHTML = '<span aria-hidden="true">+</span> Add row';
           button.title = `Add another selectable logo row for ${colorName(color)} - customers choose one row at checkout`;
-          button.addEventListener("click", () => openAssignment(color, 1, null, nextRow));
+          button.addEventListener("click", async () => {
+            await openAssignment(color, 1, null, nextRow);
+            els.sort.value = String(nextSort);
+          });
           label.append(button);
         }
         if (colorAssignments.length) {
@@ -849,14 +906,87 @@
           clear.addEventListener("click", (e) => clearColor(color, colorAssignments.length, e.currentTarget));
           label.append(clear);
         }
+        if (colorAssignments.length) {
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "copy-color";
+          copy.textContent = "Copy color";
+          copy.title = `Copy every logo row on ${colorName(color)} to the clipboard`;
+          copy.addEventListener("click", () => {
+            setClipboard({ kind: "color", source: { store: state.store, style: state.style, color: code }, rows: clipboardRows(code) });
+            toast(`Copied ${colorName(color)} (${colorAssignments.length} logos).`);
+          });
+          label.append(copy);
+        }
+        if (editable && clipboardState.data) {
+          const paste = document.createElement("button");
+          paste.type = "button";
+          paste.className = "paste-color";
+          paste.textContent = clipboardState.data.kind === "row" ? "Paste as new row" : "Paste here";
+          paste.addEventListener("click", () => pasteClipboard([code], { asNewRows: clipboardState.data.kind === "row" }));
+          label.append(paste);
+        }
         addRow.append(label);
         for (let i = 0; i < 3; i += 1) {
           const filler = document.createElement("div");
           filler.className = "grid-cell grid-cell--filler";
           addRow.append(filler);
         }
-        els.grid.append(addRow);
+        group.append(addRow);
       }
+      els.grid.append(group);
+    });
+    attachGridSortables();
+  }
+
+  function reorderAllColors() {
+    const box = $("#reorder-all-colors");
+    if (!box) return true;
+    try { box.checked = localStorage.getItem(REORDER_ALL_KEY) !== "false"; } catch (e) {}
+    return box.checked;
+  }
+
+  function attachGridSortables() {
+    if (typeof Sortable === "undefined") return;
+    gridSortables.push(new Sortable(els.grid, {
+      draggable: ".grid-group",
+      handle: ".drag-handle--color",
+      animation: 120,
+      fallbackOnBody: true,
+      onEnd: async () => {
+        const colors = $$(".grid-group", els.grid).map((group) => group.dataset.color);
+        try {
+          await api("/api/style-color-order", { method: "PUT", body: { style: state.style, colors } });
+          toast("Color order saved (editor only).");
+        } catch (error) {
+          toast(errorMessage(error), "error");
+        }
+        await refreshStyle();
+      },
+    }));
+    $$(".grid-group", els.grid).forEach((group) => {
+      gridSortables.push(new Sortable(group, {
+        draggable: ".grid-row[data-option-row]",
+        handle: ".drag-handle--row",
+        filter: ".grid-row--add-option",
+        animation: 120,
+        onEnd: async () => {
+          const optionRows = $$(".grid-row[data-option-row]", group).map((row) => Number(row.dataset.optionRow));
+          const applyTo = reorderAllColors() ? "style" : "color";
+          try {
+            const result = await api("/api/assignments/reorder", {
+              method: "POST",
+              body: { store: state.store, style: state.style, garment_color_code: group.dataset.color, option_rows: optionRows, apply_to: applyTo },
+            });
+            const colors = result.colors || [];
+            toast(colors.length > 1 ? `Row order saved for ${colors.length} colors.` : "Row order saved.");
+            noteBatch(result.batch_id, "row reorder");
+          } catch (error) {
+            toast(errorMessage(error), "error");
+          }
+          await refreshStyle();
+        },
+      }));
     });
   }
 
@@ -946,7 +1076,15 @@
     button.className = "add-assignment";
     button.innerHTML = '<span aria-hidden="true">+</span> Add logo';
     button.setAttribute("aria-label", `Add a logo to ${colorName(color)}, row ${optionRow}, position ${position}`);
-    button.addEventListener("click", () => openAssignment(color, position, null, optionRow));
+    button.addEventListener("click", async () => {
+      await openAssignment(color, position, null, optionRow);
+      // Positions 2/3 inherit the row's sort_order so the row stays one
+      // storefront group.
+      if (position > 1) {
+        const anchor = (state.detail?.assignments || []).find((a) => text(a.garment_color_code) === colorCode(color) && Number(a.option_row) === optionRow);
+        if (anchor) els.sort.value = String(Number(anchor.sort_order) || 0);
+      }
+    });
     return button;
   }
 
@@ -3217,7 +3355,9 @@
             const schemeId = text(scheme.color_scheme_id ?? scheme.scheme_id ?? scheme.id);
             if (!schemeId || scheme.is_colorway === false) return;
             const schemeName = text(scheme.name ?? scheme.description, schemeId);
-            const variantCode = code || "?";
+            // Each scheme pairs with its OWN logo code (TBXNV for NV, not the
+            // design's first code) - the server resolves by exact pair.
+            const variantCode = text(scheme.logo_code).trim() || code || "?";
             appendOption(list, {
               title: `${variantCode} · ${schemeName}`,
               subtitle: text(design.description ?? design.web_description, `Design ${id}`),
@@ -3321,6 +3461,8 @@
       target: targetMode === "light_dark"
         ? { mode: "light_dark", class: $("#bulk-class").value }
         : { mode: "colors", color_codes: bulkSelectedColors() },
+      // A batch-bar selection narrows the preview to those styles (JSON drops undefined).
+      style_codes: batchState.selected.size ? [...batchState.selected] : undefined,
     };
     const previewBtn = $("#bulk-preview-btn");
     setBusy(previewBtn, true, "Previewing...");
@@ -3427,7 +3569,18 @@
         box.textContent = "No bulk batches for this store yet.";
         return;
       }
-      box.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>Logo</th><th>Rows</th><th>Actor</th><th>Status</th></tr></thead><tbody>${batches.map((batch) => `<tr><td>${escapeHtml(formatDate(batch.created_at))}</td><td><code>${escapeHtml(batch.logo_code)}-${escapeHtml(batch.color_scheme)}</code><br><small>${escapeHtml(batch.placement)}</small></td><td>${escapeHtml(batch.applied)}</td><td>${escapeHtml(batch.created_by)}</td><td>${batch.undone_at ? `Undone ${escapeHtml(formatDate(batch.undone_at))}` : `<button type="button" class="button button--ghost button--small bulk-history-undo" data-batch="${escapeHtml(batch.batch_id)}">Undo</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+      // Non-bulk-apply batches (reorder, paste, copy, design swap) journal
+      // through the same table with their kind in `target`.
+      const describe = (batch) => {
+        const target = batch.target || {};
+        if (target.kind === "reorder") return `<strong>Reorder</strong><br><small>${escapeHtml(target.style)} · ${escapeHtml(target.apply_to === "style" ? "all matching colors" : target.color)}</small>`;
+        if (target.kind === "paste") return `<strong>Paste</strong><br><small>${escapeHtml(target.style)} · ${escapeHtml(String((target.colors || []).length))} color(s)</small>`;
+        if (target.kind === "paste_batch") return `<strong>Batch paste</strong><br><small>${escapeHtml(String((target.styles || []).length))} styles · ${escapeHtml(target.color_scope)}</small>`;
+        if (target.kind === "copy_style_batch") return `<strong>Copy style</strong><br><small>${escapeHtml(target.source_style)} → ${escapeHtml(String((target.styles || []).length))} styles · ${escapeHtml(target.color_match)} · ${escapeHtml(target.mode)}</small>`;
+        if (target.kind === "design_swap") return `<strong>Replace design</strong><br><small>${escapeHtml(target.from.design_id)}${target.from.color_scheme_id ? `/${escapeHtml(target.from.color_scheme_id)}` : ""} → ${escapeHtml(target.to.logo_code)}-${escapeHtml(target.to.color_scheme_id)} (${escapeHtml(target.to.design_id)}) · ${escapeHtml(String((target.styles || []).length))} style(s)</small>`;
+        return `<code>${escapeHtml(batch.logo_code)}-${escapeHtml(batch.color_scheme)}</code><br><small>${escapeHtml(batch.placement)}</small>`;
+      };
+      box.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>What</th><th>Rows</th><th>Actor</th><th>Status</th></tr></thead><tbody>${batches.map((batch) => `<tr><td>${escapeHtml(formatDate(batch.created_at))}</td><td>${describe(batch)}</td><td>${escapeHtml(batch.applied)}</td><td>${escapeHtml(batch.created_by)}</td><td>${batch.undone_at ? `Undone ${escapeHtml(formatDate(batch.undone_at))}` : `<button type="button" class="button button--ghost button--small bulk-history-undo" data-batch="${escapeHtml(batch.batch_id)}">Undo</button>`}</td></tr>`).join("")}</tbody></table></div>`;
       $$(".bulk-history-undo", box).forEach((button) => {
         button.addEventListener("click", () => bulkUndo(Number(button.dataset.batch), button));
       });
@@ -3441,6 +3594,8 @@
     if (!state.store) { toast("Choose a store first.", "error"); return; }
     // Fill store name
     $("#bulk-store-name").textContent = storeDisplayFor(state.store);
+    // A batch-bar selection scopes the preview to those styles - say so.
+    $("#bulk-apply-panel .eyebrow").textContent = batchState.selected.size ? `Bulk apply · ${batchState.selected.size} selected styles` : "Bulk apply";
     // Reset state
     $("#bulk-logo-search").value = "";
     $("#bulk-logo-code").value = "";
@@ -3498,6 +3653,525 @@
   function updateBulkColorsCount() {
     const el = $("#bulk-colors-count");
     if (el) el.textContent = String(bulkSelectedColors().length);
+  }
+
+  // ===== Assignment clipboard (copy a color channel or one row, paste onto colors) =====
+  const CLIPBOARD_KEY = "logo-admin:clipboard";
+  const clipboardState = { data: null };
+
+  function clipboardRows(colorCodeValue, optionRow = null) {
+    return (state.detail?.assignments || [])
+      .filter((a) => text(a.garment_color_code) === colorCodeValue && (optionRow === null || Number(a.option_row) === optionRow))
+      .map((a) => ({
+        option_row: Number(a.option_row) || 1, position: Number(a.position),
+        design_id: text(a.design_id), logo_code: text(a.logo_code), color_scheme_id: text(a.color_scheme_id),
+        location: text(a.location), optional: Boolean(a.optional), background: text(a.background),
+        cost_override: a.cost_override === null || a.cost_override === undefined ? null : Number(a.cost_override),
+        sort_order: Number(a.sort_order) || 0, image_url: text(a.image_url),
+        name_override: text(a.name_override) || null, active: a.active !== false,
+      }));
+  }
+
+  function setClipboard(data) {
+    clipboardState.data = data;
+    try { data ? sessionStorage.setItem(CLIPBOARD_KEY, JSON.stringify(data)) : sessionStorage.removeItem(CLIPBOARD_KEY); } catch (e) {}
+    renderClipboardChip();
+    // The grid footer shows Paste buttons only while something is on the clipboard.
+    if (state.detail) renderGrid(envelope(state.detail, "colors"), envelope(state.detail, "assignments"));
+  }
+
+  function loadClipboard() {
+    try { const raw = sessionStorage.getItem(CLIPBOARD_KEY); clipboardState.data = raw ? JSON.parse(raw) : null; } catch (e) { clipboardState.data = null; }
+    renderClipboardChip();
+  }
+
+  function renderClipboardChip() {
+    const chip = $("#clipboard-chip");
+    if (!chip) return;
+    const data = clipboardState.data;
+    chip.hidden = !data;
+    // The batch bar's Paste button tracks clipboard presence.
+    renderBatchBar();
+    if (!data) return;
+    const what = data.kind === "row" ? `row ${data.source.option_row}` : "color";
+    $("#clipboard-label").textContent = `Clipboard: ${data.rows.length} logo${data.rows.length === 1 ? "" : "s"} (${what} ${data.source.color} · ${data.source.style} · ${storeDisplayFor(data.source.store)})`;
+  }
+
+  async function pasteClipboard(colors, { asNewRows = false } = {}) {
+    const data = clipboardState.data;
+    if (!data || !state.store || !state.style) { toast("Nothing on the clipboard.", "error"); return; }
+    if (!colors.length) { toast("This style has no live garment colors to paste onto.", "error"); return; }
+    const overwrite = $("#clipboard-overwrite")?.checked === true;
+    const crossStore = data.source.store !== state.store;
+    const confirmed = await confirmAction({
+      title: `Paste ${data.rows.length} logo${data.rows.length === 1 ? "" : "s"}`,
+      message: `Paste onto ${colors.length} color${colors.length === 1 ? "" : "s"} of ${state.style}${crossStore ? ` in ${storeDisplayFor(state.store)} (a different store - each row is checked for design ownership)` : ""}. ${overwrite ? "Occupied slots are overwritten." : "Occupied slots are skipped."}${asNewRows ? " Rows are added after the existing ones." : ""} You can undo from Bulk history.`,
+      actionLabel: "Paste", danger: overwrite,
+    });
+    if (!confirmed) return;
+    try {
+      const result = await api("/api/assignments/paste", { method: "POST", body: {
+        store: state.store, style: state.style, colors, rows: data.rows, overwrite, as_new_rows: asNewRows,
+      } });
+      const parts = [`${result.created} created`, `${result.updated} updated`];
+      if (result.skipped_occupied) parts.push(`${result.skipped_occupied} occupied skipped`);
+      if (result.skipped_invalid) parts.push(`${result.skipped_invalid} invalid`);
+      if (result.skipped_missing_color) parts.push(`${result.skipped_missing_color} color(s) not in this style`);
+      toast(`Pasted: ${parts.join(", ")}.`, result.skipped_invalid ? "error" : "success");
+      if (result.problems?.length) console.warn("paste problems", result.problems);
+      noteBatch(result.batch_id, "paste");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+    await refreshStyle();
+  }
+
+  // ===== Batch selection of styles (paste / activate / bulk apply scope) =====
+  const batchState = { selected: new Set(), rows: [] };
+
+  function renderBatchBar() {
+    const n = batchState.selected.size;
+    $("#batch-count").textContent = n ? `${n} style${n === 1 ? "" : "s"} selected` : "No styles selected";
+    $("#batch-paste").disabled = !n || !clipboardState.data;
+    ["#batch-activate", "#batch-deactivate", "#batch-bulk-apply"].forEach((id) => { $(id).disabled = !n; });
+    $("#batch-copy-from-open").disabled = !n || !state.style;
+    $("#batch-clear").hidden = !n;
+  }
+
+  async function loadBatchRows() {
+    const q = $("#batch-search").value.trim();
+    const onlyUnconfigured = $("#batch-unconfigured-only").checked;
+    $("#batch-assigned-only").disabled = onlyUnconfigured;
+    let rows;
+    let note = "";
+    try {
+      if (onlyUnconfigured) {
+        const payload = await api(`/api/styles/coverage?${new URLSearchParams({ store: state.store, unconfigured_only: "true" })}`);
+        const needle = q.toLowerCase();
+        rows = envelope(payload, "styles").filter((r) => !needle || styleCode(r).toLowerCase().includes(needle) || styleName(r).toLowerCase().includes(needle));
+        if (payload.truncated) note = '<p class="muted">Showing the first 2,000 styles - use the search box to narrow the list.</p>';
+      } else {
+        const params = new URLSearchParams({ store: state.store, active_only: "true",
+          assigned_only: $("#batch-assigned-only").checked ? "true" : "false" });
+        if (q) params.set("q", q);
+        rows = envelope(await api(`/api/styles?${params}`), "styles");
+      }
+    } catch (error) {
+      $("#batch-table").innerHTML = `<div class="grid-empty">${escapeHtml(friendlyLoadError("the style list", error))}</div>`;
+      return;
+    }
+    batchState.rows = rows;
+    const lastHeader = onlyUnconfigured ? "Colors without logos" : "Logos";
+    const lastCell = (r) => onlyUnconfigured
+      ? `<span class="batch-unconfigured">${escapeHtml(String(r.colors_configured ?? 0))}/${escapeHtml(String(r.colors_total ?? 0))} configured</span><br><small>${(r.unconfigured || []).map((code) => escapeHtml(code)).join(", ")}</small>`
+      : escapeHtml(String(r.assignment_count ?? 0));
+    const table = $("#batch-table");
+    table.innerHTML = `${note}<table class="data-table"><thead><tr><th></th><th>Style</th><th>Name</th><th>${lastHeader}</th></tr></thead><tbody>${rows.map((r) => `<tr><td><input type="checkbox" class="batch-row-check" data-style="${escapeHtml(styleCode(r))}" ${batchState.selected.has(styleCode(r)) ? "checked" : ""}></td><td><code>${escapeHtml(styleCode(r))}</code></td><td>${escapeHtml(styleName(r))}</td><td>${lastCell(r)}</td></tr>`).join("")}</tbody></table>`;
+    $$(".batch-row-check", table).forEach((box) => box.addEventListener("change", () => {
+      box.checked ? batchState.selected.add(box.dataset.style) : batchState.selected.delete(box.dataset.style);
+      $("#batch-dialog-count").textContent = `${batchState.selected.size} selected`;
+    }));
+    $("#batch-dialog-count").textContent = `${batchState.selected.size} selected`;
+  }
+
+  async function openBatchDialog() {
+    if (!state.store) { toast("Choose a store first.", "error"); return; }
+    $("#batch-context").textContent = storeDisplayFor(state.store);
+    const similar = $("#batch-select-similar");
+    similar.disabled = !state.style;
+    similar.textContent = state.style
+      ? `Select styles with the same logos as ${state.style}`
+      : "Select styles with the same logos as the open style";
+    openDialog($("#batch-dialog"));
+    await loadBatchRows();
+  }
+
+  async function batchSelectSimilar() {
+    if (!state.store || !state.style) return;
+    const button = $("#batch-select-similar");
+    setBusy(button, true, "Finding styles...");
+    try {
+      const params = new URLSearchParams({ store: state.store, style: state.style, mode: "exact" });
+      const payload = await api(`/api/styles/similar?${params}`);
+      const matches = envelope(payload, "styles");
+      const live = matches.filter((r) => r.warehouse_active !== false);
+      live.forEach((r) => batchState.selected.add(styleCode(r)));
+      if (payload.source?.warehouse_active !== false) batchState.selected.add(state.style);
+      const retired = matches.length - live.length;
+      const setSize = payload.source?.logo_set?.length ?? 0;
+      if (!matches.length) {
+        toast(`No other style in ${storeDisplayFor(state.store)} carries exactly the ${setSize} logo${setSize === 1 ? "" : "s"} of ${state.style}.`);
+      } else {
+        toast(`Selected ${live.length} style${live.length === 1 ? "" : "s"} with the same logos as ${state.style}${retired ? ` (${retired} not in the live catalog skipped)` : ""}${payload.truncated ? " - list truncated at 500" : ""}.`);
+      }
+      renderBatchBar();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+    await loadBatchRows();
+  }
+
+  async function batchActive(active) {
+    const styles = [...batchState.selected];
+    const confirmed = await confirmAction({ title: active ? "Set styles active" : "Set styles inactive",
+      message: `${styles.length} style${styles.length === 1 ? "" : "s"} in ${storeDisplayFor(state.store)}.`, actionLabel: active ? "Activate" : "Deactivate", danger: !active });
+    if (!confirmed) return;
+    try {
+      const result = await api("/api/style-active-batch", { method: "POST", body: { store: state.store, styles, active } });
+      const updated = result.results.reduce((sum, r) => sum + (r.updated || 0), 0);
+      toast(`${updated} assignment${updated === 1 ? "" : "s"} ${active ? "activated" : "deactivated"} across ${styles.length} styles.`);
+    } catch (error) { toast(errorMessage(error), "error"); }
+    if (state.style) await refreshStyle();
+  }
+
+  async function batchPaste() {
+    const data = clipboardState.data;
+    const styles = [...batchState.selected];
+    if (!data || !styles.length) return;
+    const scope = $("#batch-scope").value;
+    const overwrite = $("#clipboard-overwrite")?.checked === true;
+    const confirmed = await confirmAction({ title: `Paste to ${styles.length} styles`,
+      message: `${data.rows.length} logo${data.rows.length === 1 ? "" : "s"} → ${scope === "match" ? `color ${data.source.color}` : `${scope} colors`} of each selected style in ${storeDisplayFor(state.store)}. ${overwrite ? "Occupied slots are overwritten." : "Occupied slots are skipped."} One undo batch.`, actionLabel: "Paste", danger: overwrite });
+    if (!confirmed) return;
+    try {
+      const result = await api("/api/assignments/paste-batch", { method: "POST", body: {
+        store: state.store, styles, color_scope: scope, match_color: data.source.color, rows: data.rows,
+        overwrite, as_new_rows: data.kind === "row",
+      } });
+      const t = result.totals;
+      const errors = result.results.filter((r) => r.error).length;
+      toast(`Batch paste: ${t.created} created, ${t.updated} updated, ${t.skipped_occupied} occupied, ${t.skipped_invalid} invalid, ${t.skipped_missing_color} without that color${errors ? `, ${errors} style errors` : ""}.`, t.skipped_invalid || errors ? "error" : "success");
+      noteBatch(result.batch_id, "batch paste");
+    } catch (error) { toast(errorMessage(error), "error"); }
+    if (state.style) await refreshStyle();
+  }
+
+  // ===== Copy one style's logos to many styles =====
+  const copyManyState = { plan: null };
+
+  function copyManyInputs() {
+    return {
+      color_match: $("input[name='copy-many-match']:checked").value,
+      mode: $("input[name='copy-many-mode']:checked").value,
+      target_styles: [...batchState.selected],
+    };
+  }
+
+  function renderCopyManyTargets() {
+    $("#copy-many-targets").textContent = batchState.selected.size ? `${batchState.selected.size} target style(s) selected.` : "No target styles selected.";
+  }
+
+  // Any change to the options or the target selection invalidates the plan:
+  // Copy is only enabled for a preview of exactly what will run.
+  function copyManyReset() {
+    copyManyState.plan = null;
+    $("#copy-many-preview").replaceChildren();
+    $("#copy-many-summary").textContent = "";
+    $("#copy-many-run").disabled = true;
+  }
+
+  function openCopyMany() {
+    if (!state.store || !state.style) { toast("Open a style first.", "error"); return; }
+    $("#copy-many-context").textContent = `Source: ${state.style} in ${storeDisplayFor(state.store)}`;
+    renderCopyManyTargets();
+    copyManyReset();
+    openDialog($("#copy-many-dialog"));
+  }
+
+  async function copyManyPreview() {
+    const inputs = copyManyInputs();
+    if (!inputs.target_styles.length) { toast("Choose target styles first.", "error"); return; }
+    const button = $("#copy-many-preview-btn");
+    setBusy(button, true, "Planning...");
+    try {
+      const plan = await api("/api/copy-style-batch/preview", { method: "POST", body: { store: state.store, source_style: state.style, ...inputs } });
+      copyManyState.plan = plan;
+      const box = $("#copy-many-preview");
+      box.innerHTML = `<table class="data-table"><thead><tr><th>Target style</th><th>Colors (target ← source)</th><th>Unmatched</th><th>Rows</th><th>Has logos</th></tr></thead><tbody>${plan.targets.map((t) => t.error
+        ? `<tr><td><code>${escapeHtml(t.style)}</code></td><td colspan="4" class="muted">${escapeHtml(t.error)}</td></tr>`
+        : `<tr><td><code>${escapeHtml(t.style)}</code></td><td>${t.mappings.map((m) => `${escapeHtml(m.target_color)} ← ${escapeHtml(m.source_color)}${m.via === "exact" ? "" : ` <span class="badge">${escapeHtml(m.via)}</span>`}`).join(", ") || "<span class='muted'>none</span>"}</td><td>${escapeHtml(t.unmatched.join(", "))}</td><td>${escapeHtml(String(t.rows))}</td><td>${escapeHtml(String(t.existing))}</td></tr>`).join("")}</tbody></table>`;
+      const errors = plan.targets.filter((t) => t.error).length;
+      $("#copy-many-summary").textContent = `${plan.total_rows} logo slot(s) across ${plan.targets.length - errors} style(s)${errors ? `; ${errors} skipped` : ""}.`;
+      $("#copy-many-run").disabled = plan.total_rows === 0;
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function copyManyRun() {
+    const inputs = copyManyInputs();
+    if (!copyManyState.plan) return;
+    const confirmed = await confirmAction({
+      title: `Copy ${state.style} to ${inputs.target_styles.length} styles`,
+      message: `${copyManyState.plan.total_rows} logo slots. ${inputs.mode === "replace" ? "Each mapped color on the targets is CLEARED first." : inputs.mode === "overwrite" ? "Occupied slots are overwritten." : "Occupied slots are kept."} One undo batch.`,
+      actionLabel: "Copy", danger: inputs.mode !== "merge",
+    });
+    if (!confirmed) return;
+    const button = $("#copy-many-run");
+    setBusy(button, true, "Copying...");
+    try {
+      const result = await api("/api/copy-style-batch", { method: "POST", body: { store: state.store, source_style: state.style, ...inputs } });
+      const t = result.totals;
+      toast(`Copied: ${t.created} created, ${t.updated} updated${t.removed ? `, ${t.removed} cleared` : ""}, ${t.skipped_occupied} kept, ${t.skipped_invalid} invalid.`, t.skipped_invalid ? "error" : "success");
+      noteBatch(result.batch_id, "copy to many styles");
+      closeDialog($("#copy-many-dialog"));
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+    await refreshStyle();
+  }
+
+  // ===== Inline "Undo last change" (last journaled batch of this page session) =====
+  const editorUndoState = { batch: null };
+
+  function noteBatch(batchId, label) {
+    editorUndoState.batch = batchId ? { id: Number(batchId), label } : null;
+    const button = $("#undo-last-batch");
+    if (!button) return;
+    button.hidden = !editorUndoState.batch;
+    if (editorUndoState.batch) button.textContent = `Undo ${label} (#${editorUndoState.batch.id})`;
+    loadBulkHistory();
+  }
+
+  async function undoLastBatch() {
+    const batch = editorUndoState.batch;
+    if (!batch) return;
+    const button = $("#undo-last-batch");
+    setBusy(button, true, "Undoing...");
+    try {
+      const result = await api("/api/bulk-apply/undo", { method: "POST", body: { batch_id: batch.id } });
+      toast(`Undo: ${result.restored} restored${result.skipped ? `, ${result.skipped} skipped (changed since)` : ""}.`);
+      noteBatch(null);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+    await refreshStyle();
+  }
+
+  // ===== Design swap (replace a design across a store) =====
+
+  const swapState = {
+    requestSequence: { from: 0, to: 0 },
+    from: null,   // selected design record from /api/designs
+    to: null,
+    plan: null,   // last /api/design-swap/preview payload
+  };
+
+  function swapSchemesOf(design) {
+    const schemes = Array.isArray(design?.schemes) ? design.schemes : [];
+    const ids = [];
+    schemes.forEach((scheme) => {
+      const id = text(scheme.color_scheme_id).trim().toUpperCase();
+      if (id && !ids.includes(id)) ids.push(id);
+    });
+    return ids;
+  }
+
+  function swapLogoCodesFor(design, schemeId) {
+    const schemes = Array.isArray(design?.schemes) ? design.schemes : [];
+    const codes = [];
+    schemes.forEach((scheme) => {
+      if (text(scheme.color_scheme_id).trim().toUpperCase() !== schemeId) return;
+      const code = text(scheme.logo_code).trim().toUpperCase();
+      if (code && !codes.includes(code)) codes.push(code);
+    });
+    return codes;
+  }
+
+  async function swapSearch(side, query) {
+    const sequence = ++swapState.requestSequence[side];
+    const input = $(`#swap-${side}-search`);
+    const list = $(`#swap-${side}-options`);
+    showEmptyOption(list, query.trim() ? "Searching..." : "Loading this store's logos...");
+    setOptionsOpen(input, list, true);
+    try {
+      const params = new URLSearchParams({ q: query.trim() });
+      if (state.store) params.set("store", state.store);
+      // Browsing lists this store's own logos; typing searches every design
+      // (store-used designs sort first), so a brand-new design can be chosen.
+      if (!query.trim()) params.set("used_only", "true");
+      const payload = await api(`/api/designs?${params}`);
+      if (sequence !== swapState.requestSequence[side]) return;
+      const designs = envelope(payload, "designs");
+      list.replaceChildren();
+      if (!designs.length) {
+        showEmptyOption(list, query.trim() ? "No matching FDM4 designs" : "This store has no logos yet - type to search all designs");
+        return;
+      }
+      designs.forEach((design) => {
+        const id = text(design.design_id ?? design.id);
+        const code = designCode(design);
+        const uses = Number(design.store_uses) || 0;
+        appendOption(list, {
+          title: code ? `${code} - ${text(design.description ?? design.web_description, "Unnamed design")}` : text(design.description ?? design.web_description, `Design ${id}`),
+          subtitle: uses ? `Used ${uses} time${uses === 1 ? "" : "s"} in this store` : "Not used in this store yet",
+          meta: `Design ${id}`,
+          onSelect: () => {
+            input.value = `${code ? `${code} · ` : ""}${text(design.description ?? design.web_description, `Design ${id}`)}`;
+            setOptionsOpen(input, list, false);
+            swapSelect(side, id, design);
+          },
+        });
+      });
+    } catch (error) {
+      showEmptyOption(list, error.message);
+    }
+  }
+
+  function swapSelect(side, id, design) {
+    swapState[side] = design;
+    $(`#swap-${side}-design`).value = id;
+    const select = $(`#swap-${side}-scheme`);
+    const schemes = swapSchemesOf(design);
+    select.replaceChildren(new Option(side === "from" ? "Any color scheme" : "Choose a scheme...", ""));
+    schemes.forEach((schemeId) => select.add(new Option(schemeId, schemeId)));
+    if (side === "to" && schemes.length === 1) select.value = schemes[0];
+    const note = $(`#swap-${side}-note`);
+    note.textContent = `Design ${id} · ${text(design.description ?? design.web_description, "Unnamed design")}${schemes.length ? ` · schemes on file: ${schemes.join(", ")}` : " · no color schemes with art on file"}`;
+    note.hidden = false;
+    if (side === "to") swapPrefillLogoCode();
+    swapResetPreview();
+  }
+
+  function swapPrefillLogoCode() {
+    const schemeId = $("#swap-to-scheme").value;
+    const codes = schemeId ? swapLogoCodesFor(swapState.to, schemeId) : [];
+    const field = $("#swap-to-logo-code");
+    field.value = codes.length === 1 ? codes[0] : "";
+    field.placeholder = codes.length > 1 ? `choose: ${codes.join(" / ")}` : "auto from FDM4 art";
+  }
+
+  function swapResetPreview() {
+    swapState.plan = null;
+    document.querySelector("#swap-preview-table tbody").replaceChildren();
+    $("#swap-preview-wrap").hidden = true;
+    $("#swap-preview-summary").textContent = "";
+    $("#swap-execute-btn").disabled = true;
+  }
+
+  function swapBody() {
+    const fromDesign = $("#swap-from-design").value.trim();
+    const toDesign = $("#swap-to-design").value.trim();
+    const toScheme = $("#swap-to-scheme").value.trim();
+    if (!state.store) { toast("Choose a store first.", "error"); return null; }
+    if (!fromDesign) { toast("Choose the design to replace.", "error"); return null; }
+    if (!toDesign || !toScheme) { toast("Choose the new design and its color scheme.", "error"); return null; }
+    const body = { store: state.store, from_design_id: fromDesign, to_design_id: toDesign, to_color_scheme_id: toScheme };
+    const fromScheme = $("#swap-from-scheme").value.trim();
+    if (fromScheme) body.from_color_scheme_id = fromScheme;
+    const logoCode = $("#swap-to-logo-code").value.trim();
+    if (logoCode) body.to_logo_code = logoCode;
+    // A batch-bar selection narrows the swap to those styles.
+    if (batchState.selected.size) body.styles = [...batchState.selected];
+    return body;
+  }
+
+  const SWAP_IMAGE_LABELS = {
+    none: "-",
+    replaced: "Reuses this store's image for the new design",
+    cleared: "Cleared - FDM4 art is used until you upload an image",
+  };
+
+  function swapVerdictCell(row) {
+    if (row.verdict === "ok") return '<span class="badge badge--active">Will move</span>';
+    if (row.verdict === "unchanged") return '<span class="badge">Already there</span>';
+    return `<span class="badge badge--inactive">Skipped</span><br><small>${escapeHtml(row.reason)}</small>`;
+  }
+
+  async function swapPreview() {
+    const body = swapBody();
+    if (!body) return;
+    const button = $("#swap-preview-btn");
+    setBusy(button, true, "Previewing...");
+    try {
+      const plan = await api("/api/design-swap/preview", { method: "POST", body });
+      swapState.plan = plan;
+      const tbody = document.querySelector("#swap-preview-table tbody");
+      tbody.replaceChildren();
+      plan.groups.forEach((group) => {
+        group.rows.forEach((row) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td><code>${escapeHtml(group.style)}</code></td><td>${escapeHtml(group.color)}</td><td>${escapeHtml(String(row.option_row))} · ${escapeHtml(String(row.position))}${row.active ? "" : ' <span class="badge badge--inactive">inactive</span>'}</td><td><code>${escapeHtml(row.was.logo_code)}-${escapeHtml(row.was.color_scheme_id)}</code><br><small>${escapeHtml(row.was.design_id)}</small></td><td>${escapeHtml(SWAP_IMAGE_LABELS[row.image_action] || row.image_action)}</td><td>${swapVerdictCell(row)}</td>`;
+          tbody.append(tr);
+        });
+      });
+      const c = plan.counts;
+      const t = plan.target;
+      $("#swap-preview-summary").textContent = c.total
+        ? `${c.total} assignment${c.total === 1 ? "" : "s"} on ${c.styles} style${c.styles === 1 ? "" : "s"} → ${t.logo_code}-${t.color_scheme_id} (design ${t.design_id}${t.logo_code_derived ? ", logo code from FDM4 art" : ""}): ${c.ok} will move, ${c.unchanged} already there, ${c.invalid} skipped${c.image_url_cleared ? `, ${c.image_url_cleared} image${c.image_url_cleared === 1 ? "" : "s"} cleared` : ""}.`
+        : `No assignments in ${storeDisplayFor(state.store)} use that design${body.from_color_scheme_id ? ` / scheme ${body.from_color_scheme_id}` : ""}.`;
+      $("#swap-preview-wrap").hidden = c.total === 0;
+      $("#swap-execute-btn").disabled = c.ok === 0;
+    } catch (error) {
+      swapResetPreview();
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function swapExecute() {
+    const body = swapBody();
+    const plan = swapState.plan;
+    if (!body || !plan || !plan.counts.ok) { toast("Preview first.", "error"); return; }
+    const t = plan.target;
+    const ok = await confirmAction({
+      title: "Replace this design?",
+      message: `Move ${plan.counts.ok} assignment${plan.counts.ok === 1 ? "" : "s"} on ${plan.counts.styles} style${plan.counts.styles === 1 ? "" : "s"} in ${storeDisplayFor(state.store)} from design ${body.from_design_id}${body.from_color_scheme_id ? ` / ${body.from_color_scheme_id}` : ""} to ${t.logo_code}-${t.color_scheme_id} (design ${t.design_id}).${plan.counts.invalid ? ` ${plan.counts.invalid} skipped row${plan.counts.invalid === 1 ? "" : "s"} stay on the old design.` : ""} You can undo this batch afterwards. Nothing reaches the website until you sync the store.`,
+      actionLabel: `Replace on ${plan.counts.ok} row${plan.counts.ok === 1 ? "" : "s"}`,
+      danger: false,
+    });
+    if (!ok) return;
+    const button = $("#swap-execute-btn");
+    setBusy(button, true, "Replacing...");
+    try {
+      const res = await api("/api/design-swap", { method: "POST", body });
+      const result = $("#swap-result");
+      result.innerHTML = `Replaced on ${escapeHtml(String(res.applied))} row${res.applied === 1 ? "" : "s"}${res.skipped_invalid ? `; ${escapeHtml(String(res.skipped_invalid))} skipped` : ""}. Sync this store to push live. <button type="button" id="swap-undo-btn" class="button button--ghost button--small">Undo</button>`;
+      $("#swap-undo-btn").addEventListener("click", (e) => bulkUndo(res.batch_id, e.currentTarget));
+      if (res.problems?.length) console.warn("design swap problems", res.problems);
+      toast(`Design replaced on ${res.applied} assignment${res.applied === 1 ? "" : "s"}.`, res.skipped_invalid ? "error" : "success");
+      noteBatch(res.batch_id, "design swap");
+      await loadBulkHistory();
+      if (state.style) await refreshStyle();
+      await swapPreview();   // shows what (if anything) is still on the old design
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+      $("#swap-execute-btn").disabled = !swapState.plan || !swapState.plan.counts.ok;
+    }
+  }
+
+  async function openDesignSwapDialog() {
+    if (!state.store) { toast("Choose a store first.", "error"); return; }
+    $("#swap-store-name").textContent = storeDisplayFor(state.store);
+    const scoped = batchState.selected.size;
+    $("#swap-scope").textContent = scoped
+      ? `Scope: ${batchState.selected.size} selected style${batchState.selected.size === 1 ? "" : "s"} (Batch bar) - clear the selection to cover the whole store.`
+      : "Scope: every style in this store.";
+    ["from", "to"].forEach((side) => {
+      swapState[side] = null;
+      $(`#swap-${side}-search`).value = "";
+      $(`#swap-${side}-design`).value = "";
+      $(`#swap-${side}-note`).textContent = "";
+      $(`#swap-${side}-note`).hidden = true;
+    });
+    $("#swap-from-scheme").replaceChildren(new Option("Any color scheme", ""));
+    $("#swap-to-scheme").replaceChildren(new Option("Choose a design first", ""));
+    $("#swap-to-logo-code").value = "";
+    $("#swap-to-logo-code").placeholder = "auto from FDM4 art";
+    $("#swap-result").textContent = "";
+    swapResetPreview();
+    openDialog($("#design-swap-dialog"));
   }
 
 
@@ -3634,6 +4308,11 @@
   }
 
   function wireEvents() {
+    wireCategories();
+    wireCatTreePanel();
+    wireCatMapping();
+    wireCatProducts();
+    wireCatRuns();
     els.storeSearch.addEventListener("input", () => renderStoreOptions(els.storeSearch.value));
     els.storeSearch.addEventListener("focus", () => renderStoreOptions(els.storeSearch.value));
     els.storeSearch.addEventListener("blur", () => setTimeout(() => {
@@ -3786,6 +4465,12 @@
       if (bulkInput && bulkList && !bulkInput.contains(event.target) && !bulkList.contains(event.target)) {
         setOptionsOpen(bulkInput, bulkList, false);
       }
+      // Close the design-swap comboboxes on outside click.
+      ["from", "to"].forEach((side) => {
+        const input = $(`#swap-${side}-search`);
+        const list = $(`#swap-${side}-options`);
+        if (input && list && !input.contains(event.target) && !list.contains(event.target)) setOptionsOpen(input, list, false);
+      });
     });
 
     // Bulk-apply panel wiring
@@ -3827,10 +4512,1237 @@
     bulkLogoInput.addEventListener("input", debounce(() => bulkSearchDesigns(bulkLogoInput.value)));
     bulkLogoInput.addEventListener("focus", () => bulkSearchDesigns(bulkLogoInput.value));
     bindListKeyboard(bulkLogoInput, bulkLogoList);
+
+    // Design swap (replace a design across the store)
+    $("#design-swap-open")?.addEventListener("click", openDesignSwapDialog);
+    $("#swap-preview-btn")?.addEventListener("click", swapPreview);
+    $("#swap-execute-btn")?.addEventListener("click", swapExecute);
+    ["from", "to"].forEach((side) => {
+      const input = $(`#swap-${side}-search`);
+      const list = $(`#swap-${side}-options`);
+      if (!input || !list) return;
+      input.addEventListener("input", debounce(() => swapSearch(side, input.value)));
+      input.addEventListener("focus", () => swapSearch(side, input.value));
+      bindListKeyboard(input, list);
+    });
+    $("#swap-from-scheme")?.addEventListener("change", swapResetPreview);
+    $("#swap-to-scheme")?.addEventListener("change", () => { swapPrefillLogoCode(); swapResetPreview(); });
+    $("#swap-to-logo-code")?.addEventListener("input", swapResetPreview);
+
+    // Grid drag-and-drop: persist the "row order applies to all colors" choice
+    $("#reorder-all-colors")?.addEventListener("change", (event) => {
+      try { localStorage.setItem(REORDER_ALL_KEY, event.target.checked ? "true" : "false"); } catch (e) {}
+    });
+    reorderAllColors(); // show the remembered choice before the first drag
+
+    // Assignment clipboard
+    $("#clipboard-clear")?.addEventListener("click", () => setClipboard(null));
+    $("#clipboard-paste-all")?.addEventListener("click", () => pasteClipboard((state.detail?.colors || []).filter((c) => c.warehouse_active !== false).map(colorCode)));
+    loadClipboard();
+
+    // Batch selection of styles
+    $("#batch-select")?.addEventListener("click", openBatchDialog);
+    $("#batch-search")?.addEventListener("input", debounce(loadBatchRows));
+    $("#batch-assigned-only")?.addEventListener("change", loadBatchRows);
+    $("#batch-unconfigured-only")?.addEventListener("change", loadBatchRows);
+    $("#batch-select-similar")?.addEventListener("click", batchSelectSimilar);
+    $("#batch-select-visible")?.addEventListener("click", () => { batchState.rows.forEach((r) => batchState.selected.add(styleCode(r))); loadBatchRows(); });
+    $("#batch-apply")?.addEventListener("click", () => { closeDialog($("#batch-dialog")); renderBatchBar(); });
+    $("#batch-dialog")?.addEventListener("close", () => {
+      // However the dialog closed (Use selection, ×, backdrop, Esc), the bar
+      // and an open copy-many dialog must reflect the final selection.
+      renderBatchBar();
+      if ($("#copy-many-dialog")?.open) { renderCopyManyTargets(); copyManyReset(); }
+    });
+    $("#batch-clear")?.addEventListener("click", () => { batchState.selected.clear(); renderBatchBar(); });
+    $("#batch-activate")?.addEventListener("click", () => batchActive(true));
+    $("#batch-deactivate")?.addEventListener("click", () => batchActive(false));
+    $("#batch-paste")?.addEventListener("click", batchPaste);
+    $("#batch-bulk-apply")?.addEventListener("click", () => openBulkApplyPanel());
+
+    // Copy one style's logos to many styles
+    $("#copy-many-button")?.addEventListener("click", openCopyMany);
+    $("#batch-copy-from-open")?.addEventListener("click", openCopyMany);
+    $("#copy-many-choose")?.addEventListener("click", async () => { await openBatchDialog(); });
+    $("#copy-many-preview-btn")?.addEventListener("click", copyManyPreview);
+    $("#copy-many-run")?.addEventListener("click", copyManyRun);
+    $$("input[name='copy-many-match'], input[name='copy-many-mode']").forEach((radio) => radio.addEventListener("change", copyManyReset));
+
+    // Inline undo of the last journaled change
+    $("#undo-last-batch")?.addEventListener("click", undoLastBatch);
   }
 
   // ===== Warehouse Operations: view switching + pricing management =====
-  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "health", "help"];
+
+  // ---------------------------------------------------------------- categories
+  // Category editor (Phase 1: environment targets + live snapshots). The env
+  // selection is page-scoped: everything in this view reads/writes the chosen
+  // WordPress environment, surfaced by the colored banner.
+  const catState = {
+    env: "",
+    targets: [],
+    blogs: [],            // live blog list from the WP broker (may be empty)
+    snapshots: [],        // catmgr.snapshot rows for the env
+    selected: new Set(),  // blog_ids picked for "Import selected"
+    importing: false,
+  };
+
+  function catSnapshotByBlog() {
+    const map = new Map();
+    catState.snapshots.forEach((s) => map.set(s.blog_id, s));
+    return map;
+  }
+
+  function renderCatEnvBanner() {
+    const banner = $("#cat-env-banner");
+    if (!banner) return;
+    const target = catState.targets.find((t) => t.env === catState.env);
+    if (!target) { banner.hidden = true; return; }
+    banner.hidden = false;
+    banner.classList.toggle("cat-env-banner--prod", target.env === "prod");
+    banner.classList.toggle("cat-env-banner--dev", target.env !== "prod");
+    $("#cat-env-banner-label").textContent =
+      target.env === "prod" ? "PRODUCTION" : "DEVELOPMENT";
+    $("#cat-env-banner-host").textContent = target.host;
+  }
+
+  function renderCatEnvPills() {
+    const box = $("#cat-env-pills");
+    if (!box) return;
+    box.innerHTML = catState.targets.map((t) => `
+      <button type="button" class="cat-env-pill ${t.env === catState.env ? "is-active" : ""} ${t.env === "prod" ? "cat-env-pill--prod" : ""}"
+              data-env="${escapeHtml(t.env)}">${escapeHtml(t.env)}</button>
+    `).join("");
+    $$(".cat-env-pill", box).forEach((btn) => btn.addEventListener("click", () => {
+      if (catState.importing || btn.dataset.env === catState.env) return;
+      catState.env = btn.dataset.env;
+      catState.selected.clear();
+      loadCategories();
+    }));
+  }
+
+  async function loadCatWpStatus() {
+    const el = $("#cat-wp-status");
+    if (!el || !catState.env) return;
+    el.textContent = "Checking WordPress\u2026";
+    try {
+      const data = await api(`/api/categories/wp-status?env=${encodeURIComponent(catState.env)}`);
+      const s = data.status || {};
+      el.textContent =
+        `WordPress ${s.wp_version || "?"} \u00b7 freeze ${s.freeze ? "ON" : "off"}` +
+        ` \u00b7 Redirection ${s.redirection_active ? "active" : "absent"}` +
+        ` \u00b7 WP Rocket ${s.rocket_present ? "present" : "absent"}`;
+    } catch (error) {
+      el.textContent = `WordPress unreachable: ${errorMessage(error)}`;
+    }
+  }
+
+  async function loadCatBlogs() {
+    if (!catState.env) return;
+    try {
+      const data = await api(`/api/categories/blogs?env=${encodeURIComponent(catState.env)}`);
+      catState.blogs = data.blogs || [];
+    } catch (error) {
+      catState.blogs = [];
+      // Snapshots are a full fallback for the table; only complain out loud
+      // when there is nothing at all to show (the wp-status strip already
+      // reports an unreachable WordPress).
+      if (!catState.snapshots.length) {
+        toast(friendlyLoadError("the WordPress blog list", error), "error");
+      }
+    }
+    renderCatSnapshotTable();
+  }
+
+  async function refreshCatSnapshots() {
+    if (!catState.env) return;
+    const data = await api(`/api/categories/snapshots?env=${encodeURIComponent(catState.env)}`);
+    catState.snapshots = data.blogs || [];
+    renderCatSnapshotTable();
+  }
+
+  function renderCatSnapshotTable() {
+    const box = $("#cat-snapshot-table");
+    if (!box) return;
+    const snaps = catSnapshotByBlog();
+    const known = new Map();
+    catState.blogs.forEach((b) => known.set(b.blog_id, b));
+    catState.snapshots.forEach((s) => {
+      if (!known.has(s.blog_id)) known.set(s.blog_id, { blog_id: s.blog_id, path: s.blog_path, name: "" });
+    });
+    const rows = [...known.values()].sort((a, b) => a.blog_id - b.blog_id);
+    if (!rows.length) {
+      box.innerHTML = '<p class="muted">No blogs yet - if WordPress is reachable, use Import all blogs.</p>';
+      return;
+    }
+    box.innerHTML = `
+      <table class="table cat-table">
+        <thead><tr>
+          <th><input type="checkbox" id="cat-select-all" aria-label="Select all blogs"></th>
+          <th>Blog</th><th>Store</th><th>Version</th><th>Terms</th>
+          <th>Memberships</th><th>Imported</th><th></th>
+        </tr></thead>
+        <tbody>
+          ${rows.map((b) => {
+            const snap = snaps.get(b.blog_id);
+            return `<tr>
+              <td><input type="checkbox" class="cat-row-check" data-blog="${b.blog_id}" ${catState.selected.has(b.blog_id) ? "checked" : ""} aria-label="Select blog ${b.blog_id}"></td>
+              <td>${b.blog_id}</td>
+              <td>${escapeHtml(b.name || "")} <span class="muted">${escapeHtml(b.path || (snap ? snap.blog_path : "") || "")}</span></td>
+              <td>${snap ? snap.version : '<span class="muted">-</span>'}</td>
+              <td>${snap ? snap.term_count : '<span class="muted">-</span>'}</td>
+              <td>${snap ? snap.membership_count : '<span class="muted">-</span>'}</td>
+              <td>${snap ? escapeHtml(formatDate(snap.imported_at)) : '<span class="muted">never</span>'}</td>
+              <td><button type="button" class="button button--ghost button--small cat-import-one" data-blog="${b.blog_id}">Import</button></td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>`;
+    const all = $("#cat-select-all", box);
+    if (all) all.addEventListener("change", () => {
+      catState.selected = all.checked ? new Set(rows.map((r) => r.blog_id)) : new Set();
+      renderCatSnapshotTable();
+    });
+    $$(".cat-row-check", box).forEach((check) => check.addEventListener("change", () => {
+      const id = Number(check.dataset.blog);
+      if (check.checked) catState.selected.add(id); else catState.selected.delete(id);
+    }));
+    $$(".cat-import-one", box).forEach((btn) => btn.addEventListener("click", () => {
+      importCatBlogs([Number(btn.dataset.blog)]);
+    }));
+  }
+
+  async function importCatBlogs(blogIds) {
+    if (catState.importing || !blogIds.length) return;
+    const target = catState.targets.find((t) => t.env === catState.env);
+    if (blogIds.length > 1) {
+      const confirmed = await confirmAction({
+        title: `Import ${blogIds.length} blog snapshots?`,
+        message: `Reads the live category structure from ${target ? target.host : "WordPress"} and replaces the stored ${escapeHtml(catState.env)} snapshots. Nothing on WordPress changes.`,
+        actionLabel: "Import",
+      });
+      if (!confirmed) return;
+    }
+    catState.importing = true;
+    const progress = $("#cat-import-progress");
+    const failures = [];
+    let done = 0;
+    try {
+      for (const blogId of blogIds) {
+        if (progress) progress.textContent = `Importing blog ${blogId}\u2026 (${done}/${blogIds.length})`;
+        try {
+          const result = await api("/api/categories/snapshots/import", {
+            method: "POST",
+            body: { env: catState.env, blog_ids: [blogId] },
+          });
+          const row = (result.results || [])[0];
+          if (!row || row.ok === false) failures.push(`blog ${blogId}: ${row ? row.error : "no result"}`);
+        } catch (error) {
+          failures.push(`blog ${blogId}: ${errorMessage(error)}`);
+        }
+        done += 1;
+      }
+    } finally {
+      catState.importing = false;
+      if (progress) progress.textContent = "";
+    }
+    await refreshCatSnapshots().catch(() => {});
+    if (failures.length) {
+      toast(`Imported ${done - failures.length}/${blogIds.length}; failures: ${failures.slice(0, 3).join("; ")}${failures.length > 3 ? "\u2026" : ""}`, "error");
+    } else {
+      toast(`Imported ${done} blog snapshot${done === 1 ? "" : "s"}.`, "success");
+    }
+  }
+
+  function wireCategories() {
+    const importAll = $("#cat-import-all");
+    if (!importAll) return; // feature disabled - view absent from the DOM
+    importAll.addEventListener("click", () => {
+      const ids = (catState.blogs.length
+        ? catState.blogs.map((b) => b.blog_id)
+        : catState.snapshots.map((s) => s.blog_id));
+      if (!ids.length) { toast("No blogs known yet - WordPress may be unreachable.", "error"); return; }
+      importCatBlogs(ids);
+    });
+    $("#cat-import-selected").addEventListener("click", () => {
+      const ids = [...catState.selected].sort((a, b) => a - b);
+      if (!ids.length) { toast("Select at least one blog first.", "error"); return; }
+      importCatBlogs(ids);
+    });
+  }
+
+
+
+
+  // ------------------------------------------- categories: preview + runs
+  const catRunState = { preview: null, runs: [], activeTimer: null, freeze: null };
+
+  async function loadCatPreviewTab() {
+    const box = $("#cat-preview-result");
+    if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
+  }
+
+  async function runCatPreview() {
+    const button = $("#cat-preview-run");
+    const box = $("#cat-preview-result");
+    setBusy(button, true, "Computing\u2026");
+    try {
+      const preview = await api("/api/categories/preview", { method: "POST", body: { env: catState.env } });
+      catRunState.preview = preview;
+      renderCatPreview(preview);
+      $("#cat-apply-run").disabled = !preview.ok;
+    } catch (error) {
+      renderErrorState(box, friendlyLoadError("the preview", error), runCatPreview);
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  function renderCatPreview(preview) {
+    const box = $("#cat-preview-result");
+    if (!box) return;
+    const totals = preview.totals || {};
+    const blockerHtml = (preview.blockers || []).map((b) => {
+      if (b.kind === "unmapped_slugs") {
+        return `<div class="cat-blocker"><strong>${b.count} unmapped slugs</strong> - finish the Mapping tab. e.g. ${b.sample.slice(0, 8).map(escapeHtml).join(", ")}</div>`;
+      }
+      if (b.kind === "zero_category_skus") {
+        return `<div class="cat-blocker"><strong>${b.count} styles would end with no categories</strong> - rescue them in Products, or acknowledge them as intentionally uncategorized. e.g. ${b.sample.slice(0, 6).map((z) => escapeHtml(z.sku)).join(", ")}</div>`;
+      }
+      if (b.kind === "slug_collisions") {
+        return `<div class="cat-blocker"><strong>Slug collisions</strong>: ${b.blogs.map((row) => `blog ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}</div>`;
+      }
+      return `<div class="cat-blocker"><strong>${escapeHtml(b.kind)}</strong></div>`;
+    }).join("");
+    const warningHtml = (preview.warnings || []).map((w) => {
+      if (w.kind === "redirects") return `<div class="cat-warning">${w.count} blog-1 redirects will be created.</div>`;
+      if (w.kind === "blog1_slug_changes") return `<div class="cat-warning">${escapeHtml(w.message)} (${(w.changes || []).length} slugs)</div>`;
+      return `<div class="cat-warning">${escapeHtml(w.message || w.kind)}</div>`;
+    }).join("");
+    const blogRows = (preview.blogs || []).map((b) => {
+      const st = b.stats || {};
+      return `<tr><td>${b.blog_id}</td><td>${escapeHtml(b.blog_path || "")}</td>
+        <td>${st.changed_updates || 0}</td><td>${st.creates || 0}</td>
+        <td>${st.deletes || 0}</td><td>${st.membership_changes || 0}</td>
+        <td>${st.zero_category || 0}</td><td>v${b.snapshot_version}</td></tr>`;
+    }).join("");
+    box.innerHTML = `
+      ${preview.ok ? '<div class="cat-ok">No blockers - this plan can be applied.</div>' : blockerHtml}
+      ${warningHtml}
+      <div class="cat-membership cat-gap-top">
+        <span class="cat-chip">changed ${totals.changed_updates ?? totals.updates ?? 0}</span>
+        <span class="cat-chip">creates ${totals.creates || 0}</span>
+        <span class="cat-chip cat-chip--minus">deletes ${totals.deletes || 0}</span>
+        <span class="cat-chip">product moves ${totals.membership_changes || 0}</span>
+        <span class="cat-chip">re-slugs ${totals.reslugs || 0}</span>
+      </div>
+      <div class="cat-table-wrap cat-gap-top">
+        <table class="table cat-table"><thead><tr>
+          <th>Blog</th><th>Path</th><th>Changed</th><th>Creates</th><th>Deletes</th>
+          <th>Product moves</th><th>Zero-cat</th><th>Snapshot</th>
+        </tr></thead><tbody>${blogRows}</tbody></table>
+      </div>`;
+  }
+
+  async function runCatApply() {
+    if (!catRunState.preview || !catRunState.preview.ok) return;
+    const target = catState.targets.find((t) => t.env === catState.env);
+    const host = target ? target.host : "WordPress";
+    if (catState.env === "prod") {
+      const typed = window.prompt(`This APPLIES the category restructure to PRODUCTION (${host}).\nType the host name to confirm:`);
+      if (typed !== host) { toast("Host name did not match - apply cancelled.", "error"); return; }
+    } else {
+      const confirmed = await confirmAction({
+        title: `Apply to ${host}?`,
+        message: "Creates the run and starts working through blogs (blog 1 first). You can pause between blogs.",
+        actionLabel: "Apply",
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
+    const button = $("#cat-apply-run");
+    setBusy(button, true, "Starting\u2026");
+    try {
+      const result = await api("/api/categories/runs", { method: "POST", body: { env: catState.env } });
+      toast(`Run ${result.run.run_id} started.`, "success");
+      showCatTab("runs");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function loadCatRuns() {
+    const box = $("#cat-runs-list");
+    if (!box || !catState.env) return;
+    try {
+      const data = await api(`/api/categories/runs?env=${encodeURIComponent(catState.env)}`);
+      catRunState.runs = data.runs || [];
+      renderCatRuns();
+      const active = catRunState.runs.find((r) => ["queued", "running"].includes(r.status));
+      clearTimeout(catRunState.activeTimer);
+      if (active && catTreeState.tab === "runs") {
+        catRunState.activeTimer = setTimeout(loadCatRuns, 3000);
+      }
+      loadCatFreezeState();
+    } catch (error) {
+      renderErrorState(box, friendlyLoadError("runs", error), loadCatRuns);
+    }
+  }
+
+  async function loadCatFreezeState() {
+    try {
+      const data = await api(`/api/categories/wp-status?env=${encodeURIComponent(catState.env)}`);
+      catRunState.freeze = Boolean(data.status && data.status.freeze);
+      const button = $("#cat-freeze-toggle");
+      if (button) button.textContent = catRunState.freeze ? "Unfreeze WP category edits" : "Freeze WP category edits";
+    } catch (error) { /* status strip already reports unreachable WP */ }
+  }
+
+  function renderCatRuns() {
+    const box = $("#cat-runs-list");
+    if (!box) return;
+    if (!catRunState.runs.length) {
+      box.innerHTML = '<p class="muted">No runs yet for this environment.</p>';
+      return;
+    }
+    box.innerHTML = catRunState.runs.map((run) => {
+      const controls = [];
+      if (["queued", "running"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="pause" data-run="${run.run_id}">Pause</button>`);
+      if (["paused", "failed"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="resume" data-run="${run.run_id}">Resume</button>`);
+      if (["paused", "queued"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-danger cat-run-ctl" data-act="cancel" data-run="${run.run_id}">Cancel</button>`);
+      return `<div class="cat-run" data-run="${run.run_id}">
+        <div class="cat-run__head">
+          <strong>Run ${run.run_id}</strong>
+          <span class="cat-badge cat-run--${escapeHtml(run.status)}">${escapeHtml(run.status)}</span>
+          <span class="muted">${escapeHtml(String(run.env))} \u00b7 ${run.target_blogs.length} blogs \u00b7 by ${escapeHtml(run.created_by || "?")} \u00b7 ${escapeHtml(formatDate(run.created_at))}</span>
+          ${controls.join(" ")}
+          <button class="button button--ghost button--small cat-run-open" data-run="${run.run_id}">Details</button>
+        </div>
+        <div class="cat-run__jobs" id="cat-run-jobs-${run.run_id}" hidden></div>
+      </div>`;
+    }).join("");
+    $$(".cat-run-ctl", box).forEach((btn) => btn.addEventListener("click", async () => {
+      try {
+        await api(`/api/categories/runs/${btn.dataset.run}/${btn.dataset.act}`, { method: "POST" });
+        await loadCatRuns();
+      } catch (error) { toast(errorMessage(error), "error"); }
+    }));
+    $$(".cat-run-open", box).forEach((btn) => btn.addEventListener("click", () => openCatRun(Number(btn.dataset.run))));
+  }
+
+  async function openCatRun(runId) {
+    const holder = $(`#cat-run-jobs-${runId}`);
+    if (!holder) return;
+    if (!holder.hidden) { holder.hidden = true; return; }
+    try {
+      const data = await api(`/api/categories/runs/${runId}`);
+      const jobs = data.run.jobs || [];
+      holder.innerHTML = `<table class="table cat-table"><thead><tr>
+          <th>#</th><th>Blog</th><th>Status</th><th>Attempts</th>
+          <th>Changed</th><th>Creates</th><th>Deletes</th><th>Moves</th><th>Result</th><th></th>
+        </tr></thead><tbody>
+        ${jobs.map((job) => {
+          const st = job.stats || {};
+          const controls = [];
+          if (job.status === "failed") {
+            controls.push(`<button class="button button--ghost button--small cat-job-ctl" data-act="retry" data-run="${runId}" data-job="${job.job_id}">Retry</button>`);
+            controls.push(`<button class="button button--ghost button--small cat-job-ctl" data-act="skip" data-run="${runId}" data-job="${job.job_id}">Skip</button>`);
+          }
+          if (job.status === "done" && job.has_snapshot) {
+            controls.push(`<button class="button button--ghost button--small cat-danger cat-job-ctl" data-act="restore" data-run="${runId}" data-job="${job.job_id}">Restore</button>`);
+          }
+          const resultText = job.result && job.result.error
+            ? escapeHtml(String(job.result.error).slice(0, 160))
+            : (job.status === "done" ? "ok" : "");
+          return `<tr><td>${job.seq}</td>
+            <td>${job.blog_id} <span class="muted">${escapeHtml(job.blog_path || "")}</span></td>
+            <td><span class="cat-badge cat-run--${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
+            <td>${job.attempt}</td>
+            <td>${st.changed_updates ?? st.updates ?? ""}</td><td>${st.creates ?? ""}</td>
+            <td>${st.deletes ?? ""}</td><td>${st.membership_changes ?? ""}</td>
+            <td>${resultText}</td><td>${controls.join(" ")}</td></tr>`;
+        }).join("")}
+        </tbody></table>`;
+      holder.hidden = false;
+      $$(".cat-job-ctl", holder).forEach((btn) => btn.addEventListener("click", async () => {
+        if (btn.dataset.act === "restore") {
+          const sure = await confirmAction({
+            title: `Restore blog from its pre-apply snapshot?`,
+            message: "Emergency rollback: converges the blog back to how it looked before this job ran. Deleted terms recreate with new ids.",
+            actionLabel: "Restore",
+            danger: true,
+          });
+          if (!sure) return;
+        }
+        try {
+          await api(`/api/categories/runs/${btn.dataset.run}/jobs/${btn.dataset.job}/${btn.dataset.act}`, { method: "POST" });
+          toast(`${btn.dataset.act} accepted.`, "success");
+          await loadCatRuns();
+        } catch (error) { toast(errorMessage(error), "error"); }
+      }));
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }
+
+  function wireCatRuns() {
+    if (!$("#cat-runs-panel")) return;
+    $("#cat-preview-run").addEventListener("click", runCatPreview);
+    $("#cat-apply-run").addEventListener("click", runCatApply);
+    $("#cat-freeze-toggle").addEventListener("click", async () => {
+      const next = !catRunState.freeze;
+      const confirmed = await confirmAction({
+        title: next ? "Freeze WordPress category edits?" : "Unfreeze WordPress category edits?",
+        message: next
+          ? "Blocks wp-admin category changes network-wide until unfrozen (broker applies still work)."
+          : "Re-allows wp-admin category changes.",
+        actionLabel: next ? "Freeze" : "Unfreeze",
+        danger: next,
+      });
+      if (!confirmed) return;
+      try {
+        await api("/api/categories/freeze", { method: "POST", body: { env: catState.env, on: next } });
+        await loadCatFreezeState();
+        toast(next ? "Frozen." : "Unfrozen.", "success");
+      } catch (error) { toast(errorMessage(error), "error"); }
+    });
+    $("#cat-drift-run").addEventListener("click", async () => {
+      const out = $("#cat-drift-result");
+      out.textContent = "Re-importing snapshots and re-planning\u2026 this takes a while.";
+      try {
+        const result = await api("/api/categories/drift-audit", { method: "POST", body: { env: catState.env } });
+        out.textContent = result.converged
+          ? `Converged: ${result.refreshed_blogs} blogs match the draft exactly.`
+          : `NOT converged: ${result.pending.length} blogs still differ` +
+            (result.blockers.length ? `; blockers: ${result.blockers.map((b) => b.kind).join(", ")}` : "") + ".";
+      } catch (error) {
+        out.textContent = errorMessage(error);
+      }
+    });
+  }
+
+  // ------------------------------------------- categories: mapping workbench
+  const catMapState = { table: null, summary: null, suggestions: [] };
+
+  function catMappingProgress() {
+    const bar = $("#cat-mapping-progress-bar");
+    const label = $("#cat-mapping-progress-label");
+    if (!bar || !catMapState.summary) return;
+    const { total, mapped } = catMapState.summary;
+    const pct = total ? Math.round((mapped / total) * 100) : 0;
+    bar.style.width = `${pct}%`;
+    bar.classList.toggle("is-done", pct === 100);
+    label.textContent = total ? `${mapped} of ${total} slugs mapped` : "No live slugs - import snapshots first";
+  }
+
+  function catNodeOptionsHtml() {
+    return catTreeState.nodes
+      .map((n) => `<option value="${n.node_id}">${escapeHtml(n.name)} [${escapeHtml(n.slug)}]</option>`)
+      .join("");
+  }
+
+  async function loadCatMapping() {
+    if (!$("#cat-mapping-table")) return;
+    if (!catState.env) return;
+    try {
+      if (!catTreeState.nodes.length) {
+        const tree = await api("/api/categories/tree");
+        catTreeState.nodes = tree.nodes || [];
+      }
+      $("#cat-map-target").innerHTML = catNodeOptionsHtml();
+      const data = await api(`/api/categories/mapping?env=${encodeURIComponent(catState.env)}`);
+      catMapState.summary = data.summary;
+      catMappingProgress();
+      const rows = data.slugs.map((r) => ({ ...r, id: r.old_slug }));
+      if (catMapState.table) {
+        catMapState.table.replaceData(rows);
+        return;
+      }
+      if (typeof Tabulator === "undefined") {
+        $("#cat-mapping-table").innerHTML = '<p class="muted">Tabulator failed to load.</p>';
+        return;
+      }
+      catMapState.table = new Tabulator("#cat-mapping-table", {
+        data: rows,
+        layout: "fitColumns",
+        height: "55vh",
+        selectableRows: true,
+        index: "id",
+        columns: [
+          { formatter: "rowSelection", titleFormatter: "rowSelection", hozAlign: "center", headerSort: false, width: 42, resizable: false },
+          { title: "Live slug", field: "old_slug", headerFilter: "input", widthGrow: 3, minWidth: 160 },
+          { title: "Name", field: "sample_name", headerFilter: "input", widthGrow: 3, minWidth: 160 },
+          { title: "Blogs", field: "blogs", hozAlign: "right", width: 74 },
+          { title: "Products", field: "products", hozAlign: "right", width: 92 },
+          { title: "B1", field: "blog1", formatter: "tickCross", width: 58, hozAlign: "center",
+            headerTooltip: "Exists on blog 1 (public web)",
+            headerFilter: "tickCross", headerFilterParams: { tristate: true } },
+          { title: "Disposition", field: "action", width: 120,
+            formatter: (cell) => cell.getValue() === "map"
+              ? (cell.getRow().getData().implicit ? 'map <span class="cat-badge">auto</span>' : "map")
+              : (cell.getValue() || '<span class="cat-unmapped">unmapped</span>'),
+            headerFilter: "list",
+            headerFilterParams: { values: { "": "all", map: "map", delete: "delete", store_custom: "store custom" }, clearable: true } },
+          { title: "Target", field: "target_slug", widthGrow: 2, minWidth: 130,
+            formatter: (cell) => {
+              const row = cell.getRow().getData();
+              if (!row.target_slug) return "";
+              return `${escapeHtml(row.target_slug)}${row.is_primary ? ' <span class="cat-badge">primary</span>' : ""}`;
+            } },
+          { title: "Note", field: "note", widthGrow: 1, minWidth: 90 },
+        ],
+      });
+    } catch (error) {
+      renderErrorState($("#cat-mapping-table"), friendlyLoadError("the slug mapping", error), loadCatMapping);
+    }
+  }
+
+  async function catMappingBulk(rowsBuilder) {
+    if (!catMapState.table) return;
+    const selected = catMapState.table.getSelectedData();
+    if (!selected.length) { toast("Select rows first.", "error"); return; }
+    const rows = rowsBuilder(selected).filter(Boolean);
+    if (!rows.length) return;
+    try {
+      const result = await api("/api/categories/mapping", { method: "PUT", body: { rows } });
+      const failures = (result.results || []).filter((r) => !r.ok);
+      if (result.mapping) {
+        toast("Saved.", "success");
+      } else if (failures.length) {
+        toast(`${failures.length} of ${rows.length} failed: ${failures.slice(0, 2).map((f) => `${f.old_slug}: ${f.error}`).join("; ")}`, "error");
+      } else {
+        toast(`Updated ${rows.length} slugs.`, "success");
+      }
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+    await loadCatMapping();
+  }
+
+  async function catMappingClearSelected() {
+    if (!catMapState.table) return;
+    const selected = catMapState.table.getSelectedData().filter((r) => r.action);
+    if (!selected.length) { toast("Select mapped rows first.", "error"); return; }
+    for (const row of selected) {
+      try {
+        await api(`/api/categories/mapping/${encodeURIComponent(row.old_slug)}`, { method: "DELETE" });
+      } catch (error) {
+        toast(`${row.old_slug}: ${errorMessage(error)}`, "error");
+      }
+    }
+    await loadCatMapping();
+  }
+
+  async function catMappingAcceptSuggestions() {
+    try {
+      const data = await api(`/api/categories/mapping/suggest?env=${encodeURIComponent(catState.env)}`);
+      const suggestions = data.suggestions || [];
+      if (!suggestions.length) { toast("No automatic matches for unmapped slugs.", "success"); return; }
+      const confirmed = await confirmAction({
+        title: `Accept ${suggestions.length} suggested mappings?`,
+        message: "Maps unmapped live slugs whose slug or name exactly matches a draft category.",
+        actionLabel: "Accept",
+      });
+      if (!confirmed) return;
+      await api("/api/categories/mapping", { method: "PUT", body: {
+        rows: suggestions.map((sug) => ({ old_slug: sug.old_slug, action: "map", target_node_id: sug.node_id })),
+      } });
+      toast(`Accepted ${suggestions.length} suggestions.`, "success");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+    await loadCatMapping();
+  }
+
+  function wireCatMapping() {
+    if (!$("#cat-mapping-panel")) return;
+    $("#cat-map-apply").addEventListener("click", () => {
+      const target = Number($("#cat-map-target").value);
+      if (!target) { toast("Pick a target category.", "error"); return; }
+      catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "map", target_node_id: target })));
+    });
+    $("#cat-map-delete").addEventListener("click", () =>
+      catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "delete" }))));
+    $("#cat-map-custom").addEventListener("click", () =>
+      catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "store_custom" }))));
+    $("#cat-map-clear").addEventListener("click", catMappingClearSelected);
+    $("#cat-map-suggest").addEventListener("click", catMappingAcceptSuggestions);
+  }
+
+  // ------------------------------------------- categories: products workbench
+  const catProdState = { nodeId: null };
+
+  async function loadCatProducts() {
+    const select = $("#cat-prod-node");
+    if (!select) return;
+    if (!catTreeState.nodes.length) {
+      try {
+        const tree = await api("/api/categories/tree");
+        catTreeState.nodes = tree.nodes || [];
+      } catch (error) {
+        toast(friendlyLoadError("the draft tree", error), "error");
+        return;
+      }
+    }
+    select.innerHTML = catNodeOptionsHtml();
+    if (catProdState.nodeId && catTreeState.nodes.some((n) => n.node_id === catProdState.nodeId)) {
+      select.value = String(catProdState.nodeId);
+    } else {
+      catProdState.nodeId = Number(select.value) || null;
+    }
+    await refreshCatProducts();
+  }
+
+  async function refreshCatProducts() {
+    const nodeId = catProdState.nodeId;
+    const membershipBox = $("#cat-membership");
+    if (!nodeId) { membershipBox.innerHTML = '<p class="muted">Create draft categories first.</p>'; return; }
+    try {
+      const [membership, assignments, rules] = await Promise.all([
+        api(`/api/categories/membership?env=${encodeURIComponent(catState.env)}&node_id=${nodeId}`),
+        api(`/api/categories/assignments?node_id=${nodeId}`),
+        api(`/api/categories/rules?node_id=${nodeId}`),
+      ]);
+      membershipBox.innerHTML = `
+        <span class="cat-chip">carried ${membership.carried_count}</span>
+        <span class="cat-chip">rules ${membership.rules.reduce((total, r) => total + r.count, 0)}</span>
+        <span class="cat-chip">added ${membership.added_count}</span>
+        <span class="cat-chip cat-chip--minus">removed ${membership.removed_count}</span>
+        <span class="cat-chip cat-chip--total">final ${membership.final_count} styles</span>
+        <div class="muted">Sample: ${membership.final_sample.slice(0, 15).map(escapeHtml).join(", ") || "(none)"}</div>`;
+      const list = $("#cat-assignment-list");
+      const rows = assignments.assignments || [];
+      list.innerHTML = rows.length ? `
+        <table class="table cat-table"><thead><tr><th>SKU</th><th>Mode</th><th>Source</th><th></th></tr></thead><tbody>
+        ${rows.map((a) => `<tr>
+            <td>${escapeHtml(a.sku)}</td><td>${escapeHtml(a.mode)}</td><td>${escapeHtml(a.source)}</td>
+            <td><button type="button" class="button button--ghost button--small cat-assign-del" data-id="${a.id}">Remove</button></td>
+          </tr>`).join("")}
+        </tbody></table>` : '<p class="muted">No explicit assignments.</p>';
+      $$(".cat-assign-del", list).forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/categories/assignments/${btn.dataset.id}`, { method: "DELETE" });
+          await refreshCatProducts();
+        } catch (error) { toast(errorMessage(error), "error"); }
+      }));
+      const ruleList = $("#cat-rule-list");
+      const ruleRows = rules.rules || [];
+      ruleList.innerHTML = ruleRows.length ? ruleRows.map((r) => `
+        <div class="cat-override-row">
+          <span class="cat-badge">rule</span>
+          <span>${escapeHtml(r.spec.field)} ${escapeHtml(r.spec.op)} \u201c${escapeHtml(r.spec.value)}\u201d${r.spec.from !== "all" ? ` (from ${escapeHtml((r.spec.from || []).join(", "))})` : ""}</span>
+          <button type="button" class="button button--ghost button--small cat-rule-del" data-id="${r.rule_id}">Delete</button>
+        </div>`).join("") : '<p class="muted">No rules.</p>';
+      $$(".cat-rule-del", ruleList).forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/categories/rules/${btn.dataset.id}`, { method: "DELETE" });
+          await refreshCatProducts();
+        } catch (error) { toast(errorMessage(error), "error"); }
+      }));
+    } catch (error) {
+      membershipBox.innerHTML = "";
+      toast(friendlyLoadError("product membership", error), "error");
+    }
+  }
+
+  function catRuleSpecFromForm() {
+    const from = $("#cat-rule-from").value.trim();
+    const spec = {
+      field: $("#cat-rule-field").value,
+      op: $("#cat-rule-op").value,
+      value: $("#cat-rule-value").value.trim(),
+    };
+    if (from) spec.from = from.split(",").map((sluggish) => sluggish.trim()).filter(Boolean);
+    return spec;
+  }
+
+  async function catAssignFromTextarea(mode) {
+    if (!catProdState.nodeId) return;
+    const skus = $("#cat-assign-skus").value.split(/\s+/).map((sku) => sku.trim()).filter(Boolean);
+    if (!skus.length) { toast("Enter at least one SKU.", "error"); return; }
+    try {
+      await api("/api/categories/assignments", { method: "PUT", body: {
+        node_id: catProdState.nodeId, skus, mode,
+      } });
+      $("#cat-assign-skus").value = "";
+      await refreshCatProducts();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }
+
+  function wireCatProducts() {
+    if (!$("#cat-products-panel")) return;
+    $("#cat-prod-node").addEventListener("change", (event) => {
+      catProdState.nodeId = Number(event.target.value) || null;
+      refreshCatProducts();
+    });
+    $("#cat-assign-add").addEventListener("click", () => catAssignFromTextarea("add"));
+    $("#cat-assign-remove").addEventListener("click", () => catAssignFromTextarea("remove"));
+    $("#cat-assign-import").addEventListener("click", async () => {
+      const csv = window.prompt("Paste CSV (header: sku,node_slugs):");
+      if (!csv) return;
+      try {
+        const result = await api("/api/categories/assignments/import", { method: "POST", body: { csv } });
+        const bad = (result.results || []).filter((r) => !r.ok);
+        toast(bad.length ? `Imported with ${bad.length} problem group(s).` : "CSV imported.", bad.length ? "error" : "success");
+        await refreshCatProducts();
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+    });
+    $("#cat-rule-test").addEventListener("click", async () => {
+      try {
+        const result = await api("/api/categories/rules/evaluate", { method: "POST", body: {
+          env: catState.env, spec: catRuleSpecFromForm(),
+        } });
+        $("#cat-rule-result").textContent = `${result.count} styles match. ${result.skus.slice(0, 8).join(", ")}`;
+      } catch (error) {
+        $("#cat-rule-result").textContent = errorMessage(error);
+      }
+    });
+    $("#cat-rule-save").addEventListener("click", async () => {
+      if (!catProdState.nodeId) return;
+      try {
+        await api("/api/categories/rules", { method: "PUT", body: {
+          node_id: catProdState.nodeId, spec: catRuleSpecFromForm(),
+        } });
+        toast("Rule saved.", "success");
+        await refreshCatProducts();
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      }
+    });
+  }
+
+  // ------------------------------------------------ categories: tree editor
+  const catTreeState = {
+    tab: "snapshots",
+    nodes: [],            // global draft nodes (flat)
+    effective: [],        // effective nodes when a store scope is active
+    overrides: [],
+    storeBlog: "",        // "" = global draft; else blog_id string
+    selected: null,       // selected node object (global view)
+    sortables: [],
+  };
+
+  function showCatTab(tab) {
+    catTreeState.tab = tab;
+    $$(".cat-tab").forEach((b) => b.classList.toggle("is-active", b.dataset.cattab === tab));
+    const panels = {
+      snapshots: $("#cat-snapshots-panel"),
+      tree: $("#cat-tree-panel"),
+      mapping: $("#cat-mapping-panel"),
+      products: $("#cat-products-panel"),
+      preview: $("#cat-preview-panel"),
+      runs: $("#cat-runs-panel"),
+    };
+    Object.entries(panels).forEach(([name, el]) => { if (el) el.hidden = name !== tab; });
+    if (tab === "tree") loadCatTree();
+    if (tab === "mapping") loadCatMapping();
+    if (tab === "products") loadCatProducts();
+    if (tab === "preview") loadCatPreviewTab();
+    if (tab === "runs") loadCatRuns();
+  }
+
+  function catNodeById(id) {
+    return catTreeState.nodes.find((n) => n.node_id === id) || null;
+  }
+
+  async function loadCatTree() {
+    const box = $("#cat-tree");
+    if (!box) return;
+    try {
+      if (catTreeState.storeBlog) {
+        const data = await api(`/api/categories/tree/effective?blog_id=${encodeURIComponent(catTreeState.storeBlog)}`);
+        catTreeState.effective = data.nodes || [];
+        catTreeState.overrides = data.overrides || [];
+      } else {
+        const data = await api("/api/categories/tree");
+        catTreeState.nodes = data.nodes || [];
+      }
+      renderCatTree();
+      renderCatSeedBox();
+      renderCatStoreOverrides();
+      renderCatStoreSelect();
+    } catch (error) {
+      renderErrorState(box, friendlyLoadError("the category tree", error), loadCatTree);
+    }
+  }
+
+  function catBuildChildrenMap(nodes) {
+    const children = new Map();
+    nodes.forEach((n) => {
+      const key = n.parent_id === null || n.parent_id === undefined ? "" : String(n.parent_id);
+      if (!children.has(key)) children.set(key, []);
+      children.get(key).push(n);
+    });
+    return children;
+  }
+
+  function renderCatTree() {
+    const box = $("#cat-tree");
+    if (!box) return;
+    const globalView = !catTreeState.storeBlog;
+    const nodes = globalView ? catTreeState.nodes : catTreeState.effective;
+    catTreeState.sortables.forEach((s) => { try { s.destroy(); } catch (e) {} });
+    catTreeState.sortables = [];
+    if (!nodes.length) {
+      box.innerHTML = `<p class="muted">${globalView ? "Draft is empty." : "This store's effective tree is empty."}</p>`;
+      return;
+    }
+    const children = catBuildChildrenMap(nodes);
+
+    function renderList(parentKey) {
+      const kids = children.get(parentKey) || [];
+      const items = kids.map((n) => {
+        const id = n.node_id === null || n.node_id === undefined ? "" : n.node_id;
+        const badges = [
+          n.renamed ? '<span class="cat-badge cat-badge--rename" title="Renamed on this store">renamed</span>' : "",
+          n.extra ? '<span class="cat-badge cat-badge--extra" title="Store-local category">store-only</span>' : "",
+        ].join("");
+        const kidsHtml = renderList(id === "" ? `x-${n.override_id}` : String(id));
+        const selected = catTreeState.selected && catTreeState.selected.node_id === n.node_id && id !== "";
+        return `<li class="cat-node ${selected ? "is-selected" : ""}" data-node="${id}" data-override="${n.override_id || ""}">
+          <div class="cat-node__row">
+            <span class="cat-node__name" title="${escapeHtml(n.slug || "")}">${escapeHtml(n.name)}</span>
+            <span class="cat-node__slug">${escapeHtml(n.slug || "")}</span>
+            ${badges}
+          </div>
+          ${kidsHtml}
+        </li>`;
+      }).join("");
+      // Always render the UL in the global view so empty nodes accept drops.
+      if (!items && !globalView) return "";
+      return `<ul class="cat-branch" data-parent="${parentKey.startsWith("x-") ? "" : parentKey}">${items}</ul>`;
+    }
+
+    box.innerHTML = renderList("");
+    if (globalView) {
+      attachCatSortables(box);
+      wireCatTreeRows(box);
+    }
+  }
+
+  function wireCatTreeRows(box) {
+    $$(".cat-node__row", box).forEach((row) => {
+      const li = row.closest(".cat-node");
+      const id = Number(li.dataset.node);
+      if (!id) return;
+      row.addEventListener("click", (event) => {
+        event.stopPropagation();
+        selectCatNode(catNodeById(id));
+      });
+      const nameEl = row.querySelector(".cat-node__name");
+      nameEl.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        startCatInlineRename(li, id, nameEl);
+      });
+    });
+  }
+
+  function startCatInlineRename(li, id, nameEl) {
+    const node = catNodeById(id);
+    if (!node) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = node.name;
+    input.maxLength = 200;
+    input.className = "cat-node__rename";
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const value = input.value.trim();
+      if (save && value && value !== node.name) {
+        try {
+          await api(`/api/categories/nodes/${id}`, { method: "PUT", body: { name: value } });
+          toast("Renamed.", "success");
+        } catch (error) {
+          toast(errorMessage(error), "error");
+        }
+      }
+      await loadCatTree();
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") finish(true);
+      if (event.key === "Escape") finish(false);
+    });
+    input.addEventListener("blur", () => finish(true));
+  }
+
+  function attachCatSortables(box) {
+    if (typeof Sortable === "undefined") return;
+    $$(".cat-branch", box).forEach((list) => {
+      catTreeState.sortables.push(new Sortable(list, {
+        group: "cat-tree",
+        animation: 120,
+        fallbackOnBody: true,
+        swapThreshold: 0.65,
+        onEnd: async (event) => {
+          const nodeId = Number(event.item.dataset.node);
+          const parentRaw = event.to.dataset.parent;
+          const parentId = parentRaw === "" ? null : Number(parentRaw);
+          try {
+            await api(`/api/categories/nodes/${nodeId}/move`, {
+              method: "POST",
+              body: { parent_id: parentId, position: event.newIndex },
+            });
+          } catch (error) {
+            toast(errorMessage(error), "error");
+          }
+          await loadCatTree();
+        },
+      }));
+    });
+  }
+
+  function selectCatNode(node) {
+    catTreeState.selected = node;
+    const panel = $("#cat-node-detail");
+    if (!panel) return;
+    if (!node) { panel.hidden = true; renderCatTree(); return; }
+    panel.hidden = false;
+    $("#cat-detail-title").textContent = node.name;
+    $("#cat-detail-name").value = node.name;
+    $("#cat-detail-slug").value = node.slug;
+    $("#cat-detail-description").value = node.description || "";
+    const overridesBox = $("#cat-detail-overrides");
+    api(`/api/categories/overrides`).then((data) => {
+      const mine = (data.overrides || []).filter((o) => o.node_id === node.node_id);
+      overridesBox.textContent = mine.length
+        ? `Store overrides: ${mine.map((o) => `${o.kind} on blog ${o.blog_id}`).join(", ")}`
+        : "";
+    }).catch(() => { overridesBox.textContent = ""; });
+    renderCatTree();
+  }
+
+  async function saveCatDetail() {
+    const node = catTreeState.selected;
+    if (!node) return;
+    const button = $("#cat-detail-save");
+    setBusy(button, true, "Saving\u2026");
+    try {
+      await api(`/api/categories/nodes/${node.node_id}`, {
+        method: "PUT",
+        body: {
+          name: $("#cat-detail-name").value.trim(),
+          slug: $("#cat-detail-slug").value.trim(),
+          description: $("#cat-detail-description").value,
+        },
+      });
+      toast("Saved.", "success");
+      await loadCatTree();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function addCatChild(parentId) {
+    const name = window.prompt("New category name:");
+    if (!name || !name.trim()) return;
+    try {
+      await api("/api/categories/nodes", {
+        method: "POST",
+        body: { name: name.trim(), parent_id: parentId },
+      });
+      await loadCatTree();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }
+
+  async function deleteCatNode() {
+    const node = catTreeState.selected;
+    if (!node) return;
+    const confirmed = await confirmAction({
+      title: `Delete "${node.name}"?`,
+      message: "Deletes this draft category (and, if you confirm again, its whole subtree). Live stores are not touched.",
+      actionLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await api(`/api/categories/nodes/${node.node_id}`, { method: "DELETE" });
+      catTreeState.selected = null;
+      $("#cat-node-detail").hidden = true;
+      await loadCatTree();
+    } catch (error) {
+      if (error && error.status === 409) {
+        const cascade = await confirmAction({
+          title: "Delete the whole subtree?",
+          message: errorMessage(error),
+          actionLabel: "Delete subtree",
+          danger: true,
+        });
+        if (cascade) {
+          try {
+            await api(`/api/categories/nodes/${node.node_id}?cascade=true`, { method: "DELETE" });
+            catTreeState.selected = null;
+            $("#cat-node-detail").hidden = true;
+            await loadCatTree();
+            return;
+          } catch (inner) {
+            toast(errorMessage(inner), "error");
+            return;
+          }
+        }
+        return;
+      }
+      toast(errorMessage(error), "error");
+    }
+  }
+
+  function renderCatSeedBox() {
+    const seed = $("#cat-seed-box");
+    if (!seed) return;
+    const empty = !catTreeState.storeBlog && !catTreeState.nodes.length;
+    seed.hidden = !empty;
+    if (empty) {
+      const envSelect = $("#cat-seed-env");
+      envSelect.innerHTML = catState.targets.map((t) =>
+        `<option value="${escapeHtml(t.env)}" ${t.env === catState.env ? "selected" : ""}>${escapeHtml(t.env)}</option>`
+      ).join("");
+    }
+  }
+
+  async function runCatSeed() {
+    const env = $("#cat-seed-env").value;
+    const blogId = Number($("#cat-seed-blog").value);
+    if (!env || !blogId) return;
+    const button = $("#cat-seed-run");
+    setBusy(button, true, "Seeding\u2026");
+    try {
+      const result = await api("/api/categories/draft/seed", {
+        method: "POST",
+        body: { env, blog_id: blogId },
+      });
+      toast(`Draft seeded: ${result.nodes} categories.`, "success");
+      await loadCatTree();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  function renderCatStoreSelect() {
+    const select = $("#cat-tree-store");
+    if (!select || select.dataset.filled === "1") return;
+    const known = new Map();
+    catState.blogs.forEach((b) => known.set(b.blog_id, b));
+    catState.snapshots.forEach((sRow) => {
+      if (!known.has(sRow.blog_id)) known.set(sRow.blog_id, { blog_id: sRow.blog_id, path: sRow.blog_path, name: "" });
+    });
+    if (!known.size) return;
+    const options = [...known.values()].sort((a, b) => a.blog_id - b.blog_id).map((b) =>
+      `<option value="${b.blog_id}">${b.blog_id} \u00b7 ${escapeHtml(b.name || b.path || "")}</option>`
+    ).join("");
+    select.innerHTML = `<option value="">Global draft (all stores)</option>${options}`;
+    select.dataset.filled = "1";
+  }
+
+  function renderCatStoreOverrides() {
+    const box = $("#cat-store-overrides");
+    if (!box) return;
+    const active = Boolean(catTreeState.storeBlog);
+    box.hidden = !active;
+    if (!active) return;
+    const list = $("#cat-override-list");
+    if (!catTreeState.overrides.length) {
+      list.innerHTML = '<p class="muted">No overrides for this store yet.</p>';
+    } else {
+      list.innerHTML = catTreeState.overrides.map((o) => `
+        <div class="cat-override-row">
+          <span class="cat-badge">${escapeHtml(o.kind)}</span>
+          <span>${escapeHtml(o.kind === "extra_node" ? `${o.name} [${o.slug}]` : (o.node_name || `node ${o.node_id}`))}</span>
+          ${o.kind === "rename" ? `<span class="muted">\u2192 ${escapeHtml(o.name)}</span>` : ""}
+          <button type="button" class="button button--ghost button--small cat-ov-delete" data-id="${o.override_id}">Remove</button>
+        </div>`).join("");
+      $$(".cat-ov-delete", list).forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/categories/overrides/${btn.dataset.id}`, { method: "DELETE" });
+          await loadCatTree();
+        } catch (error) {
+          toast(errorMessage(error), "error");
+        }
+      }));
+    }
+    const nodeSelect = $("#cat-ov-node");
+    nodeSelect.innerHTML = (catTreeState.nodes.length ? catTreeState.nodes : catTreeState.effective)
+      .filter((n) => n.node_id)
+      .map((n) => `<option value="${n.node_id}">${escapeHtml(n.name)} [${escapeHtml(n.slug)}]</option>`)
+      .join("");
+  }
+
+  async function saveCatOverride() {
+    if (!catTreeState.storeBlog) return;
+    const kind = $("#cat-ov-kind").value;
+    const nodeId = Number($("#cat-ov-node").value) || null;
+    const name = $("#cat-ov-name").value.trim();
+    const body = { blog_id: Number(catTreeState.storeBlog), kind };
+    if (kind === "extra_node") {
+      body.name = name;
+      body.parent_node_id = nodeId;
+    } else {
+      body.node_id = nodeId;
+      if (kind === "rename") body.name = name;
+    }
+    try {
+      await api("/api/categories/overrides", { method: "PUT", body });
+      $("#cat-ov-name").value = "";
+      await loadCatTree();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }
+
+  function wireCatTreePanel() {
+    if (!$("#cat-tree-panel")) return;
+    $$(".cat-tab:not([disabled])").forEach((tab) => tab.addEventListener("click", () => showCatTab(tab.dataset.cattab)));
+    $("#cat-tree-store").addEventListener("change", (event) => {
+      catTreeState.storeBlog = event.target.value;
+      catTreeState.selected = null;
+      $("#cat-node-detail").hidden = true;
+      loadCatTree();
+    });
+    $("#cat-add-root").addEventListener("click", () => addCatChild(null));
+    $("#cat-detail-save").addEventListener("click", saveCatDetail);
+    $("#cat-detail-add-child").addEventListener("click", () => {
+      if (catTreeState.selected) addCatChild(catTreeState.selected.node_id);
+    });
+    $("#cat-detail-delete").addEventListener("click", deleteCatNode);
+    $("#cat-seed-run").addEventListener("click", runCatSeed);
+    $("#cat-ov-save").addEventListener("click", saveCatOverride);
+  }
+
+  async function loadCategories() {
+    if (!$("#view-categories")) return;
+    try {
+      const data = await api("/api/categories/targets");
+      catState.targets = data.targets || [];
+      if (!catState.env || !catState.targets.some((t) => t.env === catState.env)) {
+        catState.env = catState.targets.length ? catState.targets[0].env : "";
+      }
+      renderCatEnvPills();
+      renderCatEnvBanner();
+      await refreshCatSnapshots();
+      loadCatWpStatus();
+      loadCatBlogs();
+    } catch (error) {
+      const box = $("#cat-snapshot-table");
+      if (box) renderErrorState(box, friendlyLoadError("the category editor", error), loadCategories);
+    }
+  }
+
+  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "categories", "health", "help"];
   function switchView(name) {
     if (!VIEWS.includes(name)) name = "dashboard";
     VIEWS.forEach((v) => { const el = $(`#view-${v}`); if (el) el.hidden = v !== name; });
@@ -3850,6 +5762,7 @@
     if (name === "blocks") loadSyncBlocks();
     if (name === "mix") loadProductMix();
     if (name === "stock") { loadStockOverrides(); loadBrandRules(); }
+    if (name === "categories") loadCategories();
     if (name === "health") loadHealth();
     healthTimerSync(name);
   }
@@ -4574,7 +6487,7 @@
     const wrap = $("#mix-enrolled");
     if (!wrap) return;
     if (!mixState.stores.length) { wrap.innerHTML = '<span class="muted">None yet - every store follows FDM4.</span>'; return; }
-    wrap.innerHTML = mixState.stores.map((s) => `<button type="button" class="chip ${s.fdm4_store === mixState.store ? "dark" : ""} mix-enrolled-chip" data-store="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} · ${s.mode === "all" ? "ALL PRODUCTS" : `${Number(s.style_count) || 0} styles`}</button>`).join("");
+    wrap.innerHTML = mixState.stores.map((s) => `<button type="button" class="chip ${s.fdm4_store === mixState.store ? "dark" : ""} mix-enrolled-chip" data-store="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} · ${s.external ? "EXTERNAL" : s.mode === "all" ? "ALL PRODUCTS" : `${Number(s.style_count) || 0} styles`}</button>`).join("");
     $$(".mix-enrolled-chip", wrap).forEach((b) => b.addEventListener("click", () => {
       const code = b.dataset.store;
       $("#mix-store").value = code;
@@ -4615,6 +6528,7 @@
       <div class="mix-choice-grid">
         <button type="button" class="mix-choice mix-enable" data-mode="all"><strong>All products - follow FDM4</strong><small>Carries everything FDM4 offers this store, including new products, automatically. Switch to a curated list any time.</small></button>
         <button type="button" class="mix-choice mix-enable" data-mode="list"><strong>Curated list - start from the current FDM4 mix</strong><small>Imports the store's current styles as your starting point. New FDM4 products stay out until you add or import them.</small></button>
+        <button type="button" class="mix-choice mix-enable" data-mode="external"><strong>External store - all products, always in stock</strong><small>For stores fronted elsewhere (BrightSites/POS) that only send orders in: carries every priced FDM4 style at stock 9999, automatically.</small></button>
       </div>
     </section>`;
     $$(".mix-enable", box).forEach((b) => b.addEventListener("click", () => mixEnable(b.dataset.mode, b)));
@@ -4622,6 +6536,23 @@
 
   async function mixEnable(mode, btn) {
     const name = storeDisplayFor(mixState.store);
+    if (mode === "external") {
+      const ok = await confirmAction({
+        title: "Make this an external all-products store?",
+        message: `${name} will carry EVERY priced FDM4 style, always shown in stock (9999). Use this only for stores fronted elsewhere (BrightSites/POS) whose products here just back order intake. Supply builds on the next hourly refresh; the storefront follows within ~1h15.`,
+        actionLabel: "Make external",
+        danger: false,
+      });
+      if (!ok) return;
+      setBusy(btn, true, "Enrolling...");
+      try {
+        const resp = await api("/api/product-mix/external", { method: "PUT", body: { fdm4_store: mixState.store } });
+        toast(resp.note || "External all-products supply enrolled.");
+        await mixRefreshStores();
+        renderMixBody();
+      } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
+      return;
+    }
     const ok = await confirmAction({
       title: mode === "all" ? "Follow FDM4 for this store?" : "Start a curated list?",
       message: mode === "all"
@@ -4642,18 +6573,47 @@
 
   function renderMixAll(box, info) {
     const name = storeDisplayFor(mixState.store);
+    const external = !!info.external;
     box.innerHTML = `<section class="card">
-      <div class="card__header card__header--compact"><div><p class="eyebrow">${escapeHtml(name)}</p><h3>Product mix override</h3></div><span class="chip dark">ALL PRODUCTS</span></div>
+      <div class="card__header card__header--compact"><div><p class="eyebrow">${escapeHtml(name)}</p><h3>Product mix override</h3></div><span class="chip dark">${external ? "EXTERNAL · ALL PRODUCTS" : "ALL PRODUCTS"}</span></div>
       <div class="mix-status-card">
-        <p class="muted">This store carries everything FDM4 offers, including new products, automatically.${info.note ? `<br><small>${escapeHtml(info.note)}</small>` : ""}</p>
+        <p class="muted">${external
+          ? "External store: the warehouse supplies every priced FDM4 style, always in stock (9999). Products here back order intake for a storefront hosted elsewhere."
+          : "This store carries everything FDM4 offers, including new products, automatically."}${info.note ? `<br><small>${escapeHtml(info.note)}</small>` : ""}</p>
         <div class="mix-actions">
-          <button type="button" class="button button--ghost mix-switch-list">Switch to curated list</button>
-          <button type="button" class="button button--danger-ghost mix-disable">Disable override</button>
+          ${external ? "" : '<button type="button" class="button button--ghost mix-switch-list">Switch to curated list</button>'}
+          <button type="button" class="button ${external ? "button--danger-ghost" : "button--ghost"} mix-external-toggle">${external ? "Stop external supply" : "Make external (all products, in stock)"}</button>
+          ${external ? "" : '<button type="button" class="button button--danger-ghost mix-disable">Disable override</button>'}
         </div>
       </div>
     </section>`;
-    $(".mix-switch-list", box).addEventListener("click", (e) => mixSwitchMode("list", e.currentTarget));
-    $(".mix-disable", box).addEventListener("click", (e) => mixDisable(e.currentTarget));
+    const sw = $(".mix-switch-list", box);
+    if (sw) sw.addEventListener("click", (e) => mixSwitchMode("list", e.currentTarget));
+    const dis = $(".mix-disable", box);
+    if (dis) dis.addEventListener("click", (e) => mixDisable(e.currentTarget));
+    $(".mix-external-toggle", box).addEventListener("click", (e) => mixExternalToggle(e.currentTarget, info));
+  }
+
+  async function mixExternalToggle(btn, info) {
+    const name = storeDisplayFor(mixState.store);
+    if (info.external) {
+      const ok = await confirmAction({
+        title: "Stop the external all-products supply?",
+        message: `${name} goes back to its regular FDM4 catalog on the next sync - most of its products will deactivate on the connected blog. Only do this if the store is no longer externally fronted.`,
+        actionLabel: "Stop external supply",
+        danger: true,
+      });
+      if (!ok) return;
+      setBusy(btn, true, "Working...");
+      try {
+        const resp = await api(`/api/product-mix/external?${new URLSearchParams({ store: mixState.store })}`, { method: "DELETE" });
+        toast(resp.note || "External supply stopped.");
+        await mixRefreshStores();
+        renderMixBody();
+      } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
+      return;
+    }
+    mixEnable("external", btn);
   }
 
   async function mixSwitchMode(mode, btn) {
@@ -5844,7 +7804,7 @@
       : '<div class="grid-empty">No active sync freezes.</div>';
     const mixStores = feats.mix_stores || [];
     $("#health-mix").innerHTML = mixStores.length
-      ? `<ul class="health-list">${mixStores.map((m) => `<li>${escapeHtml(storeDisplayFor(m.fdm4_store))} (${escapeHtml(m.fdm4_store)}) - <strong>${escapeHtml(m.mode === "all" ? "all products" : "curated list")}</strong></li>`).join("")}</ul>`
+      ? `<ul class="health-list">${mixStores.map((m) => `<li>${escapeHtml(storeDisplayFor(m.fdm4_store))} (${escapeHtml(m.fdm4_store)}) - <strong>${escapeHtml(m.external ? "external (all products)" : m.mode === "all" ? "all products" : "curated list")}</strong></li>`).join("")}</ul>`
       : '<div class="grid-empty">No stores with a custom lineup.</div>';
     $("#health-pim").innerHTML = `<ul class="health-list">
       <li>${Number(pim.events || 0).toLocaleString()} update(s) received</li>

@@ -2,3 +2,4 @@ pytest==8.4.1
 pytest-asyncio==1.1.0
 httpx==0.28.1
 playwright==1.54.0
+mcp<2  # MCP server SDK (1.x API: mcp.server.fastmcp); warehouse box runs 1.x

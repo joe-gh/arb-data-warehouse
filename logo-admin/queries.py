@@ -24,6 +24,9 @@ DESIGN_PLACEMENT_RESULT_LIMIT = 500
 PRICING_TIER_RESULT_LIMIT = 500
 STORE_PRICING_TIER_RESULT_LIMIT = 500
 COLOR_CLASS_RESULT_LIMIT = 500
+SIMILAR_STYLE_RESULT_LIMIT = 500
+COVERAGE_STYLE_RESULT_LIMIT = 2_000
+LOGO_SET_RESULT_LIMIT = 500
 READ_TEXT_CHAR_LIMIT = 1_024
 READ_URL_CHAR_LIMIT = 2_048
 READ_MAX_ROW_BYTES = 128 * 1024
@@ -348,10 +351,15 @@ def get_style(cursor, *, store: str, style: str) -> dict:
                    COALESCE(NULLIF(a.name, ''), c.code),
                    {READ_TEXT_CHAR_LIMIT}
                ) AS name,
-               (a.code IS NOT NULL) AS warehouse_active
+               (a.code IS NOT NULL) AS warehouse_active,
+               o.sort_order AS editor_order
           FROM active_colors a
           FULL OUTER JOIN configured_colors c USING (code)
-         ORDER BY COALESCE(NULLIF(a.name, ''), c.code), COALESCE(a.code, c.code)
+          LEFT JOIN logo.style_color_order o
+            ON o.product_style = %s
+           AND o.garment_color_code = COALESCE(a.code, c.code)
+         ORDER BY o.sort_order NULLS LAST,
+                  COALESCE(NULLIF(a.name, ''), c.code), COALESCE(a.code, c.code)
          LIMIT %s
         """,
         (
@@ -359,6 +367,7 @@ def get_style(cursor, *, store: str, style: str) -> dict:
             catalog,
             style,
             store,
+            style,
             style,
             STYLE_COLOR_RESULT_LIMIT + 1,
         ),
@@ -397,7 +406,7 @@ def get_style(cursor, *, store: str, style: str) -> dict:
                    LIMIT 1
               ) dn ON true
              WHERE a.fdm4_store = %s AND a.product_style = %s
-             ORDER BY a.garment_color_code, a.option_row, a.position
+             ORDER BY a.garment_color_code, a.sort_order, a.option_row, a.position
              LIMIT %s
             """,
             (store, style, STYLE_ASSIGNMENT_RESULT_LIMIT + 1),
@@ -453,6 +462,185 @@ def get_style(cursor, *, store: str, style: str) -> dict:
     }
 
 
+def find_similar_styles(cursor, *, fdm4_store: str, product_style: str,
+                        mode: str = "exact") -> dict:
+    """Styles of one store whose LOGO SET matches the source style's.
+
+    A style's logo set is the DISTINCT (design_id, upper(color_scheme_id),
+    position, location) tuples across its ACTIVE assignments - garment colors
+    and option rows are ignored, so "the same logos, on whatever colors"
+    matches. mode='exact' returns styles whose set equals the source's;
+    mode='overlap' returns every style sharing at least one tuple, most
+    shared first, with shared / only_in_source / only_in_target counts.
+    Read-only and bounded (SIMILAR_STYLE_RESULT_LIMIT)."""
+    store = _clean(fdm4_store, "fdm4_store")
+    style = _clean(product_style, "product_style")
+    if mode not in ("exact", "overlap"):
+        raise QueryValidationError("mode must be 'exact' or 'overlap'")
+    catalog = _catalog_for_store(cursor, store)
+    if catalog is None:
+        raise QueryNotFound("Store not found")
+    source_live = _style_exists(cursor, store, catalog, style)
+    if not source_live:
+        cursor.execute(
+            "SELECT 1 FROM logo.assignment "
+            "WHERE fdm4_store = %s AND product_style = %s LIMIT 1",
+            (store, style),
+        )
+        if cursor.fetchone() is None:
+            raise QueryNotFound("Style not found")
+    logo_set, set_truncated, set_byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        SELECT DISTINCT left(a.design_id, 256) AS design_id,
+               left(upper(a.color_scheme_id), 256) AS color_scheme_id,
+               a.position,
+               left(a.location, {READ_TEXT_CHAR_LIMIT}) AS location
+          FROM logo.assignment a
+         WHERE a.fdm4_store = %s AND a.product_style = %s AND a.active
+         ORDER BY 3, 1, 2, 4
+         LIMIT %s
+        """,
+        (store, style, LOGO_SET_RESULT_LIMIT + 1),
+        LOGO_SET_RESULT_LIMIT,
+    )
+    exact_clause = (
+        "AND sc.only_in_target = 0 AND sc.shared = ss.n" if mode == "exact" else ""
+    )
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        WITH source AS (
+            SELECT DISTINCT a.design_id,
+                   upper(a.color_scheme_id) AS color_scheme_id,
+                   a.position, a.location
+              FROM logo.assignment a
+             WHERE a.fdm4_store = %s AND a.product_style = %s AND a.active
+        ), source_size AS (
+            SELECT count(*)::integer AS n FROM source
+        ), candidate AS (
+            SELECT DISTINCT a.product_style, a.design_id,
+                   upper(a.color_scheme_id) AS color_scheme_id,
+                   a.position, a.location
+              FROM logo.assignment a
+             WHERE a.fdm4_store = %s AND a.product_style <> %s AND a.active
+        ), scored AS (
+            SELECT c.product_style,
+                   count(s.design_id)::integer AS shared,
+                   (count(*) - count(s.design_id))::integer AS only_in_target
+              FROM candidate c
+              LEFT JOIN source s
+                ON s.design_id = c.design_id
+               AND s.color_scheme_id = c.color_scheme_id
+               AND s.position = c.position
+               AND s.location = c.location
+             GROUP BY c.product_style
+        ), live AS (
+            SELECT style_code AS product_style,
+                   max(name) FILTER (WHERE kind = 'parent') AS name
+              FROM woo.store_product_state
+             WHERE fdm4_store = %s AND catalog_id = %s AND is_active = true
+               AND style_code IS NOT NULL
+             GROUP BY style_code
+        )
+        SELECT left(sc.product_style, 256) AS style,
+               left(COALESCE(l.name, ''), {READ_TEXT_CHAR_LIMIT}) AS name,
+               sc.shared,
+               (ss.n - sc.shared) AS only_in_source,
+               sc.only_in_target,
+               (l.product_style IS NOT NULL) AS warehouse_active
+          FROM scored sc
+         CROSS JOIN source_size ss
+          LEFT JOIN live l ON l.product_style = sc.product_style
+         WHERE sc.shared > 0
+           {exact_clause}
+         ORDER BY sc.shared DESC, sc.only_in_target, (ss.n - sc.shared), sc.product_style
+         LIMIT %s
+        """,
+        (store, style, store, style, store, catalog, SIMILAR_STYLE_RESULT_LIMIT + 1),
+        SIMILAR_STYLE_RESULT_LIMIT,
+    )
+    return {
+        "store": store,
+        "mode": mode,
+        "source": {
+            "style": style,
+            "warehouse_active": source_live,
+            "logo_set": logo_set,
+        },
+        "styles": rows,
+        "truncated": truncated or byte_truncated or set_truncated or set_byte_truncated,
+        "truncation": {
+            "rows": truncated or set_truncated,
+            "bytes": byte_truncated or set_byte_truncated,
+        },
+    }
+
+
+def store_logo_coverage(cursor, *, fdm4_store: str,
+                        unconfigured_only: bool = True) -> dict:
+    """Per style in the store's live catalog: how many of its active garment
+    colors carry at least one ACTIVE logo assignment, and which do not.
+    unconfigured_only keeps only styles with >= 1 color lacking logos.
+    Read-only and bounded (COVERAGE_STYLE_RESULT_LIMIT styles; the
+    unconfigured list per style is capped at STYLE_COLOR_RESULT_LIMIT)."""
+    store = _clean(fdm4_store, "fdm4_store")
+    catalog = _catalog_for_store(cursor, store)
+    if catalog is None:
+        raise QueryNotFound("Store not found")
+    where_clause = "WHERE cardinality(unconfigured) > 0" if unconfigured_only else ""
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        WITH live AS (
+            SELECT style_code AS product_style,
+                   max(name) FILTER (WHERE kind = 'parent') AS name,
+                   COALESCE(array_agg(DISTINCT color_code) FILTER (
+                       WHERE kind = 'variation'
+                         AND NULLIF(btrim(color_code), '') IS NOT NULL
+                   ), '{{}}'::text[]) AS colors
+              FROM woo.store_product_state
+             WHERE fdm4_store = %s AND catalog_id = %s AND is_active = true
+               AND style_code IS NOT NULL
+             GROUP BY style_code
+        ), configured AS (
+            SELECT product_style,
+                   array_agg(DISTINCT garment_color_code) AS colors
+              FROM logo.assignment
+             WHERE fdm4_store = %s AND active
+             GROUP BY product_style
+        ), scored AS (
+            SELECT l.product_style, l.name, l.colors,
+                   ARRAY(
+                       SELECT c FROM unnest(l.colors) AS c
+                        WHERE c <> ALL (COALESCE(cf.colors, '{{}}'::text[]))
+                        ORDER BY c
+                   ) AS unconfigured
+              FROM live l
+              LEFT JOIN configured cf USING (product_style)
+        )
+        SELECT left(product_style, 256) AS style,
+               left(COALESCE(name, ''), {READ_TEXT_CHAR_LIMIT}) AS name,
+               cardinality(colors) AS colors_total,
+               (cardinality(colors) - cardinality(unconfigured)) AS colors_configured,
+               unconfigured[1:{STYLE_COLOR_RESULT_LIMIT}] AS unconfigured
+          FROM scored
+         {where_clause}
+         ORDER BY product_style
+         LIMIT %s
+        """,
+        (store, catalog, store, COVERAGE_STYLE_RESULT_LIMIT + 1),
+        COVERAGE_STYLE_RESULT_LIMIT,
+    )
+    return {
+        "store": store,
+        "unconfigured_only": bool(unconfigured_only),
+        "styles": rows,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }
+
+
 def search_designs(
     cursor,
     *,
@@ -497,7 +685,8 @@ def search_designs(
                    upper(regexp_replace(
                        regexp_replace(target_filename, '^.*/', ''),
                        '[^A-Za-z0-9].*$', ''
-                   )) AS logo_code
+                   )) AS logo_code,
+                   upper(btrim(color_scheme_id)) AS color_scheme_id
               FROM fdm4.cust_art_file
              WHERE NULLIF(btrim(art_id), '') IS NOT NULL
                AND NOT EXISTS (
@@ -513,7 +702,8 @@ def search_designs(
                    upper(regexp_replace(
                        regexp_replace(caf.target_filename, '^.*/', ''),
                        '[^A-Za-z0-9].*$', ''
-                   )) AS logo_code
+                   )) AS logo_code,
+                   upper(btrim(caf.color_scheme_id)) AS color_scheme_id
               FROM fdm4.design_pool dp
               JOIN fdm4.cust_art_file caf
                 ON btrim(caf.art_id) = btrim(dp.art_id)
@@ -563,7 +753,20 @@ def search_designs(
                COALESCE(g.uses, 0) AS total_uses,
                (array_remove(
                    array_agg(DISTINCT left(art.logo_code, 256)), ''
-               ))[1:100] AS logo_codes
+               ))[1:100] AS logo_codes,
+               -- Bulk Apply's dropdown offers one option per (logo code,
+               -- color scheme) pair; an assignment stores the scheme's OWN
+               -- logo code (e.g. TBXNV for NV), so the pair must stay linked.
+               COALESCE(
+                   jsonb_agg(DISTINCT jsonb_build_object(
+                       'color_scheme_id', left(art.color_scheme_id, 64),
+                       'logo_code', left(art.logo_code, 256)
+                   )) FILTER (
+                       WHERE COALESCE(art.color_scheme_id, '') <> ''
+                         AND COALESCE(art.logo_code, '') <> ''
+                   ),
+                   '[]'::jsonb
+               ) AS schemes
           FROM fdm4.dec_design d
           LEFT JOIN art ON art.design_id = btrim(d.design_id)
           LEFT JOIN store_usage u ON u.design_id = btrim(d.design_id)
@@ -1180,8 +1383,8 @@ def compute_bulk_preview(
     logo_code = logo_code.upper()
     scheme = color_scheme.upper()
 
-    design_lookup, usable_art = legacy_import.load_design_lookup(cursor)
-    designs = design_lookup.get((logo_code, scheme)) or design_lookup.get((logo_code, "*"))
+    design_index = legacy_import.load_design_lookup(cursor)
+    designs = design_index.candidates(fdm4_store, logo_code, scheme)
     if not designs:
         return {
             "rows": [],

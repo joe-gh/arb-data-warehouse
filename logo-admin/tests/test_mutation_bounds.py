@@ -143,6 +143,7 @@ def _settings_state(store="S_TEST"):
             "allows_none": False,
             "updated_by": "fixture",
             "updated_at": "2026-07-17T00:00:00+00:00",
+            "extra_customers": [],
         }],
     }]
 

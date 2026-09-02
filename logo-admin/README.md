@@ -91,6 +91,20 @@ AGENT_MAX_CHANGE_SET_ITEMS=50
 AGENT_TURN_TIMEOUT_SECONDS=90
 AGENT_CHAT_RETENTION_DAYS=30
 
+# Category editor (ships dark; page-scoped WordPress targets - the rest of
+# the app keeps using WP_SYNC_URL). Base URLs point at the categories broker
+# namespace. CATMGR_APPLY_USERS is the fail-closed allowlist for Apply /
+# restore / freeze; everyone else can edit drafts and snapshots.
+CATMGR_ENABLED=false
+CATMGR_DEV_URL=https://arb-dev.arborwear.com/wp-json/arb/v1/logo-admin/categories
+CATMGR_DEV_USER=logo-sync-service
+CATMGR_DEV_APP_PASSWORD="xxxx xxxx xxxx xxxx xxxx xxxx"
+CATMGR_PROD_URL=
+CATMGR_PROD_USER=
+CATMGR_PROD_APP_PASSWORD=
+CATMGR_WP_TIMEOUT=120
+CATMGR_APPLY_USERS=
+
 # Private spreadsheet staging. Files expire and are never publicly served.
 AGENT_UPLOAD_DIR=/var/lib/arb-logo-admin/agent-uploads
 AGENT_MAX_SPREADSHEET_BYTES=5242880
@@ -140,6 +154,68 @@ The repository-owned nginx artifact is
 `deploy/nginx/agent-chat.conf`. A future deployment may install/include that
 reviewed file in the application server block; this local implementation does
 not modify nginx.
+
+### Single-operator pilot
+
+Enable the assistant for exactly one WordPress login, reads first, writes only
+after the write contract passes. Every step runs on the warehouse box and is
+idempotent, so a partially completed pass can simply be repeated.
+
+1. Pick an idle window. The role script's GRANTs take exclusive table locks:
+
+   ```bash
+   sudo -u postgres psql -d arb_warehouse -c "SELECT pid, state, now()-query_start AS age, left(query,80) AS q FROM pg_stat_activity WHERE datname='arb_warehouse' AND state<>'idle' ORDER BY query_start;"
+   ```
+
+   Proceed only when no `run_sync`/transform/reconcile backends are active and
+   the next hourly pull is more than ~15 minutes away.
+2. Apply schema, role, and preflight exactly per "Complete migrations and
+   write preflight" below: every `sql/migrations/*.sql` in `LC_ALL=C sort`
+   order as the database owner (already-applied files are no-ops), then
+   `sql/logo_admin_role.sql`, then `sql/diagnostics/agent-write-preflight.sql`
+   through the `logo_admin` DSN. Expected: the preflight prints no `ERROR`.
+3. Compute the repull function pin. The role script, the preflight, and the
+   runtime contract all hash `pg_get_functiondef()` (the complete `CREATE OR
+   REPLACE FUNCTION` text), not `prosrc`, so compute it the same way:
+
+   ```bash
+   sudo -u postgres psql -d arb_warehouse -At -c "SELECT encode(sha256(convert_to(pg_get_functiondef(p.oid),'UTF8')),'hex') FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='logo' AND p.proname='repull_display_name';"
+   ```
+4. nginx SSE location, uploads directory, and the retention timer. Include
+   `deploy/nginx/agent-chat.conf` in the logo-admin server block
+   (`/etc/nginx/sites-available/embroidery.conf`, dated `.bak` first),
+   `sudo nginx -t`, reload. Then:
+
+   ```bash
+   sudo install -d -o arb-logo-admin -g arb-logo-admin -m 0700 /var/lib/arb-logo-admin/agent-uploads
+   sudo install -o root -g root -m 0644 /opt/arb-logo-admin/agent-maintenance.service /etc/systemd/system/
+   sudo install -o root -g root -m 0644 /opt/arb-logo-admin/agent-maintenance.timer /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now agent-maintenance.timer
+   ```
+5. Environment, reads first (`sudoedit /etc/arb-logo-admin.env`):
+
+   ```ini
+   AGENT_ENABLED=true
+   AGENT_WRITES_ENABLED=false
+   AGENT_ALLOWED_USERS=<pilot operator's WordPress user_login>
+   AGENT_REPULL_FUNCTION_SHA256=<value from step 3>
+   OPENAI_API_KEY="<key>"
+   OPENAI_MODEL=<model chosen for the pilot - required, no default>
+   ```
+
+   Then `sudo systemctl restart arb-logo-admin && sudo journalctl -u
+   arb-logo-admin -n 50 --no-pager`. Expected: a clean start
+   (`validate_registry` runs; no `ConfigurationError`).
+6. Verify the gate. Pilot login: `#assistant-toggle` is visible and "list
+   stores" streams an answer. Any other login: no toggle, and
+   `curl -sS -o /dev/null -w '%{http_code}\n' -b '<their cookie>'
+   https://embroidery.arborwear.com/api/agent/sessions` returns `404`.
+7. Writes. Set `AGENT_WRITES_ENABLED=true` and restart. Startup now runs
+   `validate_write_database_contract` and fails closed on any drift (read the
+   journal). Pilot test: stage a `save_assignment` through chat, review the
+   card, apply, verify in the editor and `logo.audit_log`, undo, verify the
+   exact restore. Reads remain the fallback (`AGENT_WRITES_ENABLED=false`) if
+   anything is off.
 
 ### Complete migrations and write preflight
 
@@ -283,6 +359,12 @@ POST /wp-json/arb/v1/logo-admin/login
 GET  /wp-json/arb/v1/logo-admin/auth
 POST /wp-json/arb/v1/logo-admin/sync
 ```
+
+The category editor (arb-admin/arb-category-apply.php) adds, under
+`/wp-json/arb/v1/logo-admin/categories/`: `blogs`, `export`, `status`,
+`freeze`, `apply-terms`, `apply-memberships`, `finalize`, `restore` - all
+app-password authenticated like sync, all listed in the Wordfence
+app-password re-enable regexes.
 
 The login route accepts an operator account password and returns identity only.
 WordPress core performs application-password Basic authentication for the auth

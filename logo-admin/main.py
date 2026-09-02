@@ -14,6 +14,7 @@ from authorization import agent_access_allowed
 from config import get_settings
 from database_contract import validate_write_database_contract
 from db import database
+from categories_api import router as categories_router
 from routes_agent import router as agent_router
 from routes_api import router as api_router
 from routes_feed import router as feed_router
@@ -43,6 +44,7 @@ app.mount(
     name="logo-media",
 )
 app.include_router(api_router)
+app.include_router(categories_router)
 app.include_router(agent_router)
 app.include_router(feed_router)
 app.include_router(pages_router)
