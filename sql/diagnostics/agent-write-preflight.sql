@@ -684,6 +684,17 @@ WITH table_policy(schema_name, table_name, policy) AS (
      WHERE namespace.nspname <> 'information_schema'
        AND namespace.nspname !~ '^pg_'
        AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+       -- Extension-owned relations (pg_depend deptype 'e', e.g. the
+       -- pg_stat_statements views, which grant SELECT to PUBLIC) carry the
+       -- extension's ACLs and sit outside this policy; nothing else is skipped.
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_depend AS dependency
+            WHERE dependency.classid = 'pg_class'::regclass
+              AND dependency.objid = relation.oid
+              AND dependency.refclassid = 'pg_extension'::regclass
+              AND dependency.deptype = 'e'
+       )
 )
 SELECT table_name,
        privilege_name,
@@ -794,6 +805,17 @@ WITH table_policy(schema_name, table_name, policy) AS (
      WHERE namespace.nspname <> 'information_schema'
        AND namespace.nspname !~ '^pg_'
        AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+       -- Extension-owned relations (pg_depend deptype 'e', e.g. the
+       -- pg_stat_statements views, which grant SELECT to PUBLIC) carry the
+       -- extension's ACLs and sit outside this policy; nothing else is skipped.
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_depend AS dependency
+            WHERE dependency.classid = 'pg_class'::regclass
+              AND dependency.objid = relation.oid
+              AND dependency.refclassid = 'pg_extension'::regclass
+              AND dependency.deptype = 'e'
+       )
 )
 SELECT table_name,
        column_name,
@@ -1113,6 +1135,17 @@ WITH execution_contract AS (
      WHERE namespace.nspname <> 'information_schema'
        AND namespace.nspname !~ '^pg_'
        AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+       -- Extension-owned relations (pg_depend deptype 'e', e.g. the
+       -- pg_stat_statements views, which grant SELECT to PUBLIC) carry the
+       -- extension's ACLs and sit outside this policy; nothing else is skipped.
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_depend AS dependency
+            WHERE dependency.classid = 'pg_class'::regclass
+              AND dependency.objid = relation.oid
+              AND dependency.refclassid = 'pg_extension'::regclass
+              AND dependency.deptype = 'e'
+       )
 ), table_contract AS (
     SELECT NOT EXISTS (
                SELECT 1
@@ -1228,6 +1261,17 @@ WITH execution_contract AS (
      WHERE namespace.nspname <> 'information_schema'
        AND namespace.nspname !~ '^pg_'
        AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+       -- Extension-owned relations (pg_depend deptype 'e', e.g. the
+       -- pg_stat_statements views, which grant SELECT to PUBLIC) carry the
+       -- extension's ACLs and sit outside this policy; nothing else is skipped.
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_depend AS dependency
+            WHERE dependency.classid = 'pg_class'::regclass
+              AND dependency.objid = relation.oid
+              AND dependency.refclassid = 'pg_extension'::regclass
+              AND dependency.deptype = 'e'
+       )
 ), column_contract AS (
     SELECT coalesce(bool_and(
                CASE
@@ -2358,6 +2402,17 @@ WITH execution_contract AS (
        AND procedure.prokind IN ('f', 'p')
        AND has_function_privilege(
            'logo_admin', procedure.oid, 'EXECUTE'
+       )
+       -- Extension-owned routines (pg_depend deptype 'e', e.g. the
+       -- pg_stat_statements functions, EXECUTE to PUBLIC by default) sit
+       -- outside this policy for the same reason; nothing else is skipped.
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_depend AS dependency
+            WHERE dependency.classid = 'pg_proc'::regclass
+              AND dependency.objid = procedure.oid
+              AND dependency.refclassid = 'pg_extension'::regclass
+              AND dependency.deptype = 'e'
        )
 ), callable_contract AS (
     SELECT EXISTS (

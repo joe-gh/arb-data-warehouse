@@ -703,7 +703,29 @@ TABLE_PRIVILEGES = (
     "TRIGGER",
 )
 COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
-_TABLE_PRIVILEGE_SQL = """
+# Objects installed by an extension (pg_depend deptype 'e') carry the
+# extension's own ACLs -- pg_stat_statements grants SELECT on its views and
+# EXECUTE on its functions to PUBLIC -- and sit outside this policy, so every
+# effective-privilege enumeration skips them.  Nothing else is skipped: the app
+# schemas keep their exact allowlists and PUBLIC stays forbidden everywhere
+# else.  sql/diagnostics/agent-write-preflight.sql applies the same predicate.
+_EXTENSION_OWNED_RELATION_SQL = """EXISTS (
+       SELECT 1
+         FROM pg_depend AS dependency
+        WHERE dependency.classid = 'pg_class'::regclass
+          AND dependency.objid = relation.oid
+          AND dependency.refclassid = 'pg_extension'::regclass
+          AND dependency.deptype = 'e'
+   )"""
+_EXTENSION_OWNED_ROUTINE_SQL = """EXISTS (
+       SELECT 1
+         FROM pg_depend AS dependency
+        WHERE dependency.classid = 'pg_proc'::regclass
+          AND dependency.objid = procedure.oid
+          AND dependency.refclassid = 'pg_extension'::regclass
+          AND dependency.deptype = 'e'
+   )"""
+_TABLE_PRIVILEGE_SQL = f"""
 WITH table_privilege(privilege_name) AS (
     VALUES
         ('SELECT'),
@@ -728,10 +750,11 @@ SELECT format('%I.%I', namespace.nspname, relation.relname) AS table_name,
  WHERE namespace.nspname <> 'information_schema'
    AND namespace.nspname !~ '^pg_'
    AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+   AND NOT {_EXTENSION_OWNED_RELATION_SQL}
  ORDER BY namespace.nspname, relation.relname, table_privilege.privilege_name
 """
 
-_COLUMN_PRIVILEGE_SQL = """
+_COLUMN_PRIVILEGE_SQL = f"""
 WITH column_privilege(privilege_name) AS (
     VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')
 )
@@ -755,6 +778,7 @@ SELECT format('%I.%I', namespace.nspname, relation.relname) AS table_name,
  WHERE namespace.nspname <> 'information_schema'
    AND namespace.nspname !~ '^pg_'
    AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+   AND NOT {_EXTENSION_OWNED_RELATION_SQL}
  ORDER BY namespace.nspname, relation.relname, attribute.attnum,
           column_privilege.privilege_name
 """
@@ -1172,7 +1196,7 @@ def _validate_table_authority(cursor) -> None:
     _assert_column_privileges(cursor.fetchall())
 
     cursor.execute(
-        """
+        f"""
         WITH table_privilege(privilege_name) AS (
             VALUES
                 ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
@@ -1186,6 +1210,7 @@ def _validate_table_authority(cursor) -> None:
          WHERE namespace.nspname <> 'information_schema'
            AND namespace.nspname !~ '^pg_'
            AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+           AND NOT {_EXTENSION_OWNED_RELATION_SQL}
            AND has_table_privilege(
                'public', relation.oid, table_privilege.privilege_name
            )
@@ -1198,7 +1223,7 @@ def _validate_table_authority(cursor) -> None:
         "PUBLIC table privileges are forbidden",
     )
     cursor.execute(
-        """
+        f"""
         WITH column_privilege(privilege_name) AS (
             VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')
         )
@@ -1214,6 +1239,7 @@ def _validate_table_authority(cursor) -> None:
          WHERE namespace.nspname <> 'information_schema'
            AND namespace.nspname !~ '^pg_'
            AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+           AND NOT {_EXTENSION_OWNED_RELATION_SQL}
            AND has_column_privilege(
                'public', relation.oid, attribute.attnum,
                column_privilege.privilege_name
@@ -2384,7 +2410,7 @@ def _assert_callable_inventory(rows: Iterable[Mapping[str, Any]]) -> None:
 
 def _validate_callable_inventory(cursor) -> None:
     cursor.execute(
-        """
+        f"""
         SELECT namespace.nspname AS schema_name,
                procedure.proname AS routine_name,
                oidvectortypes(procedure.proargtypes) AS argument_types,
@@ -2398,6 +2424,7 @@ def _validate_callable_inventory(cursor) -> None:
            AND has_function_privilege(
                current_user, procedure.oid, 'EXECUTE'
            )
+           AND NOT {_EXTENSION_OWNED_ROUTINE_SQL}
          ORDER BY namespace.nspname, procedure.proname,
                   oidvectortypes(procedure.proargtypes)
         """

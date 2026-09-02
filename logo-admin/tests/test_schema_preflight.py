@@ -197,6 +197,81 @@ def test_preflight_checks_each_effective_table_and_sequence_privilege():
     assert "'USAGE, SELECT" not in source
 
 
+def _normalized_sql(text: str) -> str:
+    return " ".join(text.split())
+
+
+EXTENSION_OWNED_RELATION_EXCLUSION = _normalized_sql("""
+    AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+    AND NOT EXISTS (
+        SELECT 1
+          FROM pg_depend AS dependency
+         WHERE dependency.classid = 'pg_class'::regclass
+           AND dependency.objid = relation.oid
+           AND dependency.refclassid = 'pg_extension'::regclass
+           AND dependency.deptype = 'e'
+    )
+""")
+EXTENSION_OWNED_ROUTINE_EXCLUSION = _normalized_sql("""
+    AND has_function_privilege(
+        'logo_admin', procedure.oid, 'EXECUTE'
+    )
+    AND NOT EXISTS (
+        SELECT 1
+          FROM pg_depend AS dependency
+         WHERE dependency.classid = 'pg_proc'::regclass
+           AND dependency.objid = procedure.oid
+           AND dependency.refclassid = 'pg_extension'::regclass
+           AND dependency.deptype = 'e'
+    )
+""")
+
+
+def _enclosing_privilege_enumeration(source: str, position: int) -> str:
+    """Return the SELECT that owns an exclusion found at ``position``."""
+
+    start = max(
+        source.rfind("has_table_privilege(", 0, position),
+        source.rfind("has_column_privilege(", 0, position),
+    )
+    assert start >= 0
+    enumeration = source[start:position]
+    assert ";" not in enumeration
+    assert enumeration.count("FROM pg_class AS relation") == 1
+    return enumeration
+
+
+def test_preflight_skips_only_extension_owned_objects_in_privilege_inventories():
+    """Production carries pg_stat_statements, whose views grant SELECT and
+    whose functions grant EXECUTE to PUBLIC. Those objects belong to the
+    extension (pg_depend deptype 'e'), so every effective-privilege
+    enumeration skips them and nothing else."""
+
+    source = _normalized_sql(_sql_without_comments())
+    # Report-mode table and column matrices plus the terminal table_inventory
+    # and column_inventory: each is an effective relation-privilege
+    # enumeration, and each carries the exclusion inside its own SELECT.
+    assert source.count(EXTENSION_OWNED_RELATION_EXCLUSION) == 4
+    position = source.find(EXTENSION_OWNED_RELATION_EXCLUSION)
+    while position >= 0:
+        _enclosing_privilege_enumeration(source, position)
+        position = source.find(EXTENSION_OWNED_RELATION_EXCLUSION, position + 1)
+    # The callable inventory (every routine logo_admin can EXECUTE).
+    assert source.count(EXTENSION_OWNED_ROUTINE_EXCLUSION) == 1
+    routine_position = source.find(EXTENSION_OWNED_ROUTINE_EXCLUSION)
+    assert "callable_contract AS (" in source[
+        routine_position:routine_position + 600
+    ]
+    # Extension membership is the only pg_depend predicate, always deptype
+    # 'e', and the app-schema policies are untouched.
+    assert source.count("FROM pg_depend AS dependency") == 5
+    assert set(re.findall(r"dependency\.deptype = '(\w)'", source)) == {"e"}
+    assert source.count("dependency.refclassid = 'pg_extension'::regclass") == 5
+    assert "namespace.nspname IN ('woo', 'fdm4')" in source
+    assert "schema_name IN ('woo', 'fdm4')" in source
+    assert "AND NOT public_actual" in source
+
+
 def test_preflight_pins_retention_definer_contract():
     source = PREFLIGHT.read_text()
     for required_fragment in (

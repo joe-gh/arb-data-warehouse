@@ -1,8 +1,11 @@
 """Write-enabled startup rejects excessive or incomplete DB authority."""
 
+from contextlib import contextmanager
 import hashlib
+import inspect
 import os
 
+import psycopg2
 import pytest
 
 from database_contract import (
@@ -18,6 +21,11 @@ from database_contract import (
     EXPECTED_PRUNE_SOURCE_SHA256,
     RESTORE_COLUMN_CONTRACTS,
     TABLE_POLICIES,
+    TABLE_PRIVILEGES,
+    _COLUMN_PRIVILEGE_SQL,
+    _EXTENSION_OWNED_RELATION_SQL,
+    _EXTENSION_OWNED_ROUTINE_SQL,
+    _TABLE_PRIVILEGE_SQL,
     _assert_audit_function_contract,
     _assert_callable_inventory,
     _assert_agent_column_signatures,
@@ -35,6 +43,9 @@ from database_contract import (
     _assert_write_relation_shapes,
     _expected_table_privileges,
     _expected_agent_indexes,
+    _expected_unlisted_privilege,
+    _validate_callable_inventory,
+    _validate_table_authority,
     validate_write_database_contract,
 )
 from db import database
@@ -208,6 +219,153 @@ def test_column_contract_requires_warehouse_read_and_denies_private_read():
             "privilege_name": "SELECT",
             "allowed": True,
         }])
+
+
+def _normalized_sql(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_privilege_enumerations_skip_only_extension_owned_objects():
+    """Extension-owned objects (pg_depend deptype 'e') are skipped by every
+    effective-privilege enumeration -- pg_stat_statements on production
+    grants SELECT on its views and EXECUTE on its functions to PUBLIC -- and
+    nothing else is."""
+
+    relation_exclusion = _normalized_sql(_EXTENSION_OWNED_RELATION_SQL)
+    routine_exclusion = _normalized_sql(_EXTENSION_OWNED_ROUTINE_SQL)
+    for fragment in (
+        "FROM pg_depend AS dependency",
+        "dependency.refclassid = 'pg_extension'::regclass",
+        "dependency.deptype = 'e'",
+    ):
+        assert fragment in relation_exclusion
+        assert fragment in routine_exclusion
+    assert "dependency.classid = 'pg_class'::regclass" in relation_exclusion
+    assert "dependency.objid = relation.oid" in relation_exclusion
+    assert "dependency.classid = 'pg_proc'::regclass" in routine_exclusion
+    assert "dependency.objid = procedure.oid" in routine_exclusion
+
+    for enumeration in (_TABLE_PRIVILEGE_SQL, _COLUMN_PRIVILEGE_SQL):
+        normalized = _normalized_sql(enumeration)
+        assert normalized.count("AND NOT " + relation_exclusion) == 1
+        assert "relation.relkind IN ('r', 'p', 'v', 'f', 'm')" in normalized
+        assert "namespace.nspname <> 'information_schema'" in normalized
+        assert "namespace.nspname !~ '^pg_'" in normalized
+    # The PUBLIC table/column counts and the callable inventory embed the
+    # same predicates.
+    assert inspect.getsource(_validate_table_authority).count(
+        "AND NOT {_EXTENSION_OWNED_RELATION_SQL}"
+    ) == 2
+    assert inspect.getsource(_validate_callable_inventory).count(
+        "AND NOT {_EXTENSION_OWNED_ROUTINE_SQL}"
+    ) == 1
+
+
+def test_table_and_column_policies_still_reject_extension_shaped_rows():
+    """The skip lives in the enumeration SQL; the policy is unchanged, so a
+    public-schema view readable by the role is still an unexpected privilege
+    if a row for it ever reaches the assertions."""
+
+    assert _expected_unlisted_privilege(
+        "public.pg_stat_statements", "SELECT"
+    ) is False
+    rows = _table_rows()
+    rows.extend({
+        "table_name": "public.pg_stat_statements",
+        "privilege_name": privilege,
+        "allowed": privilege == "SELECT",
+    } for privilege in TABLE_PRIVILEGES)
+    with pytest.raises(
+        RuntimeError,
+        match=r"unexpected_privileges=.*public\.pg_stat_statements",
+    ):
+        _assert_table_privileges(rows)
+    with pytest.raises(RuntimeError, match="effective column privilege mismatch"):
+        _assert_column_privileges([{
+            "table_name": "public.pg_stat_statements",
+            "column_name": "calls",
+            "privilege_name": "SELECT",
+            "allowed": True,
+        }])
+
+
+@contextmanager
+def _pg_stat_statements_installed():
+    """Guarantee extension-owned objects exist for the duration of one test.
+
+    pg_stat_statements ships with PostgreSQL contrib; CREATE EXTENSION needs
+    no shared_preload_libraries (only querying its views does), and its
+    views/functions grant SELECT/EXECUTE to PUBLIC. The extension is dropped
+    again only when this helper created it.
+    """
+
+    connection = psycopg2.connect(os.environ["TEST_DATABASE_ADMIN_DSN"])
+    connection.autocommit = True
+    created = False
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'"
+            )
+            if cursor.fetchone() is None:
+                try:
+                    cursor.execute("CREATE EXTENSION pg_stat_statements")
+                except psycopg2.Error as exc:
+                    pytest.skip(f"pg_stat_statements is unavailable here: {exc}")
+                created = True
+        yield
+    finally:
+        try:
+            if created:
+                with connection.cursor() as cursor:
+                    cursor.execute("DROP EXTENSION pg_stat_statements")
+        finally:
+            connection.close()
+
+
+_EXTENSION_OWNED_RELATIONS_SQL = """
+SELECT format('%I.%I', namespace.nspname, relation.relname) AS table_name
+  FROM pg_depend AS dependency
+  JOIN pg_class AS relation ON relation.oid = dependency.objid
+  JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+ WHERE dependency.classid = 'pg_class'::regclass
+   AND dependency.refclassid = 'pg_extension'::regclass
+   AND dependency.deptype = 'e'
+   AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+"""
+
+
+def test_live_privilege_enumerations_skip_extension_owned_relations():
+    with _pg_stat_statements_installed(), database.cursor() as cursor:
+        cursor.execute(_EXTENSION_OWNED_RELATIONS_SQL)
+        extension_relations = {
+            str(row["table_name"]) for row in cursor.fetchall()
+        }
+        assert "public.pg_stat_statements" in extension_relations
+        cursor.execute(
+            "SELECT has_table_privilege("
+            "current_user, 'public.pg_stat_statements', 'SELECT') AS readable"
+        )
+        assert cursor.fetchone()["readable"] is True
+        cursor.execute(_TABLE_PRIVILEGE_SQL)
+        enumerated_tables = {str(row["table_name"]) for row in cursor.fetchall()}
+        cursor.execute(_COLUMN_PRIVILEGE_SQL)
+        enumerated_columns = {str(row["table_name"]) for row in cursor.fetchall()}
+    assert not enumerated_tables & extension_relations
+    assert not enumerated_columns & extension_relations
+    # Nothing else is skipped: every policy table is still enumerated.
+    assert set(TABLE_POLICIES) <= enumerated_tables
+    assert set(TABLE_POLICIES) <= enumerated_columns
+
+
+def test_live_callable_inventory_skips_extension_owned_routines():
+    with _pg_stat_statements_installed(), database.cursor() as cursor:
+        cursor.execute(
+            "SELECT has_function_privilege(current_user, "
+            "'public.pg_stat_statements(boolean)', 'EXECUTE') AS executable"
+        )
+        assert cursor.fetchone()["executable"] is True
+        _validate_callable_inventory(cursor)
 
 
 def _safe_relation_rows():
