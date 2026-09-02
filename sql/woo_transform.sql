@@ -923,8 +923,16 @@ BEGIN
             SELECT n.fdm4_store, n.catalog_id,
                    count(DISTINCT n.sku) FILTER (WHERE n.kind = 'parent')
                        AS products,
-                   -- clone/demo catalogs sort last so the "real" one is suggested
-                   CASE WHEN n.catalog_id ~* '(_0?1|_woo(_1)?|demowebstore|_1)$'
+                   -- Virtual-catalog enrollment is an explicit operator decision:
+                   -- that catalog is the store's primary, ahead of the name
+                   -- heuristic (which sorts clone/demo catalogs last so the
+                   -- "real" one is suggested for everyone else).
+                   CASE WHEN EXISTS (
+                            SELECT 1 FROM woo.virtual_catalog_store v
+                             WHERE v.fdm4_store = n.fdm4_store
+                               AND v.catalog_id = n.catalog_id
+                        ) THEN -1
+                        WHEN n.catalog_id ~* '(_0?1|_woo(_1)?|demowebstore|_1)$'
                         THEN 1 ELSE 0 END AS clone_rank
             FROM _next n
             GROUP BY n.fdm4_store, n.catalog_id
@@ -932,8 +940,7 @@ BEGIN
             UNION ALL
 
             SELECT vcs.fdm4_store, vcs.catalog_id, 0::bigint AS products,
-                   CASE WHEN vcs.catalog_id ~* '(_0?1|_woo(_1)?|demowebstore|_1)$'
-                        THEN 1 ELSE 0 END AS clone_rank
+                   -1 AS clone_rank
             FROM woo.virtual_catalog_store vcs
             WHERE NOT EXISTS (
                 SELECT 1 FROM _next n
