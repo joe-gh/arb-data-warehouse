@@ -1379,6 +1379,7 @@ def compute_bulk_preview(
     target: dict,
     style_codes=None,
     option_row: int = 1,
+    design_id: Optional[str] = None,
 ) -> dict:
     """Compute, for one store + one logo variant + a target filter, the set of
     (style, color) -> this variant changes with a 'was' diff.  Read-only.
@@ -1400,7 +1401,21 @@ def compute_bulk_preview(
     scheme = color_scheme.upper()
 
     design_index = legacy_import.load_design_lookup(cursor)
-    designs = design_index.candidates(fdm4_store, logo_code, scheme)
+    designs = set(design_index.candidates(fdm4_store, logo_code, scheme))
+    wanted = str(design_id).strip() if design_id not in (None, "") else ""
+    if wanted:
+        # A logo code is an art-file prefix and can be shared by several
+        # designs of one customer; an explicit design id settles it.
+        if designs and wanted not in designs:
+            return {
+                "rows": [],
+                "counts": {"total": 0},
+                "unresolved_reason": (
+                    f"design {wanted} does not carry {logo_code}/{scheme}"
+                    f" (candidates: {', '.join(sorted(designs))})"
+                ),
+            }
+        designs = {wanted}
     if not designs:
         return {
             "rows": [],
@@ -1411,7 +1426,10 @@ def compute_bulk_preview(
         return {
             "rows": [],
             "counts": {"total": 0},
-            "unresolved_reason": f"ambiguous design {logo_code}/{scheme}",
+            "unresolved_reason": (
+                f"ambiguous design {logo_code}/{scheme}: {', '.join(sorted(designs))};"
+                " pass design_id"
+            ),
         }
     design_id = next(iter(designs))
 

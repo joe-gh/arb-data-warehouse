@@ -229,6 +229,7 @@ class BulkApplyCommand(Command):
     store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
     logo_code: str = Field(min_length=1, max_length=100, description="Logo code of the variant to place, e.g. A9H (get_design / list_logo_names show codes).")
     color_scheme_id: str = Field(min_length=1, max_length=100, description="Color scheme of the variant, e.g. GD.")
+    design_id: Optional[str] = Field(default=None, max_length=100, description="FDM4 design id when the logo code is shared by several designs of the customer (the error names the candidates); null when the code is unique.")
     location: str = Field(min_length=1, max_length=200, description="Placement name from get_assignment_vocab, e.g. Left Chest.")
     target: Literal["light_dark", "colors"] = Field(description="light_dark = every garment color of the chosen class across the store; colors = only the listed color codes.")
     color_class: Optional[Literal["light", "dark"]] = Field(default=None, description="Required when target is light_dark: which class of garment colors receives the logo (colors classed 'both' match either).")
@@ -237,6 +238,42 @@ class BulkApplyCommand(Command):
     option_row: int = Field(default=1, ge=1, le=999, description="Which choice slot to write (1 = primary; 2/3 add the variant alongside an existing primary). Position is always 1.")
     cost_override: Optional[Decimal] = Field(default=None, description="Shopper charge in dollars for the placed rows; null keeps the automatic default cost.")
     overwrite: bool = Field(default=False, description="False skips colors that already have a logo in that slot; True replaces them.")
+
+
+class SetLogoDefaultCostCommand(Command):
+    logo_code: str = Field(min_length=1, max_length=100, description="Logo code, e.g. A9H (get_style rows / list_logo_names show it).")
+    color_scheme_id: str = Field(min_length=1, max_length=100, description="Color scheme, e.g. GD. Default costs are per logo code + scheme and apply in EVERY store that has no row-level override.")
+    cost: Decimal = Field(ge=0, description="Default shopper charge in dollars for this logo variant; 0 makes it free everywhere it has no override.")
+    locked: bool = Field(default=True, description="True keeps the value through future VN/FDM4 cost imports.")
+
+
+class SetPriceRuleActiveCommand(Command):
+    rule_id: int = Field(ge=1, description="Price rule id from list_price_rules.")
+    active: bool = Field(description="True switches the rule on (only allowed after it was previewed in the app since its last edit); False switches it off.")
+
+
+class DeletePriceRuleCommand(Command):
+    rule_id: int = Field(ge=1, description="Price rule id from list_price_rules; the rule is removed entirely.")
+
+
+class SetProductMixCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    mode: Literal["all", "list"] = Field(description="all = the store follows FDM4 completely; list = a curated list decides (seeded from the store's current mix when switching, then edited with add_mix_styles / remove_mix_styles).")
+    note: str = Field(default="", max_length=1000, description="Optional note shown on the Product Mix page.")
+
+
+class DisableProductMixCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description="Store whose product-mix override is switched off (it follows FDM4 again; the saved list is kept).")
+
+
+class AddMixStylesCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    styles: List[str] = Field(min_length=1, max_length=50, description="Style codes to add to the store's curated list (all colors). " + STYLE_LIST_DESC)
+
+
+class RemoveMixStylesCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    styles: List[str] = Field(min_length=1, max_length=50, description="Style codes to drop from the store's curated list (the products leave the store on the next update). " + STYLE_LIST_DESC)
 
 
 MutationCommand = Union[
@@ -268,6 +305,13 @@ MutationCommand = Union[
     SetLogoCostCommand,
     SetStoreExtraCustomersCommand,
     BulkApplyCommand,
+    SetLogoDefaultCostCommand,
+    SetPriceRuleActiveCommand,
+    DeletePriceRuleCommand,
+    SetProductMixCommand,
+    DisableProductMixCommand,
+    AddMixStylesCommand,
+    RemoveMixStylesCommand,
 ]
 
 
@@ -300,6 +344,13 @@ COMMAND_MODELS: Dict[str, Type[Command]] = {
     "set_logo_cost": SetLogoCostCommand,
     "set_store_extra_customers": SetStoreExtraCustomersCommand,
     "bulk_apply": BulkApplyCommand,
+    "set_logo_default_cost": SetLogoDefaultCostCommand,
+    "set_price_rule_active": SetPriceRuleActiveCommand,
+    "delete_price_rule": DeletePriceRuleCommand,
+    "set_product_mix": SetProductMixCommand,
+    "disable_product_mix": DisableProductMixCommand,
+    "add_mix_styles": AddMixStylesCommand,
+    "remove_mix_styles": RemoveMixStylesCommand,
 }
 
 HARD_DELETE_TOOLS = frozenset({

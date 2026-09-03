@@ -59,6 +59,7 @@ from domain import Conflict, InvalidCommand, NotFound
 import legacy_import as legacy
 import mutations
 import queries as read_queries
+import mix_service
 import wp_bridge
 from snapshots import lock_scopes
 
@@ -2652,101 +2653,36 @@ class MixPreviewBody(BaseModel):
 
 
 def _mix_norm(value: str) -> str:
-    return " ".join(str(value).split()).upper()
+    return mix_service.norm(value)
 
 
 def _mix_registry(cursor, store: str, *, required: bool = True):
-    cursor.execute(
-        """
-        SELECT fdm4_store, mode, active, note, imported_at
-          FROM woo.store_mix_store WHERE fdm4_store = %s
-        """,
-        (store,),
-    )
-    row = cursor.fetchone()
-    if required and (row is None or not row["active"]):
-        raise HTTPException(
-            status_code=404,
-            detail=f"{store} is not using a custom product list")
-    return row
+    try:
+        return mix_service.registry(cursor, store, required=required)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 def _mix_require_list_mode(registry_row) -> None:
-    if registry_row["mode"] != "list":
-        raise HTTPException(
-            status_code=400,
-            detail="This store follows FDM4 (mode 'all'); switch it to list "
-                   "mode before editing its product list")
+    try:
+        mix_service.require_list_mode(registry_row)
+    except InvalidCommand as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 def _mix_known_store(cursor, store: str) -> None:
-    # Same universe the UI store dropdown offers (woo.store_catalog).
-    cursor.execute(
-        "SELECT 1 FROM woo.store_catalog WHERE fdm4_store = %s LIMIT 1", (store,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=400, detail=f"Unknown store code: {store}")
+    try:
+        mix_service.known_store(cursor, store)
+    except NotFound as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 def _mix_seed_items(cursor, store: str, actor: str) -> int:
-    """Copy the store's current FDM4 mix into store_mix_item (missing styles only).
-
-    Prefers woo.store_mix_candidate (transform-maintained once the store is
-    registered) and falls back to active state rows for a first enable.
-    ON CONFLICT DO NOTHING is the merge contract: an existing style's colors /
-    size excludes are NEVER touched, so operator removals don't resurrect.
-    Virtual-catalog stores seed colors = NULL (all channels) so new FDM4 color
-    channels keep flowing; normal stores seed their current color sets.
-    """
-    cursor.execute(
-        "SELECT 1 FROM woo.virtual_catalog_store WHERE fdm4_store = %s", (store,))
-    virtual = cursor.fetchone() is not None
-    cursor.execute(
-        "SELECT count(*) AS n FROM woo.store_mix_candidate WHERE fdm4_store = %s",
-        (store,),
-    )
-    if cursor.fetchone()["n"]:
-        cursor.execute(
-            """
-            INSERT INTO woo.store_mix_item
-                (fdm4_store, style_code, colors, source, added_by, updated_by)
-            SELECT c.fdm4_store, upper(btrim(c.style_code)),
-                   CASE WHEN %(virtual)s THEN NULL ELSE c.colors END,
-                   'import', %(actor)s, %(actor)s
-              FROM woo.store_mix_candidate c
-             WHERE c.fdm4_store = %(store)s AND btrim(c.style_code) <> ''
-            ON CONFLICT (fdm4_store, style_code) DO NOTHING
-            """,
-            {"store": store, "actor": actor, "virtual": virtual},
-        )
-    else:
-        cursor.execute(
-            """
-            INSERT INTO woo.store_mix_item
-                (fdm4_store, style_code, colors, source, added_by, updated_by)
-            SELECT s.fdm4_store, upper(btrim(s.style_code)),
-                   CASE WHEN %(virtual)s THEN NULL
-                        ELSE array_agg(DISTINCT upper(btrim(s.color_code)))
-                             FILTER (WHERE s.kind = 'variation'
-                                     AND COALESCE(btrim(s.color_code), '') <> '')
-                   END,
-                   'import', %(actor)s, %(actor)s
-              FROM woo.store_product_state s
-             WHERE s.fdm4_store = %(store)s AND s.is_active
-               AND COALESCE(btrim(s.style_code), '') <> ''
-             GROUP BY s.fdm4_store, upper(btrim(s.style_code))
-            ON CONFLICT (fdm4_store, style_code) DO NOTHING
-            """,
-            {"store": store, "actor": actor, "virtual": virtual},
-        )
-    return cursor.rowcount
+    return mix_service.seed_items(cursor, store, actor)
 
 
 def _mix_item_count(cursor, store: str) -> int:
-    cursor.execute(
-        "SELECT count(*) AS n FROM woo.store_mix_item WHERE fdm4_store = %s",
-        (store,),
-    )
-    return int(cursor.fetchone()["n"])
+    return mix_service.item_count(cursor, store)
 
 
 def _mix_style_universe(cursor, store: str, style: str):

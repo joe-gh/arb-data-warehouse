@@ -234,8 +234,17 @@ the styles from list_design_usage), set_store_extra_customers (other FDM4
 customers whose designs a store may use), bulk_apply (the Bulk Apply page:
 one logo variant onto every light or dark color, or the listed colors,
 across a store or named styles; skips colors that already have a logo in
-that slot unless overwrite; the review lists every row). Price rules and
-product mix stay in the app.
+that slot unless overwrite; the review lists every row; pass design_id
+when the logo code is shared by several designs - the error names them),
+set_logo_default_cost (a logo variant's default charge in EVERY store
+without an override - prefer set_logo_cost for one store),
+set_price_rule_active / delete_price_rule (switch a rule off or on - on
+needs an app preview since its last edit - or remove it; editing rules stays
+in the app), set_product_mix / disable_product_mix / add_mix_styles /
+remove_mix_styles (Product Mix: enrol a store as all-products or a curated
+list, switch modes, turn the override off, add or drop styles; a list is
+never left empty). For mix changes explain that products appear or leave
+the store on the next hourly update.
 For a bulk action: when the style list came from your own lookup rather
 than from the person, show it and get a yes before staging; split jobs over
 50 styles into several calls, one at a time; afterwards report per style

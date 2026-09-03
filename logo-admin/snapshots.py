@@ -2,6 +2,8 @@
 
 import json
 from collections import defaultdict
+
+from psycopg2.extras import Json
 from numbers import Number
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -61,13 +63,20 @@ STORE_PRICING_COLUMNS = (
 # created_at is stamped by the INSERT default, so a previewed insert and the
 # real apply legitimately differ there too.
 VOLATILE_PREVIEW_COLUMNS = (
-    frozenset({"updated_by", "updated_at", "created_at"}) | TRIGGER_MANAGED_COLUMNS
+    frozenset({
+        "updated_by", "updated_at", "created_at", "created_by", "added_at", "added_by",
+        "imported_at",  # product-mix list snapshot stamp (now() at enrolment)
+    })
+    | TRIGGER_MANAGED_COLUMNS
 )
 
-# Single-row tables the agent may edit through the same exact snapshot/restore
-# path: one scope = one primary-key row. Column order matches the live table
-# (database_contract pins it); ``types`` drives journal validation.
-#   text / text? = str (nullable), bool, int, num? = number or null, ts = str
+# Tables the agent may edit through the same exact snapshot/restore path.
+# ``key`` = the scope's columns (a whole primary key for one row, or a prefix
+# such as fdm4_store for every row of a store); ``pk`` (default: key) = row
+# identity. Column order matches the live table (database_contract pins it);
+# ``types`` drives journal validation:
+#   text / text? = str (nullable), bool, int, num / num?, ts / ts? (str),
+#   date? (str or null), list? (JSON array or null), json? (any JSON or null)
 SIMPLE_ROW_SCOPES = {
     "display_name_row": {
         "table": "logo.display_name",
@@ -128,7 +137,67 @@ SIMPLE_ROW_SCOPES = {
             "created_at": "ts", "updated_at": "ts", "updated_by": "text", "scope": "text",
         },
     },
+    "default_cost_row": {
+        "table": "logo.default_cost",
+        "key": ("logo_code", "color_scheme_id"),
+        "columns": ("logo_code", "color_scheme_id", "cost", "source", "locked", "updated_by", "updated_at"),
+        "types": {
+            "logo_code": "text", "color_scheme_id": "text", "cost": "num", "source": "text",
+            "locked": "bool", "updated_by": "text", "updated_at": "ts",
+        },
+    },
+    "price_rule_row": {
+        "table": "woo.price_rule",
+        "key": ("rule_id",),
+        "columns": (
+            "rule_id", "name", "active", "priority", "stackable", "stores", "store_tiers",
+            "styles", "brands", "categories", "effect_type", "effect_value", "price_level_key",
+            "floor_price", "effective_from", "effective_until", "note", "created_at",
+            "updated_at", "updated_by", "last_previewed_at", "excl_stores", "excl_styles",
+            "excl_brands", "excl_categories", "basis", "rounding", "ceiling_price", "cap_at_msrp",
+        ),
+        "types": {
+            "rule_id": "int", "name": "text", "active": "bool", "priority": "int", "stackable": "bool",
+            "stores": "list?", "store_tiers": "list?", "styles": "list?", "brands": "list?",
+            "categories": "list?", "effect_type": "text", "effect_value": "num?",
+            "price_level_key": "text?", "floor_price": "num?", "effective_from": "date?",
+            "effective_until": "date?", "note": "text", "created_at": "ts", "updated_at": "ts",
+            "updated_by": "text", "last_previewed_at": "ts?", "excl_stores": "list?",
+            "excl_styles": "list?", "excl_brands": "list?", "excl_categories": "list?",
+            "basis": "text", "rounding": "text", "ceiling_price": "num?", "cap_at_msrp": "bool",
+        },
+    },
+    "store_mix_store_row": {
+        "table": "woo.store_mix_store",
+        "key": ("fdm4_store",),
+        "columns": (
+            "fdm4_store", "mode", "active", "note", "created_by", "created_at",
+            "updated_by", "updated_at", "imported_at",
+        ),
+        "types": {
+            "fdm4_store": "text", "mode": "text", "active": "bool", "note": "text",
+            "created_by": "text", "created_at": "ts", "updated_by": "text", "updated_at": "ts",
+            "imported_at": "ts?",
+        },
+    },
+    # Every curated style of one store: the scope is the store, rows are styles.
+    "store_mix_items": {
+        "table": "woo.store_mix_item",
+        "key": ("fdm4_store",),
+        "pk": ("fdm4_store", "style_code"),
+        "columns": (
+            "fdm4_store", "style_code", "colors", "size_excludes", "source",
+            "added_by", "added_at", "updated_by", "updated_at",
+        ),
+        "types": {
+            "fdm4_store": "text", "style_code": "text", "colors": "list?", "size_excludes": "json?",
+            "source": "text", "added_by": "text", "added_at": "ts", "updated_by": "text",
+            "updated_at": "ts",
+        },
+    },
 }
+for _spec in SIMPLE_ROW_SCOPES.values():
+    _spec.setdefault("pk", _spec["key"])
 SIMPLE_TABLE_SPECS = {spec["table"]: spec for spec in SIMPLE_ROW_SCOPES.values()}
 
 RESTORE_COLUMNS = {
@@ -167,6 +236,9 @@ MAX_SNAPSHOT_TOTAL_BYTES = 5 * 1024 * 1024
 MAX_SNAPSHOT_STATE_BYTES = 6 * 1024 * 1024
 MAX_SEMANTIC_DIFF_BYTES = 12 * 1024 * 1024
 MAX_SNAPSHOT_SCOPE_ENTRIES = 500
+
+# Scope key columns that are integers (every other key column is text).
+INTEGER_SCOPE_KEYS = frozenset({"option_row", "rule_id"})
 
 SCOPE_KEY_COLUMNS = {
     "assignment_store": ("fdm4_store",),
@@ -222,9 +294,9 @@ def scope_from_dict(value: Mapping[str, Any]) -> MutationScope:
         raise InvalidCommand("snapshot scope key columns are invalid")
     for name in expected_keys:
         item = key[name]
-        if name == "option_row":
+        if name in INTEGER_SCOPE_KEYS:
             if type(item) is not int:
-                raise InvalidCommand("snapshot option-row key is invalid")
+                raise InvalidCommand(f"snapshot {name} key is invalid")
         elif not isinstance(item, str):
             raise InvalidCommand("snapshot text key is invalid")
     return MutationScope(kind, dict(key))  # type: ignore[arg-type]
@@ -488,16 +560,20 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
     elif scope.kind in SIMPLE_ROW_SCOPES:
         spec = SIMPLE_ROW_SCOPES[scope.kind]
         where = " AND ".join(f"{column} = %s" for column in spec["key"])
+        order = ", ".join(spec["pk"])
         rows, snapshot_bytes = _bounded_snapshot_rows(
             cursor,
             f"""
-            SELECT 1 AS ordinal, to_jsonb(snapshot_row) AS row
+            SELECT row_number() OVER (ORDER BY {order}) AS ordinal,
+                   to_jsonb(snapshot_row) AS row
               FROM (
                   SELECT * FROM {spec["table"]}
-                   WHERE {where}{lock}
+                   WHERE {where}
+                   ORDER BY {order}
+                   LIMIT %s{lock}
               ) AS snapshot_row
             """,
-            tuple(scope.key[column] for column in spec["key"]),
+            tuple(scope.key[column] for column in spec["key"]) + (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,),
         )
         table = spec["table"]
     else:
@@ -554,7 +630,7 @@ def _row_key(table: str, row: Mapping[str, Any]) -> str:
             row.get("position"),
         ]
     elif table in SIMPLE_TABLE_SPECS:
-        values = [row.get(column) for column in SIMPLE_TABLE_SPECS[table]["key"]]
+        values = [row.get(column) for column in SIMPLE_TABLE_SPECS[table]["pk"]]
     else:
         values = [row.get("fdm4_store")]
     return json.dumps(values, separators=(",", ":"), default=str)
@@ -669,13 +745,17 @@ def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
     elif table in SIMPLE_TABLE_SPECS:
         for column, kind in SIMPLE_TABLE_SPECS[table]["types"].items():
             value = row[column]
+            is_number = isinstance(value, Number) and not isinstance(value, bool)
             ok = (
                 isinstance(value, str) if kind in {"text", "ts"}
-                else value is None or isinstance(value, str) if kind == "text?"
+                else value is None or isinstance(value, str) if kind in {"text?", "ts?", "date?"}
                 else type(value) is bool if kind == "bool"
                 else type(value) is int if kind == "int"
-                else value is None or (isinstance(value, Number) and not isinstance(value, bool))
-                if kind == "num?" else False
+                else is_number if kind == "num"
+                else value is None or is_number if kind == "num?"
+                else value is None or isinstance(value, list) if kind == "list?"
+                else value is None or isinstance(value, (dict, list, str, Number, bool)) if kind == "json?"
+                else False
             )
             if not ok:
                 raise InvalidCommand(f"Journal {table} value for {column} is invalid")
@@ -830,13 +910,20 @@ def _delete_scope(cursor, scope: MutationScope) -> None:
 
 
 def _insert_simple(cursor, table: str, row: Mapping[str, Any]) -> None:
-    columns = SIMPLE_TABLE_SPECS[table]["columns"]
+    spec = SIMPLE_TABLE_SPECS[table]
+    columns = spec["columns"]
+    values = []
+    for column in columns:
+        value = row[column]
+        if spec["types"].get(column) == "json?" and value is not None:
+            value = Json(value)
+        values.append(value)
     cursor.execute(
         f"""
         INSERT INTO {table} ({', '.join(columns)})
         VALUES ({', '.join(['%s'] * len(columns))})
         """,
-        tuple(row[column] for column in columns),
+        tuple(values),
     )
 
 

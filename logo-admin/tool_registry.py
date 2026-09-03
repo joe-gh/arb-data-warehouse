@@ -15,6 +15,13 @@ from authorization import (
 )
 from commands import (
     COMMAND_MODELS,
+    AddMixStylesCommand,
+    DeletePriceRuleCommand,
+    DisableProductMixCommand,
+    RemoveMixStylesCommand,
+    SetLogoDefaultCostCommand,
+    SetPriceRuleActiveCommand,
+    SetProductMixCommand,
     ApplyToColorsCommand,
     BulkApplyCommand,
     ClearLogoNameCommand,
@@ -143,6 +150,13 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
     "set_logo_cost",
     "set_store_extra_customers",
     "bulk_apply",
+    "set_logo_default_cost",
+    "set_price_rule_active",
+    "delete_price_rule",
+    "set_product_mix",
+    "disable_product_mix",
+    "add_mix_styles",
+    "remove_mix_styles",
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
@@ -480,6 +494,27 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
         ),
         "bulk_apply": _canonical_write_contract(
             BulkApplyCommand, mutations.bulk_apply, "assignment_store",
+        ),
+        "set_logo_default_cost": _canonical_write_contract(
+            SetLogoDefaultCostCommand, mutations.set_logo_default_cost, "default_cost_row",
+        ),
+        "set_price_rule_active": _canonical_write_contract(
+            SetPriceRuleActiveCommand, mutations.set_price_rule_active, "price_rule_row",
+        ),
+        "delete_price_rule": _canonical_write_contract(
+            DeletePriceRuleCommand, mutations.delete_price_rule, "price_rule_row",
+        ),
+        "set_product_mix": _canonical_write_contract(
+            SetProductMixCommand, mutations.set_product_mix, "store_mix_store_row", "store_mix_items",
+        ),
+        "disable_product_mix": _canonical_write_contract(
+            DisableProductMixCommand, mutations.disable_product_mix, "store_mix_store_row",
+        ),
+        "add_mix_styles": _canonical_write_contract(
+            AddMixStylesCommand, mutations.add_mix_styles, "store_mix_items",
+        ),
+        "remove_mix_styles": _canonical_write_contract(
+            RemoveMixStylesCommand, mutations.remove_mix_styles, "store_mix_items",
         ),
     })
 )
@@ -825,6 +860,48 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "The Bulk Apply page as one staged change: put one logo variant (logo code + scheme + placement) on every light or dark garment color across a store, or on the listed color codes, optionally limited to named styles. Skips colors that already have a logo in that slot unless overwrite is true. Whole-store scope: the review shows every row; very large stores may exceed the exact-undo row cap, then use styles or paste_logo_set. Stages a proposal; the person confirms.",
         BulkApplyCommand,
         mutations.bulk_apply,
+    ),
+    _write_spec(
+        "set_logo_default_cost",
+        "Set a logo variant's DEFAULT shopper charge (per logo code + color scheme) - the price every store pays for it unless a row has its own override; 0 makes it free by default. Locked by default so cost re-imports keep it. Global to all stores: prefer set_logo_cost for one store. Stages a proposal; the person confirms.",
+        SetLogoDefaultCostCommand,
+        mutations.set_logo_default_cost,
+    ),
+    _write_spec(
+        "set_price_rule_active",
+        "Switch a price rule on or off without touching its settings (list_price_rules shows ids). Switching on is refused until the rule was previewed in the app since its last edit. Stages a proposal; the person confirms.",
+        SetPriceRuleActiveCommand,
+        mutations.set_price_rule_active,
+    ),
+    _write_spec(
+        "delete_price_rule",
+        "Remove a price rule entirely (list_price_rules shows ids). Editing or creating rules stays in the app. Stages a proposal; the person confirms.",
+        DeletePriceRuleCommand,
+        mutations.delete_price_rule,
+    ),
+    _write_spec(
+        "set_product_mix",
+        "Enrol a store in Product Mix or change its mode: all = follow FDM4 completely; list = a curated list decides which products the store carries. Switching to list snapshots the store's current mix into the list first (never an empty list). Stages a proposal; the person confirms.",
+        SetProductMixCommand,
+        mutations.set_product_mix,
+    ),
+    _write_spec(
+        "disable_product_mix",
+        "Switch a store's Product Mix override off so it follows FDM4 again; its saved list is kept for later. Stages a proposal; the person confirms.",
+        DisableProductMixCommand,
+        mutations.disable_product_mix,
+    ),
+    _write_spec(
+        "add_mix_styles",
+        "Add up to 50 styles (all their colors) to a list-mode store's curated product list; reports how many live products each style has (0 = likely a typo). Stages a proposal; the person confirms.",
+        AddMixStylesCommand,
+        mutations.add_mix_styles,
+    ),
+    _write_spec(
+        "remove_mix_styles",
+        "Drop up to 50 styles from a list-mode store's curated list so those products leave the store on the next update. Refuses to empty the list (use disable_product_mix instead). Stages a proposal; the person confirms.",
+        RemoveMixStylesCommand,
+        mutations.remove_mix_styles,
     ),
 )
 

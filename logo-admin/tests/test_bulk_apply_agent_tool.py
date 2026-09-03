@@ -59,7 +59,7 @@ def test_bulk_apply_dark_colors_round_trip():
     with database.cursor() as cursor:
         before = snapshot_scopes(cursor, (STORE,))
     change_set = new_change_set(_session(), USER)
-    args = {"store": "S_TEST", "logo_code": "c1", "color_scheme_id": "scheme-1", "location": "Left Chest",
+    args = {"store": "S_TEST", "logo_code": "c1", "color_scheme_id": "scheme-1", "design_id": None, "location": "Left Chest",
             "target": "light_dark", "color_class": "dark", "color_codes": [], "styles": [],
             "option_row": 1, "cost_override": "2.00", "overwrite": False}
     staged = stage_write(change_set["id"], "bulk_apply", args, "bulk-apply", USER, max_items=50)
@@ -79,7 +79,7 @@ def test_bulk_apply_dark_colors_round_trip():
 def test_bulk_apply_overwrite_and_style_limit_and_errors():
     _classes()
     change_set = new_change_set(_session(), USER)
-    staged = stage_write(change_set["id"], "bulk_apply", {"store": "S_TEST", "logo_code": "C2", "color_scheme_id": "SCHEME-2", "location": "Right Chest",
+    staged = stage_write(change_set["id"], "bulk_apply", {"store": "S_TEST", "logo_code": "C2", "color_scheme_id": "SCHEME-2", "design_id": "DESIGN-2", "location": "Right Chest",
                                                           "target": "colors", "color_class": None, "color_codes": ["RED"], "styles": ["STYLE-1"],
                                                           "option_row": 1, "cost_override": None, "overwrite": True}, "bulk-ow", USER, max_items=50)
     assert staged["preview_results"][0]["applied"] == 1 and staged["preview_results"][0]["skipped_existing"] == 0
@@ -90,8 +90,9 @@ def test_bulk_apply_overwrite_and_style_limit_and_errors():
         ({"target": "colors", "color_codes": []}, InvalidCommand),                # codes missing
         ({"logo_code": "ZZZ", "color_scheme_id": "NOPE"}, InvalidCommand),        # unresolved variant
         ({"target": "colors", "color_codes": ["PINK"]}, NotFound),                # no such color in store
+        ({"design_id": "DESIGN-2"}, InvalidCommand),                              # design does not carry C1/SCHEME-1
     ):
-        base = {"store": "S_TEST", "logo_code": "C1", "color_scheme_id": "SCHEME-1", "location": "Left Chest", "target": "light_dark",
+        base = {"store": "S_TEST", "logo_code": "C1", "color_scheme_id": "SCHEME-1", "design_id": None, "location": "Left Chest", "target": "light_dark",
                 "color_class": "dark", "color_codes": [], "styles": [], "option_row": 1, "cost_override": None, "overwrite": False}
         base.update(bad)
         cs = new_change_set(_session(), USER)

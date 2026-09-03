@@ -10,8 +10,16 @@ import json
 from typing import Any, Callable, Dict, Literal, Mapping, Optional
 from urllib.parse import urlsplit
 
+import mix_service
 from commands import (
     COMMAND_MODELS,
+    AddMixStylesCommand,
+    DeletePriceRuleCommand,
+    DisableProductMixCommand,
+    RemoveMixStylesCommand,
+    SetLogoDefaultCostCommand,
+    SetPriceRuleActiveCommand,
+    SetProductMixCommand,
     ApplyToColorsCommand,
     AssignmentTarget,
     BulkApplyCommand,
@@ -64,6 +72,10 @@ ScopeKind = Literal[
     "stock_override_row",
     "brand_stock_rule_row",
     "sync_exclusion_row",
+    "default_cost_row",
+    "price_rule_row",
+    "store_mix_store_row",
+    "store_mix_items",
 ]
 
 # Exact preview/undo materializes every affected row. These hard service caps
@@ -108,6 +120,13 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "set_logo_cost": frozenset({"assignment_style"}),
     "set_store_extra_customers": frozenset({"store_settings_row"}),
     "bulk_apply": frozenset({"assignment_store"}),
+    "set_logo_default_cost": frozenset({"default_cost_row"}),
+    "set_price_rule_active": frozenset({"price_rule_row"}),
+    "delete_price_rule": frozenset({"price_rule_row"}),
+    "set_product_mix": frozenset({"store_mix_store_row", "store_mix_items"}),
+    "disable_product_mix": frozenset({"store_mix_store_row"}),
+    "add_mix_styles": frozenset({"store_mix_items"}),
+    "remove_mix_styles": frozenset({"store_mix_items"}),
 }
 
 
@@ -572,6 +591,23 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = (MutationScope("store_settings_row", {"fdm4_store": command.store.strip()}),)
     elif isinstance(command, BulkApplyCommand):
         scopes = (assignment_store_scope(command.store),)
+    elif isinstance(command, SetLogoDefaultCostCommand):
+        scopes = (MutationScope("default_cost_row", {
+            "logo_code": _upper(command.logo_code, "logo_code"),
+            "color_scheme_id": _upper(command.color_scheme_id, "color_scheme_id"),
+        }),)
+    elif isinstance(command, (SetPriceRuleActiveCommand, DeletePriceRuleCommand)):
+        scopes = (MutationScope("price_rule_row", {"rule_id": int(command.rule_id)}),)
+    elif isinstance(command, SetProductMixCommand):
+        store = mix_service.norm(command.store)
+        scopes = (
+            MutationScope("store_mix_store_row", {"fdm4_store": store}),
+            MutationScope("store_mix_items", {"fdm4_store": store}),
+        )
+    elif isinstance(command, DisableProductMixCommand):
+        scopes = (MutationScope("store_mix_store_row", {"fdm4_store": mix_service.norm(command.store)}),)
+    elif isinstance(command, (AddMixStylesCommand, RemoveMixStylesCommand)):
+        scopes = (MutationScope("store_mix_items", {"fdm4_store": mix_service.norm(command.store)}),)
     elif isinstance(command, UpdateStoreSettingsCommand):
         scopes = (
             MutationScope(
@@ -1503,6 +1539,7 @@ def bulk_apply(cursor, actor: str, command: BulkApplyCommand) -> MutationResult:
         preview = compute_bulk_preview(
             cursor, fdm4_store=store, logo_code=logo_code, color_scheme=scheme,
             target=target, style_codes=styles, option_row=command.option_row,
+            design_id=command.design_id,
         )
     except ValueError as exc:
         raise InvalidCommand(str(exc)) from exc
@@ -1524,6 +1561,7 @@ def bulk_apply(cursor, actor: str, command: BulkApplyCommand) -> MutationResult:
             rows=[{"style_code": r["style_code"], "color_code": r["color_code"]} for r in rows],
             actor=actor, option_row=command.option_row,
             cost_override=_decimal(command.cost_override), image_url=None,
+            design_id=command.design_id,
         )
     except ValueError as exc:
         raise InvalidCommand(str(exc)) from exc
@@ -1535,6 +1573,123 @@ def bulk_apply(cursor, actor: str, command: BulkApplyCommand) -> MutationResult:
          "design_id": preview["design_id"], "target": target},
         affected_scopes(command),
     )
+
+
+def set_logo_default_cost(cursor, actor: str, command: SetLogoDefaultCostCommand) -> MutationResult:
+    """The logo-level default shopper charge (logo.default_cost, per logo code
+    + scheme, every store without a row override). Hand-set values are locked
+    against cost re-imports."""
+    code = _upper(command.logo_code, "logo_code")
+    scheme = _upper(command.color_scheme_id, "color_scheme_id")
+    cost = _decimal(command.cost)
+    if cost is None or cost < 0:
+        raise InvalidCommand("cost must be zero or positive")
+    cursor.execute(
+        """
+        SELECT 1 FROM logo.default_cost WHERE logo_code = %s AND color_scheme_id = %s
+        UNION ALL
+        SELECT 1 FROM logo.assignment
+         WHERE upper(btrim(logo_code)) = %s AND upper(btrim(color_scheme_id)) = %s
+        LIMIT 1
+        """,
+        (code, scheme, code, scheme),
+    )
+    if cursor.fetchone() is None:
+        raise NotFound("No logo with that code and color scheme is on file")
+    cursor.execute(
+        """
+        SELECT count(DISTINCT fdm4_store) AS stores FROM logo.assignment
+         WHERE upper(btrim(logo_code)) = %s AND upper(btrim(color_scheme_id)) = %s
+           AND cost_override IS NULL AND active
+        """,
+        (code, scheme),
+    )
+    affected_stores = int(cursor.fetchone()["stores"])
+    cursor.execute(
+        """
+        INSERT INTO logo.default_cost (logo_code, color_scheme_id, cost, source, locked, updated_by, updated_at)
+        VALUES (%s, %s, %s, 'manual', %s, %s, now())
+        ON CONFLICT (logo_code, color_scheme_id) DO UPDATE SET
+            cost = EXCLUDED.cost, source = 'manual', locked = EXCLUDED.locked,
+            updated_by = EXCLUDED.updated_by, updated_at = now()
+        """,
+        (code, scheme, cost, command.locked, actor),
+    )
+    return MutationResult(
+        {"ok": True, "logo_code": code, "color_scheme_id": scheme, "cost": str(cost),
+         "locked": command.locked, "stores_using_default": affected_stores},
+        affected_scopes(command),
+    )
+
+
+def set_price_rule_active(cursor, actor: str, command: SetPriceRuleActiveCommand) -> MutationResult:
+    """Flip a price rule on or off - never its content. Activation needs a
+    preview stamp newer than the last edit (the app's save path clears it)."""
+    cursor.execute(
+        "SELECT name, active, last_previewed_at FROM woo.price_rule WHERE rule_id = %s FOR UPDATE",
+        (command.rule_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise NotFound("Rule not found")
+    if command.active and row["last_previewed_at"] is None:
+        raise InvalidCommand(
+            "Preview this rule in the app before activating it - its settings changed since the last preview"
+        )
+    cursor.execute(
+        "UPDATE woo.price_rule SET active = %s, updated_at = now(), updated_by = %s WHERE rule_id = %s",
+        (command.active, actor, command.rule_id),
+    )
+    return MutationResult(
+        {"ok": True, "rule_id": command.rule_id, "name": row["name"], "active": command.active,
+         "was_active": bool(row["active"])},
+        affected_scopes(command),
+    )
+
+
+def delete_price_rule(cursor, actor: str, command: DeletePriceRuleCommand) -> MutationResult:
+    del actor
+    cursor.execute(
+        "DELETE FROM woo.price_rule WHERE rule_id = %s RETURNING name, active", (command.rule_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise NotFound("Rule not found")
+    return MutationResult(
+        {"ok": True, "rule_id": command.rule_id, "name": row["name"], "was_active": bool(row["active"])},
+        affected_scopes(command),
+    )
+
+
+def set_product_mix(cursor, actor: str, command: SetProductMixCommand) -> MutationResult:
+    store = mix_service.norm(command.store)
+    note = " ".join(_optional_text(command.note, "note", 1000).split())
+    outcome = mix_service.enable(cursor, store, command.mode, note, actor)
+    outcome.update({"ok": True, "styles_in_list": mix_service.item_count(cursor, store) if command.mode == "list" else 0})
+    return MutationResult(outcome, affected_scopes(command))
+
+
+def disable_product_mix(cursor, actor: str, command: DisableProductMixCommand) -> MutationResult:
+    store = mix_service.norm(command.store)
+    mix_service.disable(cursor, store, actor)
+    return MutationResult({"ok": True, "store": store, "active": False}, affected_scopes(command))
+
+
+def add_mix_styles(cursor, actor: str, command: AddMixStylesCommand) -> MutationResult:
+    store = mix_service.norm(command.store)
+    styles = list(dict.fromkeys(mix_service.norm(s) for s in _clean_styles(command.styles, "styles")))
+    outcome = mix_service.add_styles(cursor, store, styles, actor)
+    return MutationResult({"ok": True, "store": store, **outcome}, affected_scopes(command))
+
+
+def remove_mix_styles(cursor, actor: str, command: RemoveMixStylesCommand) -> MutationResult:
+    del actor
+    store = mix_service.norm(command.store)
+    styles = list(dict.fromkeys(mix_service.norm(s) for s in _clean_styles(command.styles, "styles")))
+    removed = mix_service.remove_styles(cursor, store, styles)
+    if removed == 0:
+        raise NotFound("None of those styles are in the store's list")
+    return MutationResult({"ok": True, "store": store, "removed": removed}, affected_scopes(command))
 
 
 MUTATION_HANDLERS: Dict[str, Callable] = {
@@ -1566,6 +1721,13 @@ MUTATION_HANDLERS: Dict[str, Callable] = {
     "set_logo_cost": set_logo_cost,
     "set_store_extra_customers": set_store_extra_customers,
     "bulk_apply": bulk_apply,
+    "set_logo_default_cost": set_logo_default_cost,
+    "set_price_rule_active": set_price_rule_active,
+    "delete_price_rule": delete_price_rule,
+    "set_product_mix": set_product_mix,
+    "disable_product_mix": disable_product_mix,
+    "add_mix_styles": add_mix_styles,
+    "remove_mix_styles": remove_mix_styles,
 }
 
 
@@ -1581,7 +1743,7 @@ def dispatch_mutation(
 
 
 def bulk_apply_execute(cursor, *, fdm4_store, logo_code, color_scheme, placement, rows, actor,
-                       option_row=1, cost_override=None, image_url=None) -> dict:
+                       option_row=1, cost_override=None, image_url=None, design_id=None) -> dict:
     """Apply a logo variant to selected (style, color) rows in one store.
 
     rows: [{style_code, color_code}]. Resolves the design_id via the FDM4
@@ -1601,11 +1763,19 @@ def bulk_apply_execute(cursor, *, fdm4_store, logo_code, color_scheme, placement
     scheme = color_scheme.upper()
 
     design_lookup = load_design_index(cursor)
-    designs = design_lookup.candidates(fdm4_store, logo_code, scheme)
+    designs = set(design_lookup.candidates(fdm4_store, logo_code, scheme))
+    wanted = str(design_id).strip() if design_id not in (None, "") else ""
+    if wanted:
+        if designs and wanted not in designs:
+            raise ValueError(
+                f"design {wanted} does not carry {logo_code}/{scheme}"
+                f" (candidates: {', '.join(sorted(designs))})"
+            )
+        designs = {wanted}
     if not designs or len(designs) > 1:
         raise ValueError(
             f"variant {logo_code}/{scheme} did not resolve to a single design"
-            + (f" (ambiguous: {', '.join(sorted(designs))})" if designs else "")
+            + (f" (ambiguous: {', '.join(sorted(designs))}; pass design_id)" if designs else "")
         )
     design_id = next(iter(designs))
 

@@ -2339,6 +2339,13 @@
     set_logo_cost: "Change a logo's price across styles",
     set_store_extra_customers: "Change which customers' designs a store may use",
     bulk_apply: "Put a logo on many colors across the store",
+    set_logo_default_cost: "Change a logo's default price everywhere",
+    set_price_rule_active: "Switch a price rule on or off",
+    delete_price_rule: "Delete a price rule",
+    set_product_mix: "Change how a store's product mix is decided",
+    disable_product_mix: "Let a store follow FDM4 again",
+    add_mix_styles: "Add styles to a store's product list",
+    remove_mix_styles: "Drop styles from a store's product list",
   };
   const REVIEW_TABLE_LABELS = {
     "logo.display_name": (key) => `logo name · design ${key[0]} · ${key[1]} · ${key[2] ? `store ${key[2]}` : "shared default"}`,
@@ -2347,6 +2354,10 @@
     "woo.brand_stock_rule": (key) => `brand rule · mill ${key[0]}`,
     "woo.sync_exclusion": (key) => `freeze · store ${key[0]} · ${key[1] ? `style ${key[1]}` : "whole store"}`,
     "logo.store_settings": (key) => `store settings · ${key[0]}`,
+    "logo.default_cost": (key) => `default cost · logo ${key[0]} · ${key[1]}`,
+    "woo.price_rule": (key) => `price rule #${key[0]}`,
+    "woo.store_mix_store": (key) => `product mix · store ${key[0]}`,
+    "woo.store_mix_item": (key) => `product list · store ${key[0]} · style ${key[1]}`,
     "woo.store_pricing_tier": (key) => `pricing level · store ${key[0]}`,
   };
   function reviewStyleList(codes) {
@@ -2368,7 +2379,9 @@
     name: "name", light_dark: "light/dark class", mode: "stock mode", scope: "freeze scope",
     locked: "locked", source: "source", uses: "uses", brand_name: "brand", confidence: "confidence",
     color_name: "color name", fdm4_description: "FDM4 description", style_code: "style", mill_code: "mill code",
-    extra_customers: "extra customers", enabled: "logos enabled",
+    extra_customers: "extra customers", enabled: "logos enabled", cost: "default cost", priority: "priority",
+    stackable: "stackable", effect_type: "effect", effect_value: "effect value", stores: "stores", styles: "styles",
+    imported_at: "list snapshotted at", colors: "colors", size_excludes: "size exclusions",
   };
   function reviewStyleLabel(code) {
     const wanted = text(code).trim();
@@ -2442,6 +2455,13 @@
         const scope = Array.isArray(a.styles) && a.styles.length ? reviewStyleList(a.styles) : `every style in store ${store}`;
         return `Put logo ${a.logo_code} · ${a.color_scheme_id} at ${a.location} on ${where} of ${scope} (choice ${a.option_row ?? 1}, ${reviewCost(a.cost_override)})${a.overwrite ? ", replacing logos already in that slot" : ", skipping colors that already have a logo there"}.`;
       }
+      case "set_logo_default_cost": return `Default price of logo ${a.logo_code} · ${a.color_scheme_id} becomes ${reviewCost(a.cost)} in every store that has no override of its own${a.locked ? " (locked against cost re-imports)" : ""}.`;
+      case "set_price_rule_active": return `Switch price rule #${a.rule_id} ${a.active ? "on" : "off"}. Its settings do not change.`;
+      case "delete_price_rule": return `Delete price rule #${a.rule_id} entirely.`;
+      case "set_product_mix": return `Store ${store} product mix: ${a.mode === "list" ? "a curated list decides which products it carries (seeded from its current mix first)" : "follow FDM4 completely, new products included automatically"}${a.note ? ` — note: ${a.note}` : ""}. Products appear or leave on the next hourly update.`;
+      case "disable_product_mix": return `Switch off store ${store}'s product-mix override; it follows FDM4 again and its saved list is kept.`;
+      case "add_mix_styles": return `Add ${reviewStyleList(a.styles)} to store ${store}'s curated product list (all colors). They appear on the next hourly update.`;
+      case "remove_mix_styles": return `Drop ${reviewStyleList(a.styles)} from store ${store}'s curated product list. Those products leave the store on the next hourly update.`;
       case "set_store_extra_customers": { const list = Array.isArray(a.customers) ? a.customers.filter(Boolean) : []; return `Store ${store} may use designs from ${list.length ? `these FDM4 customers: ${list.join(", ")}` : "no other FDM4 customer"} besides its own.`; }
       case "remove_sync_block": {
         const styles = Array.isArray(a.styles) ? a.styles.filter(Boolean) : [];

@@ -47,6 +47,13 @@ EXPECTED_SCOPES = {
     "set_logo_cost": frozenset({"assignment_style"}),
     "set_store_extra_customers": frozenset({"store_settings_row"}),
     "bulk_apply": frozenset({"assignment_store"}),
+    "set_logo_default_cost": frozenset({"default_cost_row"}),
+    "set_price_rule_active": frozenset({"price_rule_row"}),
+    "delete_price_rule": frozenset({"price_rule_row"}),
+    "set_product_mix": frozenset({"store_mix_store_row", "store_mix_items"}),
+    "disable_product_mix": frozenset({"store_mix_store_row"}),
+    "add_mix_styles": frozenset({"store_mix_items"}),
+    "remove_mix_styles": frozenset({"store_mix_items"}),
 }
 
 

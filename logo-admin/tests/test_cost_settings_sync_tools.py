@@ -93,6 +93,8 @@ def test_set_store_extra_customers_round_trip_and_validation():
 
 
 def test_get_sync_status_reads_pipeline_and_store(monkeypatch):
+    # woo.sync_control is not part of the per-test reset; own our rows.
+    _admin("DELETE FROM woo.sync_control WHERE requested_by='test'")
     _admin("INSERT INTO woo.sync_control (op, env, status, requested_by, started_at, finished_at, rows_loaded) VALUES ('pull','global','success','test', now() - interval '20 minutes', now() - interval '5 minutes', 10)")
     _admin("INSERT INTO woo.sync_exclusion (fdm4_store, style_code, note, active, updated_by) VALUES ('S_TEST','', 'hold', true, 'seed')")
     monkeypatch.setattr(wp_bridge, "logo_ownership", lambda: {"stores": [{"fdm4_store": "S_TEST", "blog_id": 7, "owned": True}], "owned_blogs": [7]})
@@ -101,12 +103,13 @@ def test_get_sync_status_reads_pipeline_and_store(monkeypatch):
         plain = spec.handler(cursor, spec.command_model(store=None), None)
         detailed = spec.handler(cursor, spec.command_model(store="s_test"), None)
     assert plain["pipeline"]["latest"][0]["op"] == "pull" and plain["pipeline"]["latest"][0]["status"] == "success"
-    assert plain["pipeline"]["last_24h"][0]["ok_24h"] == 1
+    assert any(d["op"] == "pull" and d["ok_24h"] >= 1 for d in plain["pipeline"]["last_24h"])
     assert detailed["store"] == "S_TEST"
     assert detailed["store_status"]["whole_store_frozen"] is True
     assert detailed["store_status"]["active_logo_rows"] == 2
     assert detailed["logo_sync_ownership"] == {"available": True, "owned": True, "blog_id": 7, "store": "S_TEST"}
     _admin("DELETE FROM woo.sync_exclusion WHERE fdm4_store='S_TEST'")
+    _admin("DELETE FROM woo.sync_control WHERE requested_by='test'")
 
 
 def test_store_ownership_soft_fails_when_wordpress_is_down(monkeypatch):
