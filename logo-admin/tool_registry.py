@@ -1,3 +1,4 @@
+import re
 """Capability registry for the in-app agent's bounded tool surface."""
 
 from dataclasses import dataclass
@@ -734,8 +735,26 @@ def validate_registry(
             )
 
 
+_LOOKAROUND = re.compile(r"\(\?[=!<]")
+
+
 def _strict_schema(model: Type[BaseModel]) -> dict:
     schema = model.model_json_schema()
+
+    def openai_safe(node):
+        """OpenAI strict mode rejects regex lookaround (pydantic emits one for
+        Decimal-as-string). Drop such patterns; the server still validates."""
+        if isinstance(node, dict):
+            pattern = node.get("pattern")
+            if isinstance(pattern, str) and _LOOKAROUND.search(pattern):
+                node.pop("pattern", None)
+            for value in node.values():
+                openai_safe(value)
+        elif isinstance(node, list):
+            for value in node:
+                openai_safe(value)
+
+    openai_safe(schema)
 
     def close_objects(node):
         if isinstance(node, dict):

@@ -46,3 +46,15 @@ def test_unknown_names_fail_closed():
 
 def test_allowlist_is_case_insensitive_and_trimmed():
     assert validate_write_tool_allowlist({" Save_Assignment "}) == frozenset({"save_assignment"})
+
+
+def test_advertised_schemas_are_accepted_by_openai_strict_mode():
+    """OpenAI rejects regex lookaround (seen live 2026-09-03 on save_assignment.cost_override)."""
+    import json, re
+    lookaround = re.compile(r"\(\?[=!<]")
+    for schema in agent_tool_schemas(writes_enabled=True, write_tools=frozenset()):
+        text = json.dumps(schema["parameters"])
+        assert not lookaround.search(text), schema["name"]
+        for prop, spec in schema["parameters"]["properties"].items():
+            for branch in spec.get("anyOf", [spec]):
+                assert "pattern" not in branch or not lookaround.search(branch["pattern"]), f"{schema['name']}.{prop}"
