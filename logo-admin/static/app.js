@@ -5125,6 +5125,13 @@
     if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
   }
 
+  function catScopeBlogIds() {
+    const raw = ($("#cat-scope-blogs") ? $("#cat-scope-blogs").value : "").trim();
+    if (!raw) return null;
+    const ids = [...new Set(raw.split(/[\s,]+/).map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0))];
+    return ids.length ? ids : null;
+  }
+
   function catApplyAllowed() {
     const view = $("#view-categories");
     return Boolean(view && view.dataset.applyAllowed === "1");
@@ -5146,8 +5153,12 @@
     setBusy(button, true, "Computing\u2026");
     catResetPreview();
     try {
-      const preview = await api("/api/categories/preview", { method: "POST", body: { env: catState.env } });
+      const scope = catScopeBlogIds();
+      const preview = await api("/api/categories/preview", { method: "POST", body: scope ? { env: catState.env, blog_ids: scope } : { env: catState.env } });
+      preview.scope = scope;
       catRunState.preview = preview;
+      const note = $("#cat-scope-note");
+      if (note) note.textContent = scope ? `Scoped to ${scope.length} blog(s): ${scope.join(", ")}` : "All snapshotted blogs";
       renderCatPreview(preview);
       $("#cat-apply-run").disabled = !(preview.ok && catApplyAllowed());
       renderCatAckPanel(preview);
@@ -5259,15 +5270,25 @@
 
   async function runCatApply() {
     if (!catRunState.preview || !catRunState.preview.ok) return;
+    if (!catApplyAllowed()) { toast("Your login is not on the apply allowlist.", "error"); return; }
+    const previewed = catRunState.preview.scope || null;
+    const current = catScopeBlogIds();
+    if (JSON.stringify(previewed) !== JSON.stringify(current)) {
+      toast("The blog scope changed since the preview - run the preview again.", "error");
+      catResetPreview();
+      return;
+    }
+    const blogCount = (catRunState.preview.blogs || []).length;
+    const scopeText = previewed ? `${blogCount} blog(s): ${previewed.join(", ")}` : `ALL ${blogCount} snapshotted blogs`;
     const target = catState.targets.find((t) => t.env === catState.env);
     const host = target ? target.host : "WordPress";
     if (catState.env === "prod") {
-      const typed = window.prompt(`This APPLIES the category restructure to PRODUCTION (${host}).\nType the host name to confirm:`);
+      const typed = window.prompt(`This APPLIES the category restructure to PRODUCTION (${host}) on ${scopeText}.\nType the host name to confirm:`);
       if (typed !== host) { toast("Host name did not match - apply cancelled.", "error"); return; }
     } else {
       const confirmed = await confirmAction({
         title: `Apply to ${host}?`,
-        message: "Creates the run and starts working through blogs (blog 1 first). You can pause between blogs.",
+        message: `Creates the run for ${scopeText} and starts working through them (blog 1 first). You can pause between blogs.`,
         actionLabel: "Apply",
         danger: true,
       });
@@ -5276,7 +5297,7 @@
     const button = $("#cat-apply-run");
     setBusy(button, true, "Starting\u2026");
     try {
-      const result = await api("/api/categories/runs", { method: "POST", body: { env: catState.env } });
+      const result = await api("/api/categories/runs", { method: "POST", body: previewed ? { env: catState.env, blog_ids: previewed } : { env: catState.env } });
       toast(`Run ${result.run.run_id} started.`, "success");
       showCatTab("runs");
     } catch (error) {

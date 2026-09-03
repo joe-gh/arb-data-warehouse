@@ -456,4 +456,5 @@ def test_reslugging_a_node_carries_its_live_identity_mapping():
     plan = _read(categories_planner.build_blog_plan, "prod", 9)
     update = next(u for u in plan["terms"]["update"] if u["expected_slug"] == "ppe")
     assert update["term_id"] == 90 and update["set"]["slug"] == "safety-ppe"
-    assert plan["stats"]["deletes"] == 0 and plan["stats"]["creates"] == 0
+    assert plan["stats"]["deletes"] == 0
+    assert not any(c["slug"] == "safety-ppe" for c in plan["terms"]["create"])

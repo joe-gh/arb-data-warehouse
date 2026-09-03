@@ -833,6 +833,12 @@
           </div>
           <div class="card__body">
             <p class="muted">Preview computes every blog's exact plan against the current snapshots. Apply is refused while blockers exist, while snapshots are stale, or for operators outside the apply allowlist.{% if not categories_apply_allowed %} <strong>Your login can edit and preview but not apply.</strong>{% endif %}</p>
+            <div class="form-row">
+              <label class="field"><span>Limit to blogs (comma-separated ids; empty = every snapshotted blog)</span>
+                <input id="cat-scope-blogs" type="text" placeholder="e.g. 1, 7, 9" spellcheck="false">
+              </label>
+              <span id="cat-scope-note" class="muted"></span>
+            </div>
             <div id="cat-preview-result"></div>
             <div id="cat-ack-panel" class="cat-gap-top" hidden>
               <h3>Products that would end with no category</h3>
