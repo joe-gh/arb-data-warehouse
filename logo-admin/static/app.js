@@ -398,6 +398,13 @@
     return state.stores.find((item) => storeCode(item) === code) || null;
   }
 
+  const NAME_SOURCE_LABELS = { art_record: "FDM4 art record", design: "FDM4 design", design_record: "FDM4 design", manual: "Set by staff", import: "Imported sheet", legacy: "Legacy sheet" };
+  function nameSourceLabel(source) {
+    const key = text(source).toLowerCase();
+    if (!key) return "unnamed";
+    return NAME_SOURCE_LABELS[key] || key.replace(/_/g, " ");
+  }
+
   function storeDisplayFor(code) {
     const record = storeByCode(code);
     return record ? storeDisplay(record) : code;
@@ -497,7 +504,7 @@
       if (!matches.length && !allLabel) { showEmptyOption(optionsEl, "No matching stores"); }
       matches.forEach((s) => appendOption(optionsEl, {
         title: storeDisplay(s), subtitle: storeMeta(s), meta: "",
-        onSelect: () => pick(storeCode(s), `${storeDisplay(s)} (${storeMeta(s)})`),
+        onSelect: () => pick(storeCode(s), `${storeDisplay(s)} (${storeCode(s)})`),
       }));
       setOptionsOpen(searchEl, optionsEl, true);
     };
@@ -830,7 +837,7 @@
           const swatch = document.createElement("span");
           swatch.className = "color-swatch";
           if (accent) swatch.style.backgroundColor = accent;
-          else swatch.textContent = code.slice(0, 3).toUpperCase();
+          else { swatch.classList.add("color-swatch--unknown"); swatch.title = "No swatch color on file for this garment color"; }
           const info = document.createElement("span");
           info.className = "color-info";
           const strong = document.createElement("strong");
@@ -882,6 +889,7 @@
         const addRow = document.createElement("div");
         addRow.className = "grid-row grid-row--add-option";
         decorate(addRow);
+        addRow.classList.add("grid-row--footer");
         const label = document.createElement("div");
         label.className = "grid-cell grid-cell--color";
         if (editable) {
@@ -4930,7 +4938,7 @@
     const select = $("#bulk-store");
     if (!select) return;
     const options = (state.stores || []).map((s) =>
-      `<option value="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))}</option>`);
+      `<option value="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} (${escapeHtml(s.fdm4_store)})</option>`);
     select.innerHTML = `<option value="">Choose a store…</option>${options.join("")}`;
     select.value = state.store || "";
   }
@@ -5212,6 +5220,16 @@
     renderCatSnapshotTable();
   }
 
+  // WordPress hands us blog names already HTML-escaped ("O&#039;Connell");
+  // decode once so escapeHtml does not double-escape them on the way out.
+  const _entityBox = document.createElement("textarea");
+  function decodeEntities(value) {
+    const s = text(value);
+    if (!s.includes("&")) return s;
+    _entityBox.innerHTML = s;
+    return _entityBox.value;
+  }
+
   function renderCatSnapshotTable() {
     const box = $("#cat-snapshot-table");
     if (!box) return;
@@ -5239,7 +5257,7 @@
             return `<tr>
               <td><input type="checkbox" class="cat-row-check" data-blog="${b.blog_id}" ${catState.selected.has(b.blog_id) ? "checked" : ""} aria-label="Select blog ${b.blog_id}"></td>
               <td>${b.blog_id}</td>
-              <td>${escapeHtml(b.name || "")} <span class="muted">${escapeHtml(b.path || (snap ? snap.blog_path : "") || "")}</span></td>
+              <td>${escapeHtml(decodeEntities(b.name || ""))} <span class="muted">${escapeHtml(b.path || (snap ? snap.blog_path : "") || "")}</span></td>
               <td>${snap ? snap.version : '<span class="muted">-</span>'}</td>
               <td>${snap ? snap.term_count : '<span class="muted">-</span>'}</td>
               <td>${snap ? snap.membership_count : '<span class="muted">-</span>'}</td>
@@ -5749,10 +5767,10 @@
         index: "id",
         columns: [
           { formatter: "rowSelection", titleFormatter: "rowSelection", hozAlign: "center", headerSort: false, width: 42, resizable: false },
-          { title: "Live slug", field: "old_slug", headerFilter: "input", widthGrow: 3, minWidth: 160 },
-          { title: "Name", field: "sample_name", headerFilter: "input", widthGrow: 3, minWidth: 160 },
-          { title: "Blogs", field: "blogs", hozAlign: "right", width: 74 },
-          { title: "Products", field: "products", hozAlign: "right", width: 92 },
+          { title: "Live slug", field: "old_slug", headerFilter: "input", headerFilterPlaceholder: "Filter slugs…", widthGrow: 3, minWidth: 160 },
+          { title: "Name", field: "sample_name", headerFilter: "input", headerFilterPlaceholder: "Filter names…", widthGrow: 3, minWidth: 160 },
+          { title: "Blogs", field: "blogs", hozAlign: "right", width: 80 },
+          { title: "Products", field: "products", hozAlign: "right", width: 104 },
           { title: "B1", field: "blog1", formatter: "tickCross", width: 58, hozAlign: "center",
             headerTooltip: "Exists on blog 1 (public web)",
             headerFilter: "tickCross", headerFilterParams: { tristate: true } },
@@ -6103,7 +6121,12 @@
 
   function showCatTab(tab) {
     catTreeState.tab = tab;
-    $$(".cat-tab").forEach((b) => b.classList.toggle("is-active", b.dataset.cattab === tab));
+    $$(".cat-tab").forEach((b) => {
+      const active = b.dataset.cattab === tab;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", active ? "true" : "false");
+    });
     const panels = {
       snapshots: $("#cat-snapshots-panel"),
       tree: $("#cat-tree-panel"),
@@ -6425,7 +6448,7 @@
     });
     if (!known.size) return;
     const options = [...known.values()].sort((a, b) => a.blog_id - b.blog_id).map((b) =>
-      `<option value="${b.blog_id}">${b.blog_id} \u00b7 ${escapeHtml(b.name || b.path || "")}</option>`
+      `<option value="${b.blog_id}">${b.blog_id} \u00b7 ${escapeHtml(decodeEntities(b.name || b.path || ""))}</option>`
     ).join("");
     const signature = [...known.keys()].sort((a, b) => a - b).join(",");
     if (select.dataset.signature === signature) return;
@@ -6625,8 +6648,20 @@
   async function loadPricing() {
     await ensureStores();
     prefillStoreField("#tier-store-search", "#tier-store-code");
-    loadTiers();
-    loadAssignments();
+    await Promise.all([loadTiers(), loadAssignments()]);
+    prefillTierForm($("#tier-store-code")?.value || "");
+  }
+
+  // The form edits the store's CURRENT level rather than starting blank, so
+  // an operator sees what is set before changing it.
+  function prefillTierForm(code) {
+    const existing = code ? tierRows.find((r) => r.fdm4_store === code) : null;
+    const sel = $("#tier-select");
+    if (sel) sel.value = existing ? existing.tier_name : "";
+    const note = $("#tier-note");
+    if (note) note.value = existing ? text(existing.note) : "";
+    const hint = $("#tier-current");
+    if (hint) hint.textContent = existing ? `Currently ${existing.tier_name} (set ${formatDate(existing.updated_at)}).` : (code ? "No pricing level set for this store yet." : "");
   }
 
   async function loadTiers() {
@@ -6712,7 +6747,7 @@
     const rec = storeByCode(state.store);
     // Same label the combobox writes on pick, so the field never shows the
     // same store two different ways.
-    searchEl.value = rec ? `${storeDisplay(rec)} (${storeMeta(rec)})` : `${storeDisplayFor(state.store)} (${state.store})`;
+    searchEl.value = `${storeDisplayFor(state.store)} (${state.store})`;
   }
 
   async function saveTier(event) {
@@ -6799,8 +6834,8 @@
     box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(state.store ? state.store : text(r.fdm4_store))}" data-fdm4desc="${escapeHtml(text(r.fdm4_description))}" data-override="${r.store_specific && state.store ? "1" : ""}">
         <td><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code title="FDM4 design number">D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted" title="FDM4 artwork number">art ${escapeHtml(r.art_id)}</small>` : ""}</td>
         <td><code>${escapeHtml(r.color_scheme_id)}</code></td>
-        <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name"></td>
-        <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(text(r.source, "unnamed"))}</span>${r.store_specific ? `<br><span class="badge-override">${state.store ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (state.store ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
+        <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name" placeholder="No name yet - type one or refresh from FDM4"></td>
+        <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(nameSourceLabel(r.source))}</span>${r.store_specific ? `<br><span class="badge-override">${state.store ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (state.store ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
         <td class="name-actions">
           <button class="button button--primary button--small name-save" type="button">Save</button>
           <button class="button button--ghost button--small name-repull" type="button" title="Refresh this design's name from FDM4's current description">Refresh from FDM4</button>
@@ -6894,9 +6929,10 @@
         const tr = document.createElement("tr");
         const confPct = c.confidence === null || c.confidence === undefined || c.source === "manual"
           ? "" : `${Math.round(Number(c.confidence) * 100)}%`;
+        if (c.source === "ai") tr.className = "needs-review";
         tr.innerHTML = `<td>${escapeHtml(c.color_name)}</td><td>${escapeHtml(c.color_code)}</td>
           <td>${c.style_count}</td>
-          <td><button class="chip ${escapeHtml(c.light_dark)}" type="button" title="Click to cycle light → dark → both">${escapeHtml(c.light_dark)}</button></td>
+          <td><button class="chip ${escapeHtml(c.light_dark)}" type="button" title="Click to cycle light → dark → both" aria-label="${escapeHtml(c.color_name)} is ${escapeHtml(c.light_dark)}. Click to change">${escapeHtml(c.light_dark)}</button></td>
           <td class="color-source-cell">${escapeHtml(sourceLabel(c.source))}</td><td class="color-conf-cell">${confPct}</td>`;
         const chip = tr.querySelector("button");
         chip.addEventListener("click", async () => {
@@ -7016,7 +7052,7 @@
     }));
   }
 
-  const soState = { overrides: [], total: 0, limit: 5, offset: 0, brands: [], bTotal: 0, bLimit: 5, bOffset: 0 };
+  const soState = { overrides: [], total: 0, limit: 25, offset: 0, brands: [], bTotal: 0, bLimit: 25, bOffset: 0 };
 
   async function loadBrandRules() {
     const box = $("#bs-list");
@@ -7270,8 +7306,8 @@
     soState.offset = next;
     loadStockOverrides();
   });
-  $("#bs-pagesize")?.addEventListener("change", () => { soState.bLimit = Number($("#bs-pagesize").value) || 5; soState.bOffset = 0; loadBrandRules(); });
-  $("#so-pagesize")?.addEventListener("change", () => { soState.limit = Number($("#so-pagesize").value) || 5; soState.offset = 0; loadStockOverrides(); });
+  $("#bs-pagesize")?.addEventListener("change", () => { soState.bLimit = Number($("#bs-pagesize").value) || 25; soState.bOffset = 0; loadBrandRules(); });
+  $("#so-pagesize")?.addEventListener("change", () => { soState.limit = Number($("#so-pagesize").value) || 25; soState.offset = 0; loadStockOverrides(); });
   $("#bs-search")?.addEventListener("input", debounce(() => { soState.bOffset = 0; loadBrandRules(); }));
   $("#bs-mode")?.addEventListener("change", () => { soState.bOffset = 0; loadBrandRules(); });
   $("#bs-prev")?.addEventListener("click", () => { if (soState.bOffset > 0) { soState.bOffset = Math.max(0, soState.bOffset - soState.bLimit); loadBrandRules(); } });
@@ -7330,7 +7366,7 @@
     const wrap = $("#mix-enrolled");
     if (!wrap) return;
     if (!mixState.stores.length) { wrap.innerHTML = '<span class="muted">None yet - every store follows FDM4.</span>'; return; }
-    wrap.innerHTML = mixState.stores.map((s) => `<button type="button" class="chip ${s.fdm4_store === mixState.store ? "dark" : ""} mix-enrolled-chip" data-store="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} · ${s.external ? "EXTERNAL" : s.mode === "all" ? "ALL PRODUCTS" : `${Number(s.style_count) || 0} styles`}</button>`).join("");
+    wrap.innerHTML = mixState.stores.map((s) => `<button type="button" class="chip ${s.fdm4_store === mixState.store ? "dark" : ""} mix-enrolled-chip" data-store="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} (${escapeHtml(s.fdm4_store)}) · ${s.external ? "EXTERNAL" : s.mode === "all" ? "ALL PRODUCTS" : `${Number(s.style_count) || 0} styles`}</button>`).join("");
     $$(".mix-enrolled-chip", wrap).forEach((b) => b.addEventListener("click", () => {
       const code = b.dataset.store;
       $("#mix-store").value = code;
@@ -8001,7 +8037,7 @@
     switch (r.effect_type) {
       case "percent": return `${v > 0 ? "+" : ""}${v}%${basisNote}${roundNote}`;
       case "flat": return `${v > 0 ? "+" : "−"}$${Math.abs(v).toFixed(4).replace(/\.?0+$/, "")}${basisNote}${roundNote}`;
-      case "set_price": return `= $${v}`;
+      case "set_price": return `= $${Number(v).toFixed(2)}`;
       case "price_level": return `level: ${text(r.price_level_key).toUpperCase()}`;
       case "margin_over_cost": return `cost × ${v}`;
       default: return r.effect_type;
@@ -8063,7 +8099,7 @@
       <td>${r.priority}</td>
       <td>${escapeHtml(prTargetSummary(r))}</td>
       <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">never below $${Number(r.floor_price).toFixed(2)}</small>` : ""}${r.ceiling_price ? `<br><small class="muted">never above $${Number(r.ceiling_price).toFixed(2)}</small>` : ""}${r.cap_at_msrp ? '<br><small class="muted">never above MSRP</small>' : ""}</td>
-      <td>${r.effective_from || r.effective_until ? `${escapeHtml(text(r.effective_from, "..."))} → ${escapeHtml(text(r.effective_until, "..."))}` : '<span class="muted">always</span>'}</td>
+      <td>${r.effective_from && r.effective_until ? `${escapeHtml(r.effective_from)} → ${escapeHtml(r.effective_until)}` : r.effective_from ? `from ${escapeHtml(r.effective_from)}` : r.effective_until ? `until ${escapeHtml(r.effective_until)}` : '<span class="muted">always</span>'}</td>
       <td class="name-actions">
         <button class="button button--small button--secondary pr-preview" type="button">Preview</button>
         <button class="button button--small ${r.active ? "button--ghost" : "button--primary"} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be turned on" : ""}">${r.active ? "Turn off" : "Turn on"}</button>
@@ -8179,7 +8215,7 @@
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = t;
       cb.checked = (rule?.store_tiers || []).includes(t);
       cb.addEventListener("change", prUpdateTargetSummary);
-      lab.append(cb, document.createTextNode(`tier ${t}`));
+      lab.append(cb, document.createTextNode(t));
       tiers.append(lab);
     });
     attachStoreCombobox({ search: "#pr-store-search", hidden: "#pr-store-picked", options: "#pr-store-options",
@@ -8529,7 +8565,7 @@
     closeNavMenus();
     if (openGroup) openGroup.querySelector(".main-nav__trigger")?.focus();
   });
-  attachStoreCombobox({ search: "#tier-store-search", hidden: "#tier-store-code", options: "#tier-store-options" });
+  attachStoreCombobox({ search: "#tier-store-search", hidden: "#tier-store-code", options: "#tier-store-options", onPick: prefillTierForm });
   $("#tier-form").addEventListener("submit", saveTier);
 
   // ----- System health -----
@@ -8563,6 +8599,12 @@
     const cls = s === "success" ? "chip health-chip--ok" : (s === "running" || s === "requested") ? "chip health-chip--pending" : "chip health-chip--bad";
     const label = s === "success" ? "ok" : (s === "running" ? "running" : (s === "requested" ? "queued" : s || "unknown"));
     return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  }
+
+  function healthPingLabel(status) {
+    const code = Number(status);
+    if (Number.isFinite(code)) return code >= 200 && code < 300 ? "OK" : `HTTP ${code}`;
+    return text(status);
   }
 
   function healthStat(label, value, sub, tone) {
@@ -8658,7 +8700,7 @@
     $("#health-feeds").innerHTML = !feeds.available
       ? '<div class="grid-empty">Not set up yet.</div>'
       : consumers.length
-        ? `<ul class="health-list">${consumers.map((c) => `<li><strong>${escapeHtml(c.name)}</strong>${c.active ? "" : " (inactive)"} - checked in ${escapeHtml(healthAge(c.last_ping_at))}${c.last_ping_status ? ` (${escapeHtml(c.last_ping_status)})` : ""} · last downloaded data ${escapeHtml(healthAge(c.last_pull_at))}</li>`).join("")}</ul>`
+        ? `<ul class="health-list">${consumers.map((c) => `<li><strong>${escapeHtml(c.name)}</strong>${c.active ? "" : " (inactive)"} - checked in ${escapeHtml(healthAge(c.last_ping_at))}${c.last_ping_status ? ` (${escapeHtml(healthPingLabel(c.last_ping_status))})` : ""} · last downloaded data ${escapeHtml(healthAge(c.last_pull_at))}</li>`).join("")}</ul>`
         : '<div class="grid-empty">No systems connected yet.</div>';
     $("#health-updated").textContent = `Updated ${new Date().toLocaleTimeString()} - refreshes every minute while open.`;
   }

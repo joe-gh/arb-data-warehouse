@@ -921,3 +921,67 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 #fill-nosource-wrap { margin-top: 12px; }
 #fill-nosource-wrap summary { cursor: pointer; color: var(--muted-ink, #667); }
 .fill-source { min-width: 140px; }
+
+
+/* ===== UI review fixes (2026-09-03) ===== */
+/* Header: the utility cluster stays on one line and the store picker gets room. */
+.header-actions { flex-wrap: nowrap; }
+.header-actions .button, .user-menu__name, .environment-pill { white-space: nowrap; }
+.combobox--header { min-width: 240px; flex: 0 1 330px; }
+/* Every search-style combobox: the value never runs under the clear (x) button. */
+.combobox input[type="search"] { padding-right: 2.1rem; overflow: hidden; text-overflow: ellipsis; }
+/* Logo grid: the garment-color column fits name + code/row meta on their own lines. */
+.grid-row { grid-template-columns: minmax(15rem, 1fr) repeat(3, minmax(9.5rem, 1.15fr)); }
+.color-info { min-width: 0; flex: 1 1 auto; }
+.color-info strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.color-info small { white-space: nowrap; }
+.color-swatch--unknown { background: repeating-linear-gradient(45deg, #e3e9e5 0 4px, #f7f9f7 4px 8px); }
+.grid-row--footer .grid-cell--color { flex-wrap: wrap; gap: .35rem .6rem; }
+/* Dropdown menus never run off the bottom of the viewport. */
+.main-nav__menu { max-height: calc(100vh - 6.5rem); overflow-y: auto; }
+/* Table headers stay on one line ("What's frozen"). */
+.data-table th { white-space: nowrap; }
+/* Health stat values never wrap into a taller card. */
+.stat-card__value { white-space: nowrap; }
+/* Light/dark chips are controls, not badges: show it. */
+button.chip { cursor: pointer; }
+button.chip:hover, button.chip:focus-visible { box-shadow: 0 0 0 3px var(--forest-100); }
+tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
+/* Product-mix mode cards: top-aligned so one- and two-line titles line up. */
+.mix-choice { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; }
+/* Sync blocks: the two freeze options stack under the store field. */
+.sb-freeze-options { display: grid; align-content: start; gap: .35rem; }
+.sb-freeze-options .field--checkbox { min-height: 0; align-items: flex-start; }
+.sb-freeze-options .field--checkbox input { margin-top: .2rem; }
+.field--checkbox input:disabled + span { opacity: .55; }
+/* Price-rule dialog: inputs in a row align even when one label wraps. */
+.pr-fieldset .form-row { align-items: end; }
+/* Category editor: wider working area, compact tables, taller tree. */
+#view-categories .pricing { max-width: 78rem; }
+.cat-table { font-size: .85rem; }
+.cat-table th, .cat-table td { padding: .42rem .55rem; }
+.cat-table-wrap { overflow-x: auto; scrollbar-gutter: stable; }
+.cat-tree-box { max-height: 80vh; }
+.cat-rule-form select { min-width: 12rem; }
+/* Tabulator grid styled like the rest of the app. */
+#cat-mapping-table .tabulator { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--white); font-size: .85rem; }
+#cat-mapping-table .tabulator .tabulator-header { border-bottom: 1px solid var(--line); color: var(--ink-soft); background: var(--forest-50); font-size: .7rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+#cat-mapping-table .tabulator .tabulator-header .tabulator-col { border-right: 1px solid var(--line); background: transparent; }
+#cat-mapping-table .tabulator .tabulator-header .tabulator-col.tabulator-sortable:hover { background: var(--forest-100); }
+#cat-mapping-table .tabulator .tabulator-header-filter input, #cat-mapping-table .tabulator .tabulator-header-filter select { min-height: 1.75rem; padding: .15rem .4rem; border: 1px solid var(--line-strong); border-radius: .3rem; font: inherit; font-size: .8rem; font-weight: 450; letter-spacing: 0; text-transform: none; }
+#cat-mapping-table .tabulator-row { border-bottom: 1px solid var(--line); }
+#cat-mapping-table .tabulator-row .tabulator-cell { padding: .42rem .55rem; border-right: 1px solid var(--line); }
+#cat-mapping-table .tabulator-row:hover { background: var(--forest-50); }
+#cat-mapping-table .tabulator-row.tabulator-selected { background: var(--forest-100); }
+/* Help: jump list */
+.help-jump { display: flex; flex-wrap: wrap; gap: .4rem .9rem; margin: -.3rem 0 1.2rem; font-size: .85rem; }
+.help-jump a { color: var(--forest-800); text-decoration: none; border-bottom: 1px dashed var(--line-strong); }
+.help-jump a:hover { border-bottom-color: var(--forest-700); }
+/* At laptop widths the nav row has no slack: drop the decorative environment
+   pill and tighten nav padding so the store picker can show its full value. */
+@media (max-width: 1600px) {
+  .environment-pill { display: none; }
+  .main-nav__link, .main-nav__trigger { padding-inline: .65rem; }
+  .combobox--header { flex: 1 1 280px; max-width: 380px; }
+}
+.form-row > .field--md.combobox { flex-basis: 20rem; }

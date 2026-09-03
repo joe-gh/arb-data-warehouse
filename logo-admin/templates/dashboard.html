@@ -437,7 +437,7 @@
                 <input id="tier-store-code" type="hidden">
                 <div id="tier-store-options" class="combobox__options" role="listbox" hidden></div>
               </div>
-              <label class="field"><span class="field__label">Pricing level</span><select id="tier-select" required><option value="">Choose a pricing level...</option></select><span class="field__help">Used when FDM4 sends no price. MSRP = full retail price, same as having no level set.</span></label>
+              <label class="field"><span class="field__label">Pricing level</span><select id="tier-select" required><option value="">Choose a pricing level...</option></select><small id="tier-current" class="muted" aria-live="polite"></small><span class="field__help">Used when FDM4 sends no price. MSRP = full retail price, same as having no level set.</span></label>
               <label class="field"><span class="field__label">Note</span><input id="tier-note" maxlength="500" placeholder="Optional - why this store gets special pricing"></label>
               <button class="button button--primary" type="submit">Save pricing level</button>
             </form>
@@ -560,9 +560,9 @@
               <option value="auto">Automatic</option>
             </select>
             <select id="bs-pagesize" class="field__select" aria-label="Brands per page">
-              <option value="5" selected>5 per page</option>
+              <option value="5">5 per page</option>
               <option value="10">10 per page</option>
-              <option value="25">25 per page</option>
+              <option value="25" selected>25 per page</option>
               <option value="50">50 per page</option>
             </select>
             <span id="bs-count" class="muted"></span>
@@ -599,9 +599,9 @@
               <option value="real">Real stock</option>
             </select>
             <select id="so-pagesize" class="field__select" aria-label="Exceptions per page">
-              <option value="5" selected>5 per page</option>
+              <option value="5">5 per page</option>
               <option value="10">10 per page</option>
-              <option value="25">25 per page</option>
+              <option value="25" selected>25 per page</option>
               <option value="50">50 per page</option>
             </select>
             <span id="so-count" class="muted"></span>
@@ -630,8 +630,10 @@
           <div class="card__body">
             <div class="form-row">
               <div class="field combobox"><span class="field__label">Store</span><input id="sb-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="sb-store-options" aria-expanded="false"><input type="hidden" id="sb-store"><div id="sb-store-options" class="combobox__options" role="listbox" hidden></div></div>
-              <label class="field--checkbox"><input id="sb-whole" type="checkbox"> Freeze the ENTIRE store</label>
-              <label class="field--checkbox has-help"><input id="sb-pricing-only" type="checkbox" disabled> <span>Freeze prices only<small>Stock, product visibility, and new products still update; existing prices are never touched.</small></span></label>
+              <div class="sb-freeze-options">
+                <label class="field--checkbox"><input id="sb-whole" type="checkbox"> <span>Freeze the ENTIRE store<small>Nothing on this store changes until the freeze is turned off.</small></span></label>
+                <label class="field--checkbox has-help"><input id="sb-pricing-only" type="checkbox" disabled> <span>Freeze prices only<small>Tick "Freeze the ENTIRE store" first, then narrow it to prices: stock, product visibility, and new products still update; existing prices are never touched.</small></span></label>
+              </div>
             </div>
             <div class="form-row">
               <label class="field"><span class="field__label">Or specific style #s (one per line, or separated by commas)</span><textarea id="sb-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
@@ -1029,10 +1031,19 @@
           <p class="eyebrow">Guide</p>
           <h1>How everything works</h1>
           <p class="muted">A plain guide to this app: what each tool does, how your changes reach the store websites, and what to do in common situations.</p>
+        <nav class="help-jump" aria-label="Help sections">
+          <a href="#help-big-picture">The big picture</a>
+          <a href="#help-logos">Logos on products</a>
+          <a href="#help-bulk">Bulk operations</a>
+          <a href="#help-onboarding">Onboarding a store</a>
+          <a href="#help-store">Prices, products, stock</a>
+          <a href="#help-categories">Categories</a>
+          <a href="#help-situations">Common situations</a>
+        </nav>
         </div>
 
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Start here</p><h3>The big picture</h3></div></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Start here</p><h3 id="help-big-picture">The big picture</h3></div></div>
           <div class="card__body stack">
             <p>This app is the control panel for the product warehouse. FDM4 (the company's main system) supplies the raw facts: which products exist, their prices, and their stock. This app is where people shape what each store website actually shows: which logos go on which garments, which products a store carries, special pricing, and stock behavior.</p>
             <div class="flow" role="img" aria-label="How changes flow from FDM4 through this app to the store websites">
@@ -1055,7 +1066,7 @@
         </section>
 
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3>Putting logos on products</h3></div></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3 id="help-logos">Putting logos on products</h3></div></div>
           <div class="card__body stack">
             <div class="flow" role="img" aria-label="Steps to put a logo on a product">
               <div class="flow-step">Pick a store, then a product style<br><small>Logo Configuration</small></div>
@@ -1075,7 +1086,7 @@
         </section>
 
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3>Bringing a store onto the logo system</h3></div></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3 id="help-onboarding">Bringing a store onto the logo system</h3></div></div>
           <div class="card__body stack">
             <div class="flow" role="img" aria-label="Steps to turn on logo sync for a store">
               <div class="flow-step">Open <strong>Logo Sync Stores</strong> (Logos menu) and press <strong>Turn on</strong> next to the store</div>
@@ -1101,7 +1112,7 @@
         </section>
 
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Store</p><h3>Prices, products, and stock</h3></div></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Store</p><h3 id="help-store">Prices, products, and stock</h3></div></div>
           <div class="card__body stack">
             <p>These four tools shape what the hourly update does. Changes here reach the store websites automatically, within about an hour. No Sync button is needed.</p>
             <p><strong>Price Rules</strong> are discounts and adjustments Arborwear controls directly: a percentage off, a set price, and so on, aimed at chosen stores, brands, categories, or styles, with optional <strong>exceptions</strong> ("everything except boots"). A percent or flat change can start from the current price or from a level like MSRP ("MSRP minus 20%"), the result can be rounded to a retail ending (.99, .95, or whole dollars), and a rule can promise never to go below or above a chosen price, or above MSRP. New rules start turned off, and the app refuses to turn one on until you have pressed Preview, which shows exactly which items change and by how much. The <strong>Check a price</strong> box on the same page answers the final question for one product: what will it cost with every active rule applied. One caution: a rule aimed at a store with a price freeze has no effect there until the freeze is turned off, and the page warns you when that is the case.</p>
@@ -1113,7 +1124,31 @@
         </section>
 
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Situations</p><h3>Common situations</h3></div></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3 id="help-bulk">Working on many styles at once</h3></div></div>
+          <div class="card__body">
+            <p><strong>Bulk Operations</strong> (Logos menu) is the place for jobs that touch many styles: pick a job, choose the target styles, preview, apply. Every run lands in Bulk history with a one-click Undo.</p>
+            <p><strong>Fill missing colors</strong> copies each style's own logos onto the garment colors that have none. Occupied slots are never touched, so it is safe to run on a whole store. When a style's colors do not all carry the same logos, the preview asks you which color to copy from.</p>
+            <p><strong>Coverage report</strong> lists every style that still has logo-less colors, split into ones Fill can fix and ones with no logos anywhere. It exports to CSV for the team.</p>
+            <p><strong>Paste to many</strong>, <strong>Bulk apply</strong>, <strong>Activate / deactivate</strong> and <strong>Copy style config</strong> do what their names say to the styles you select; each shows a preview first and can be undone from Bulk history.</p>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Categories</p><h3 id="help-categories">Restructuring the category tree</h3></div></div>
+          <div class="card__body">
+            <p>The <strong>Category Editor</strong> rebuilds the store websites' product categories from a draft kept here. Nothing changes on a website until a planned run is applied, and every step is checked against a fresh snapshot of the live site.</p>
+            <ol>
+              <li><strong>Snapshots</strong> - import each store's live categories.</li>
+              <li><strong>Tree</strong> - shape the new category tree (drag to move, double-click to rename); store-specific renames, exclusions and extra categories live in the store view.</li>
+              <li><strong>Mapping</strong> - say what happens to every live category: map it into a draft category, delete it, or keep it as that store's own.</li>
+              <li><strong>Products</strong> - assign styles to categories by rule, list, or CSV.</li>
+              <li><strong>Preview &amp; Apply</strong> - see the exact plan per store; blockers (unmapped categories, products left with no category, slug collisions) must be cleared first.</li>
+              <li><strong>Runs</strong> - watch the apply, retry a store, or restore a store from its pre-apply snapshot.</li>
+            </ol>
+            <p>Applying is limited to people on the apply list. Deleting a category is only allowed once every product has been moved off it, and a category that someone edited on the website mid-run is refused rather than overwritten.</p>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Situations</p><h3 id="help-situations">Common situations</h3></div></div>
           <div class="card__body stack help-qa">
             <details>
               <summary>A logo is wrong or missing on the website</summary>
@@ -1580,7 +1615,7 @@
         <div class="form-row">
           <div class="field combobox"><span class="field__label">Brands</span><input id="pr-brand-input" type="search" placeholder="Type to search 240+ brands..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-brand-options" aria-expanded="false"><div id="pr-brand-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div><div id="pr-brand-chips" class="chip-row"></div></div>
           <div class="field combobox"><span class="field__label">Categories</span><input id="pr-cat-input" type="search" placeholder="Type or click to list categories..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-cat-options" aria-expanded="false"><div id="pr-cat-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div><div id="pr-cat-chips" class="chip-row"></div></div>
-          <label class="field"><span class="field__label">Style #s (paste a list - newline or comma separated)</span><textarea id="pr-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
+          <label class="field"><span class="field__label">Style #s (one per line or comma-separated)</span><textarea id="pr-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
         </div>
       </fieldset>
       <details class="pr-fieldset pr-exceptions" id="pr-exceptions">
