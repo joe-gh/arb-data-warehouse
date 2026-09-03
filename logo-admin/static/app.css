@@ -908,3 +908,16 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 .assistant-review__technical { font-size: .72rem; }
 .assistant-review__technical > summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; }
 .assistant-review__technical[open] > summary { margin-bottom: .5rem; }
+
+/* ===== Bulk Operations view ===== */
+.bulk-store-field { min-width: 260px; }
+.bulk-store-field select { width: 100%; padding: 8px 10px; border: 1px solid var(--border, #cfd4cc); border-radius: 8px; background: var(--surface, #fff); font: inherit; }
+.bulk-flow-head { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; }
+.bulk-flow-head h3 { margin: 0; }
+#bulk-jobs { margin-top: 14px; }
+#bulk-flow .card + .card { margin-top: 14px; }
+.bulk-flow-actions { display: flex; align-items: center; gap: 12px; justify-content: flex-end; margin-top: 12px; }
+#fill-copyable, #fill-nosource, #coverage-table { margin-top: 10px; }
+#fill-nosource-wrap { margin-top: 12px; }
+#fill-nosource-wrap summary { cursor: pointer; color: var(--muted-ink, #667); }
+.fill-source { min-width: 140px; }

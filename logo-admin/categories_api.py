@@ -10,7 +10,7 @@ blogs.
 import csv as csv_module
 import io
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -995,6 +995,9 @@ class DriftAuditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     env: str = Field(min_length=3, max_length=8)
+    # Optional phased-rollout scope: only these blogs are re-imported and
+    # re-planned. Omitted = every snapshotted blog.
+    blog_ids: Optional[List[int]] = Field(default=None, max_length=500)
 
 
 @router.post("/drift-audit")
@@ -1006,7 +1009,8 @@ def run_drift_audit(
     refused while a run is active."""
     _configured_env(body.env)
     try:
-        return categories_runs.drift_audit(body.env, actor=user["user_login"])
+        return categories_runs.drift_audit(body.env, actor=user["user_login"],
+                                           blog_ids=body.blog_ids)
     except (DraftError, DraftConflict) as exc:
         raise _draft_errors(exc) from exc
     except categories_service.BrokerError as exc:

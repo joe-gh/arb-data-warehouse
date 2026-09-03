@@ -9,7 +9,10 @@ from typing import FrozenSet, Mapping, Optional
 from urllib.parse import urlsplit
 
 
-MAX_SESSION_SECONDS = 8 * 60 * 60
+# Absolute cap on one issued session cookie. Sessions slide: an active
+# operator gets a fresh cookie once an hour (auth.SESSION_RENEW_AFTER_SECONDS),
+# up to auth.SESSION_ABSOLUTE_MAX_SECONDS since sign-in.
+MAX_SESSION_SECONDS = 24 * 60 * 60
 
 
 class ConfigurationError(RuntimeError):

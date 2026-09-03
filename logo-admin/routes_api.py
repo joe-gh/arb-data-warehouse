@@ -648,6 +648,61 @@ def styles_coverage(
     )
 
 
+class FillGapsPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store: str = Field(min_length=1, max_length=100)
+    styles: Optional[List[str]] = Field(default=None, max_length=500)
+
+
+@router.post("/styles/fill-gaps/preview")
+def fill_gaps_preview(body: FillGapsPreviewBody,
+                      user: Dict[str, str] = Depends(require_csrf)):
+    """Read-only plan: which gap styles can be filled from their own
+    configured colors (auto source only when every configured color carries
+    an identical logo set), and which have no source at all."""
+    del user
+    styles = None
+    if body.styles:
+        styles = _clean_list(body.styles, upper=True, maxitems=500, field="styles")
+    return _read_service(read_queries.fill_gaps_plan, fdm4_store=body.store, styles=styles)
+
+
+class FillGapsEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    style: str = Field(min_length=1, max_length=100)
+    source_color: str = Field(min_length=1, max_length=100)
+    colors: Optional[List[str]] = Field(default=None, max_length=500)
+
+
+class FillGapsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store: str = Field(min_length=1, max_length=100)
+    entries: List[FillGapsEntry] = Field(min_length=1, max_length=200)
+    overwrite: bool = False
+
+
+@router.post("/styles/fill-gaps")
+def fill_gaps(body: FillGapsBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Copy each entry style's own source-color logos onto its logo-less
+    colors. Journaled as ONE batch; undo via /api/bulk-apply/undo."""
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        lock_scopes(cursor, [mutations.assignment_style_scope(body.store, entry.style)
+                             for entry in body.entries])
+        try:
+            return mutations.fill_gaps(
+                cursor,
+                fdm4_store=body.store,
+                entries=[entry.model_dump() for entry in body.entries],
+                overwrite=body.overwrite,
+                actor=user["user_login"],
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
 @router.get("/designs")
 def designs(
     q: str = Query("", max_length=100),

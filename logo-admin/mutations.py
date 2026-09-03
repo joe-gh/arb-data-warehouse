@@ -2405,6 +2405,81 @@ def paste_batch(cursor, *, fdm4_store: str, styles, color_scope: str,
     return {"ok": True, "batch_id": batch_id, "results": results, "totals": totals}
 
 
+def fill_gaps(cursor, *, fdm4_store: str, entries, overwrite: bool, actor: str) -> dict:
+    """Copy each style's OWN configured logos (from entry.source_color) onto
+    its logo-less colors. One shared journal batch for the whole run, so a
+    single /api/bulk-apply/undo reverts everything. All-or-nothing: any
+    invalid entry aborts the transaction before anything is committed."""
+    store = _clean(fdm4_store, "fdm4_store")
+    catalog = _catalog_for_store(cursor, store)
+    if catalog is None:
+        raise NotFound("Store not found")
+    if not entries:
+        raise InvalidCommand("Nothing to fill")
+    batch_id = _open_batch(cursor, fdm4_store=store, actor=actor, target={
+        "kind": "fill_gaps",
+        "styles": [str(entry.get("style", "")) for entry in entries],
+        "overwrite": overwrite,
+    })
+    results = []
+    totals = {"created": 0, "updated": 0}
+    for entry in entries:
+        style = _clean(entry["style"], "product_style")
+        source_color = _clean(entry["source_color"], "source_color")
+        if not _style_exists(cursor, store, catalog, style):
+            raise NotFound(f"{style}: style not found")
+        cursor.execute(
+            """
+            SELECT option_row, position, design_id, logo_code, color_scheme_id,
+                   location, optional, background, cost_override, sort_order,
+                   image_url, name_override, active
+              FROM logo.assignment
+             WHERE fdm4_store = %s AND product_style = %s
+               AND garment_color_code = %s AND active
+             ORDER BY option_row, position
+            """,
+            (store, style, source_color),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        if not rows:
+            raise InvalidCommand(
+                f"{style}: source color {source_color} has no active logos"
+            )
+        explicit = entry.get("colors") or None
+        if explicit:
+            colors = [_clean(c, "garment_color_code") for c in explicit]
+        else:
+            live = _live_colors(cursor, store, catalog, style)
+            cursor.execute(
+                """
+                SELECT DISTINCT garment_color_code FROM logo.assignment
+                 WHERE fdm4_store = %s AND product_style = %s AND active
+                """,
+                (store, style),
+            )
+            configured = {str(row["garment_color_code"]) for row in cursor.fetchall()}
+            colors = sorted(c for c in live if c not in configured)
+        if source_color in colors:
+            raise InvalidCommand(f"{style}: source color {source_color} is also a target")
+        result = {"style": style, "source_color": source_color, "colors": colors,
+                  "created": 0, "updated": 0, "skipped_occupied": 0,
+                  "skipped_missing_color": 0, "skipped_invalid": 0, "problems": []}
+        if colors:
+            outcome = paste_assignments(
+                cursor, fdm4_store=store, product_style=style, colors=colors,
+                rows=rows, overwrite=overwrite, as_new_rows=False,
+                actor=actor, batch_id=batch_id,
+            )
+            for key in ("created", "updated", "skipped_occupied",
+                        "skipped_missing_color", "skipped_invalid", "problems"):
+                result[key] = outcome[key]
+            totals["created"] += outcome["created"]
+            totals["updated"] += outcome["updated"]
+        results.append(result)
+    _close_batch(cursor, batch_id, totals["created"] + totals["updated"])
+    return {"ok": True, "batch_id": batch_id, **totals, "results": results}
+
+
 def _color_classes(cursor, codes) -> Dict[str, str]:
     if not codes:
         return {}

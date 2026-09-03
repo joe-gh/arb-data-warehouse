@@ -4103,21 +4103,14 @@
     table.innerHTML = `${note}<table class="data-table"><thead><tr><th></th><th>Style</th><th>Name</th><th>${lastHeader}</th></tr></thead><tbody>${rows.map((r) => `<tr><td><input type="checkbox" class="batch-row-check" data-style="${escapeHtml(styleCode(r))}" ${batchState.selected.has(styleCode(r)) ? "checked" : ""}></td><td><code>${escapeHtml(styleCode(r))}</code></td><td>${escapeHtml(styleName(r))}</td><td>${lastCell(r)}</td></tr>`).join("")}</tbody></table>`;
     $$(".batch-row-check", table).forEach((box) => box.addEventListener("change", () => {
       box.checked ? batchState.selected.add(box.dataset.style) : batchState.selected.delete(box.dataset.style);
-      $("#batch-dialog-count").textContent = `${batchState.selected.size} selected`;
+      renderBatchBar();
     }));
-    $("#batch-dialog-count").textContent = `${batchState.selected.size} selected`;
-  }
-
-  async function openBatchDialog() {
-    if (!state.store) { toast("Choose a store first.", "error"); return; }
-    $("#batch-context").textContent = storeDisplayFor(state.store);
     const similar = $("#batch-select-similar");
     similar.disabled = !state.style;
     similar.textContent = state.style
       ? `Select styles with the same logos as ${state.style}`
       : "Select styles with the same logos as the open style";
-    openDialog($("#batch-dialog"));
-    await loadBatchRows();
+    renderBatchBar();
   }
 
   async function batchSelectSimilar() {
@@ -4874,36 +4867,253 @@
     $("#clipboard-paste-all")?.addEventListener("click", () => pasteClipboard((state.detail?.colors || []).filter((c) => c.warehouse_active !== false).map(colorCode)));
     loadClipboard();
 
-    // Batch selection of styles
-    $("#batch-select")?.addEventListener("click", openBatchDialog);
+    // Bulk Operations view: launcher, flows, and the target picker (the old
+    // batch bar and batch dialog now live inline in #view-bulk).
+    $("#open-bulk-view")?.addEventListener("click", () => switchView("bulk"));
+    $$("#bulk-jobs .dash-card").forEach((card) => card.addEventListener("click", () => openBulkJob(card.dataset.bulkJob)));
+    $("#bulk-flow-back")?.addEventListener("click", closeBulkFlow);
+    $("#bulk-store")?.addEventListener("change", bulkStoreChanged);
+    $("#fill-refresh")?.addEventListener("click", loadFillPlan);
+    $("#fill-apply")?.addEventListener("click", applyFill);
+    $("#fill-undo")?.addEventListener("click", undoFill);
+    $("#coverage-export")?.addEventListener("click", exportCoverage);
     $("#batch-search")?.addEventListener("input", debounce(loadBatchRows));
     $("#batch-assigned-only")?.addEventListener("change", loadBatchRows);
     $("#batch-unconfigured-only")?.addEventListener("change", loadBatchRows);
     $("#batch-select-similar")?.addEventListener("click", batchSelectSimilar);
     $("#batch-select-visible")?.addEventListener("click", () => { batchState.rows.forEach((r) => batchState.selected.add(styleCode(r))); loadBatchRows(); });
-    $("#batch-apply")?.addEventListener("click", () => { closeDialog($("#batch-dialog")); renderBatchBar(); });
-    $("#batch-dialog")?.addEventListener("close", () => {
-      // However the dialog closed (Use selection, ×, backdrop, Esc), the bar
-      // and an open copy-many dialog must reflect the final selection.
-      renderBatchBar();
-      if ($("#copy-many-dialog")?.open) { renderCopyManyTargets(); copyManyReset(); }
-    });
-    $("#batch-clear")?.addEventListener("click", () => { batchState.selected.clear(); renderBatchBar(); });
+    $("#batch-clear")?.addEventListener("click", () => { batchState.selected.clear(); renderBatchBar(); loadBatchRows(); });
     $("#batch-activate")?.addEventListener("click", () => batchActive(true));
     $("#batch-deactivate")?.addEventListener("click", () => batchActive(false));
     $("#batch-paste")?.addEventListener("click", batchPaste);
     $("#batch-bulk-apply")?.addEventListener("click", () => openBulkApplyPanel());
 
-    // Copy one style's logos to many styles
-    $("#copy-many-button")?.addEventListener("click", openCopyMany);
+    // Copy one style's logos to many styles. The style-toolbar shortcut jumps
+    // to the Bulk Operations view so target selection happens inline.
+    $("#copy-many-button")?.addEventListener("click", async () => {
+      if (document.body.dataset.view !== "bulk") {
+        switchView("bulk");
+        await openBulkJob("copy");
+      }
+      openCopyMany();
+    });
     $("#batch-copy-from-open")?.addEventListener("click", openCopyMany);
-    $("#copy-many-choose")?.addEventListener("click", async () => { await openBatchDialog(); });
+    $("#copy-many-choose")?.addEventListener("click", () => {
+      closeDialog($("#copy-many-dialog"));
+      toast("Adjust the target selection below, then reopen “Copy open style to selection…”.");
+    });
     $("#copy-many-preview-btn")?.addEventListener("click", copyManyPreview);
     $("#copy-many-run")?.addEventListener("click", copyManyRun);
     $$("input[name='copy-many-match'], input[name='copy-many-mode']").forEach((radio) => radio.addEventListener("change", copyManyReset));
 
     // Inline undo of the last journaled change
     $("#undo-last-batch")?.addEventListener("click", undoLastBatch);
+  }
+
+  // ===== Bulk Operations view: job launcher + flows =====
+  const bulkOpsState = { job: null, fill: null, fillBatchId: null, coverage: null };
+
+  const BULK_JOBS = {
+    fill: { title: "Fill missing colors", panel: "#bulk-flow-fill" },
+    coverage: { title: "Coverage report", panel: "#bulk-flow-coverage" },
+    paste: { title: "Paste logos to many styles", panel: "#bulk-flow-targets",
+      hint: "Copy a color in the Logo editor first - the clipboard travels with you. Select target styles, pick a color scope, then press Paste clipboard." },
+    bulkapply: { title: "Bulk apply a logo", panel: "#bulk-flow-targets",
+      hint: "Select target styles, then “Bulk Apply to selection…” picks the logo and placement (light/dark aware)." },
+    activate: { title: "Activate / deactivate styles", panel: "#bulk-flow-targets",
+      hint: "Select styles, then Set active or Set inactive. This flips every logo assignment on each selected style." },
+    copy: { title: "Copy style config to many", panel: "#bulk-flow-targets",
+      hint: "Select target styles, then “Copy open style to selection…” copies the style currently open in the Logo editor." },
+  };
+
+  function bulkStoreSync() {
+    const select = $("#bulk-store");
+    if (!select) return;
+    const options = (state.stores || []).map((s) =>
+      `<option value="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))}</option>`);
+    select.innerHTML = `<option value="">Choose a store…</option>${options.join("")}`;
+    select.value = state.store || "";
+  }
+
+  async function initBulkView() {
+    await ensureStores();
+    bulkStoreSync();
+    renderBatchBar();
+    if (!bulkOpsState.job) closeBulkFlow();
+  }
+
+  async function bulkStoreChanged(event) {
+    const store = event.target.value;
+    if (!store || store === state.store) return;
+    await selectStore(store);
+    bulkStoreSync();
+    if (bulkOpsState.job === "fill") await loadFillPlan();
+    else if (bulkOpsState.job === "coverage") await loadCoverage();
+    else if (bulkOpsState.job) { renderBatchBar(); await loadBatchRows(); }
+  }
+
+  async function openBulkJob(job) {
+    const def = BULK_JOBS[job];
+    if (!def) return;
+    if (!state.store) { toast("Choose a store first.", "error"); return; }
+    bulkOpsState.job = job;
+    $("#bulk-jobs").hidden = true;
+    $("#bulk-flow").hidden = false;
+    $("#bulk-flow-title").textContent = def.title;
+    ["#bulk-flow-fill", "#bulk-flow-coverage", "#bulk-flow-targets"].forEach((id) => {
+      const el = $(id); if (el) el.hidden = id !== def.panel;
+    });
+    if (def.hint) $("#bulk-targets-hint").textContent = def.hint;
+    if (job === "fill") await loadFillPlan();
+    else if (job === "coverage") await loadCoverage();
+    else { renderBatchBar(); await loadBatchRows(); }
+  }
+
+  function closeBulkFlow() {
+    bulkOpsState.job = null;
+    const flow = $("#bulk-flow"); if (flow) flow.hidden = true;
+    const jobs = $("#bulk-jobs"); if (jobs) jobs.hidden = false;
+  }
+
+  // ---- Fill missing colors ----
+  function fillSelection() {
+    return $$("#fill-copyable .fill-row").map((row) => ({
+      style: row.dataset.style,
+      checked: $(".fill-check", row)?.checked === true,
+      source: $(".fill-source", row)?.value || "",
+    })).filter((entry) => entry.checked && entry.source);
+  }
+
+  function renderFillPreviewLine() {
+    const entries = fillSelection();
+    let slots = 0;
+    entries.forEach((entry) => {
+      const item = (bulkOpsState.fill?.copyable || []).find((c) => c.style === entry.style);
+      const source = item?.sources.find((s) => s.color === entry.source);
+      if (item && source) slots += source.rows * item.targets.length;
+    });
+    $("#fill-preview-line").textContent = entries.length
+      ? `${entries.length} style${entries.length === 1 ? "" : "s"} · up to ${slots} logo slot${slots === 1 ? "" : "s"} filled · occupied slots are skipped`
+      : "Check the styles to fill.";
+    $("#fill-apply").disabled = !entries.length;
+  }
+
+  async function loadFillPlan() {
+    const box = $("#fill-copyable");
+    box.innerHTML = '<div class="grid-empty">Loading…</div>';
+    $("#fill-apply").disabled = true;
+    try {
+      const plan = await api("/api/styles/fill-gaps/preview", { method: "POST", body: { store: state.store } });
+      bulkOpsState.fill = plan;
+      renderFillPlan();
+    } catch (error) {
+      renderErrorState(box, friendlyLoadError("the fill plan", error), loadFillPlan);
+    }
+  }
+
+  function renderFillPlan() {
+    const plan = bulkOpsState.fill || { copyable: [], no_source: [] };
+    $("#fill-summary").textContent = `${storeDisplayFor(state.store)}: ${plan.copyable.length} fixable style${plan.copyable.length === 1 ? "" : "s"}, ${plan.no_source.length} with no logos anywhere.`;
+    const box = $("#fill-copyable");
+    if (!plan.copyable.length) {
+      box.innerHTML = '<div class="grid-empty">No fixable gaps - every style that has logos covers all of its colors.</div>';
+    } else {
+      box.innerHTML = `<table class="data-table"><thead><tr><th></th><th>Style</th><th>Name</th><th>Missing colors</th><th>Copy from</th><th>Slots</th></tr></thead><tbody>${plan.copyable.map((item) => {
+        const options = item.sources.map((s) => `<option value="${escapeHtml(s.color)}"${s.color === item.auto_source ? " selected" : ""}>${escapeHtml(s.color)} (${s.rows} logo${s.rows === 1 ? "" : "s"})</option>`).join("");
+        const chooser = item.needs_choice ? `<option value="" selected>Choose…</option>${options}` : options;
+        const note = item.needs_choice ? '<br><small class="muted">Configured colors differ - pick the source.</small>' : "";
+        return `<tr class="fill-row" data-style="${escapeHtml(item.style)}"><td><input type="checkbox" class="fill-check"${item.needs_choice ? "" : " checked"}></td><td><code>${escapeHtml(item.style)}</code></td><td>${escapeHtml(item.name)}</td><td>${item.targets.map((c) => `<code>${escapeHtml(c)}</code>`).join(" ")}</td><td><select class="fill-source">${chooser}</select>${note}</td><td>${item.slots ?? "—"}</td></tr>`;
+      }).join("")}</tbody></table>`;
+      $$("#fill-copyable .fill-check, #fill-copyable .fill-source").forEach((el) => el.addEventListener("change", (event) => {
+        if (event.target.classList.contains("fill-source") && event.target.value) {
+          const row = event.target.closest(".fill-row");
+          $(".fill-check", row).checked = true;
+        }
+        renderFillPreviewLine();
+      }));
+    }
+    const noSource = plan.no_source || [];
+    const wrap = $("#fill-nosource-wrap");
+    wrap.hidden = !noSource.length;
+    if (noSource.length) {
+      $("#fill-nosource-count").textContent = `${noSource.length} style${noSource.length === 1 ? "" : "s"} with no logos anywhere (nothing to copy from - often PPE or gear)`;
+      $("#fill-nosource").innerHTML = `<table class="data-table"><thead><tr><th>Style</th><th>Name</th><th>Colors without logos</th></tr></thead><tbody>${noSource.map((s) => `<tr><td><code>${escapeHtml(s.style)}</code></td><td>${escapeHtml(s.name)}</td><td>${(s.unconfigured || []).map((c) => `<code>${escapeHtml(c)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table>`;
+    }
+    renderFillPreviewLine();
+  }
+
+  async function applyFill() {
+    const entries = fillSelection().map((entry) => ({ style: entry.style, source_color: entry.source }));
+    if (!entries.length) return;
+    const confirmed = await confirmAction({
+      title: `Fill ${entries.length} style${entries.length === 1 ? "" : "s"}`,
+      message: `Copies each style's own logos onto its missing colors in ${storeDisplayFor(state.store)}. Occupied slots are skipped. One undo batch covers the whole run.`,
+      actionLabel: "Fill",
+    });
+    if (!confirmed) return;
+    const button = $("#fill-apply");
+    setBusy(button, true, "Filling…");
+    try {
+      const result = await api("/api/styles/fill-gaps", { method: "POST", body: { store: state.store, entries } });
+      bulkOpsState.fillBatchId = result.batch_id;
+      const undo = $("#fill-undo");
+      undo.hidden = false;
+      undo.textContent = `Undo fill (${result.created + result.updated} slots)`;
+      noteBatch(result.batch_id, "fill missing colors");
+      toast(`Filled ${result.created} slot${result.created === 1 ? "" : "s"} across ${entries.length} style${entries.length === 1 ? "" : "s"}.`);
+      await loadFillPlan();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
+    if (state.style) await refreshStyle();
+  }
+
+  async function undoFill() {
+    if (!bulkOpsState.fillBatchId) return;
+    try {
+      const result = await api("/api/bulk-apply/undo", { method: "POST", body: { batch_id: bulkOpsState.fillBatchId } });
+      toast(`Undo restored ${result.restored} slot${result.restored === 1 ? "" : "s"}.`);
+      bulkOpsState.fillBatchId = null;
+      $("#fill-undo").hidden = true;
+      await loadFillPlan();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+    if (state.style) await refreshStyle();
+  }
+
+  // ---- Coverage report ----
+  async function loadCoverage() {
+    const box = $("#coverage-table");
+    box.innerHTML = '<div class="grid-empty">Loading…</div>';
+    $("#coverage-export").disabled = true;
+    try {
+      const payload = await api(`/api/styles/coverage?${new URLSearchParams({ store: state.store, unconfigured_only: "true" })}`);
+      const rows = envelope(payload, "styles");
+      bulkOpsState.coverage = rows;
+      $("#coverage-summary").textContent = `${storeDisplayFor(state.store)}: ${rows.length} style${rows.length === 1 ? "" : "s"} with at least one logo-less color${payload.truncated ? " (list truncated - narrow it in the fill job)" : ""}.`;
+      box.innerHTML = rows.length
+        ? `<table class="data-table"><thead><tr><th>Style</th><th>Name</th><th>Configured</th><th>Colors without logos</th></tr></thead><tbody>${rows.map((r) => `<tr><td><code>${escapeHtml(styleCode(r))}</code></td><td>${escapeHtml(styleName(r))}</td><td>${escapeHtml(String(r.colors_configured ?? 0))}/${escapeHtml(String(r.colors_total ?? 0))}</td><td>${(r.unconfigured || []).map((c) => `<code>${escapeHtml(c)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table>`
+        : '<div class="grid-empty">Every live style covers all of its colors.</div>';
+      $("#coverage-export").disabled = !rows.length;
+    } catch (error) {
+      renderErrorState(box, friendlyLoadError("the coverage report", error), loadCoverage);
+    }
+  }
+
+  function exportCoverage() {
+    const rows = bulkOpsState.coverage || [];
+    const lines = ["style,name,colors_configured,colors_total,unconfigured"].concat(rows.map((r) =>
+      [styleCode(r), `"${String(styleName(r)).replace(/"/g, '""')}"`, r.colors_configured ?? 0,
+       r.colors_total ?? 0, `"${(r.unconfigured || []).join(" ")}"`].join(",")));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `coverage-${state.store}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   }
 
   // ===== Warehouse Operations: view switching + pricing management =====
@@ -5236,6 +5446,9 @@
       if (b.kind === "slug_collisions") {
         return `<div class="cat-blocker"><strong>Slug collisions</strong>: ${b.blogs.map((row) => `blog ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}</div>`;
       }
+      if (b.kind === "recreated_slugs") {
+        return `<div class="cat-blocker"><strong>Deleted and re-created in the same run</strong>: ${b.blogs.map((row) => `blog ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}. ${escapeHtml(b.message || "")}</div>`;
+      }
       return `<div class="cat-blocker"><strong>${escapeHtml(b.kind)}</strong></div>`;
     }).join("");
     const warningHtml = (preview.warnings || []).map((w) => {
@@ -5474,10 +5687,12 @@
       const out = $("#cat-drift-result");
       out.textContent = "Re-importing snapshots and re-planning\u2026 this takes a while.";
       try {
-        const result = await api("/api/categories/drift-audit", { method: "POST", body: { env: catState.env } });
+        const scopeIds = catScopeBlogIds();
+        const result = await api("/api/categories/drift-audit", { method: "POST", body: scopeIds ? { env: catState.env, blog_ids: scopeIds } : { env: catState.env } });
+        const scope = result.scope ? ` (scoped to ${result.scope.length} blog(s): ${result.scope.slice(0, 20).join(", ")})` : "";
         out.textContent = result.converged
-          ? `Converged: ${result.refreshed_blogs} blogs match the draft exactly.`
-          : `NOT converged: ${result.pending.length} blogs still differ` +
+          ? `Converged${scope}: ${result.refreshed_blogs} blog(s) match the draft exactly.`
+          : `NOT converged${scope}: ${result.pending.length} blog(s) still differ - ${result.pending.slice(0, 20).map((b) => b.blog_id).join(", ")}${result.pending.length > 20 ? ", …" : ""}` +
             (result.blockers.length ? `; blockers: ${result.blockers.map((b) => b.kind).join(", ")}` : "") + ".";
       } catch (error) {
         out.textContent = errorMessage(error);
@@ -6133,10 +6348,14 @@
     });
     if (!confirmed) return;
     try {
-      await api(`/api/categories/nodes/${node.node_id}`, { method: "DELETE" });
+      const result = await api(`/api/categories/nodes/${node.node_id}`, { method: "DELETE" });
       catTreeState.selected = null;
       $("#cat-node-detail").hidden = true;
       await loadCatTree();
+      const unmapped = (result && result.unmapped_slugs) || [];
+      if (unmapped.length) {
+        toast(`${unmapped.length} live slug(s) were mapped to that category and now need a new disposition in Mapping: ${unmapped.slice(0, 6).join(", ")}${unmapped.length > 6 ? ", …" : ""}`, "error");
+      }
     } catch (error) {
       if (error && error.status === 409) {
         const cascade = await confirmAction({
@@ -6364,7 +6583,7 @@
     }
   }
 
-  const VIEWS = ["dashboard", "logo", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "categories", "health", "help"];
+  const VIEWS = ["dashboard", "logo", "bulk", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "categories", "health", "help"];
   function switchView(name) {
     if (!VIEWS.includes(name)) name = "dashboard";
     VIEWS.forEach((v) => { const el = $(`#view-${v}`); if (el) el.hidden = v !== name; });
@@ -6378,6 +6597,7 @@
     const url = new URL(window.location.href);
     url.searchParams.set("view", name);
     window.history.replaceState({}, "", url);
+    if (name === "bulk") initBulkView();
     if (name === "pricing") loadPricing();
     if (name === "names") loadNames();
     if (name === "colors") loadColors();

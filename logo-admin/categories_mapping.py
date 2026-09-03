@@ -48,7 +48,8 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
         SELECT live.slug AS old_slug, live.blogs, live.products, live.blog1,
                live.sample_name,
                COALESCE(m.action,
-                        CASE WHEN implicit.node_id IS NOT NULL THEN 'map'
+                        CASE WHEN live.slug LIKE 'catmgrtmp-%%' THEN 'delete'
+                             WHEN implicit.node_id IS NOT NULL THEN 'map'
                              WHEN implicit_extra.override_id IS NOT NULL
                                  THEN 'store_custom' END)
                    AS action,
@@ -62,13 +63,16 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
                    END,
                    false) AS is_primary,
                (m.old_slug IS NULL AND (implicit.node_id IS NOT NULL
-                    OR implicit_extra.override_id IS NOT NULL)) AS implicit,
+                    OR implicit_extra.override_id IS NOT NULL
+                    OR live.slug LIKE 'catmgrtmp-%%')) AS implicit,
                m.override_id, m.note, m.updated_by, m.updated_at,
                COALESCE(n.slug, implicit.slug) AS target_slug,
                COALESCE(n.name, implicit.name) AS target_name
           FROM live
           LEFT JOIN catmgr.slug_map m ON m.old_slug = live.slug
           LEFT JOIN catmgr.node n ON n.node_id = m.target_node_id
+          -- catmgrtmp-<id> is a term the broker parked during an apply that was
+          -- refused or crashed: always a doomed leftover, implicitly delete.
           LEFT JOIN catmgr.node implicit
             ON m.old_slug IS NULL AND implicit.slug = live.slug
           LEFT JOIN LATERAL (
@@ -80,7 +84,8 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
                LIMIT 1
           ) implicit_extra ON m.old_slug IS NULL AND implicit.node_id IS NULL
          ORDER BY (m.action IS NULL AND implicit.node_id IS NULL
-                   AND implicit_extra.override_id IS NULL) DESC,
+                   AND implicit_extra.override_id IS NULL
+                   AND live.slug NOT LIKE 'catmgrtmp-%%') DESC,
                   live.blog1 DESC, live.products DESC NULLS LAST, live.slug
         """,
         (env,),

@@ -161,17 +161,19 @@ def test_blog1_plan_golden():
                        "old-boots": "delete", "lonely": "delete"}
 
     memberships = {m["product_id"]: m for m in plan["memberships"]}
-    # 100 (PANT-1): men-s kept as mens + bottoms merged into mens -> final {mens};
-    #   after term ops alone it already has mens -> NOT listed.
-    assert 100 not in memberships
+    # 100 (PANT-1): men-s kept as mens + bottoms merged into mens -> final {mens}.
+    #   It already has mens, but it still sits on the doomed bottoms term and
+    #   finalize deletes only EMPTY terms: an explicit row leaves bottoms first.
+    assert memberships[100]["final_slugs"] == ["mens"]
     # 101 (SHORT-1): only bottoms (merged) -> needs adding to mens.
     assert memberships[101]["final_slugs"] == ["mens"]
     # 102 (RESCUE-1): old-boots deleted, rescued by rule into footwear.
     assert memberships[102]["final_slugs"] == ["footwear"]
-    # 103 (RESCUE-2, "Sandal Beta"): not rescued -> zero category, not listed
-    #   as membership (nothing to write; term delete detaches it).
-    assert 103 not in memberships
-    # 104 (ORPHAN-1): zero category as well.
+    # 103 (RESCUE-2, "Sandal Beta"): not rescued -> zero category; still listed
+    #   with an empty set so the doomed old-boots term is empty at finalize.
+    assert memberships[103]["final_slugs"] == []
+    # 104 (ORPHAN-1): zero category as well (its lonely term is deleted).
+    assert memberships[104]["final_slugs"] == []
     assert {z["sku"] for z in plan["zero_category"]} == {"RESCUE-2", "ORPHAN-1"}
     # 105 (UNIFORM-1): store_custom keeps its term untouched -> unchanged.
     assert 105 not in memberships
@@ -189,7 +191,7 @@ def test_blog1_plan_golden():
     assert stats["updates"] == 1 and stats["reslugs"] == 1
     assert stats["renames"] == 0  # decoded-name compare: "Men&#039;s" == "Men's"
     assert stats["creates"] == 3 and stats["deletes"] == 4
-    assert stats["membership_changes"] == 2
+    assert stats["membership_changes"] == 5
     assert stats["zero_category"] == 2
     del nodes
 

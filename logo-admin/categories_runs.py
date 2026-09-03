@@ -13,6 +13,7 @@ apply_failed audit rows (the sync-intent pattern).
 
 import secrets
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from psycopg2.extras import Json
@@ -37,6 +38,89 @@ def broker_call(env: str, path: str, payload: Dict[str, Any]) -> Any:
     """POST one broker call. Module-level so tests can monkeypatch it."""
 
     return categories_service._broker(env, path, method="POST", payload=payload)
+
+
+# The broker runs every mutating phase as a durable job on the WordPress side:
+# it fences, answers 202 with a job key, keeps working with a heartbeat, and
+# we poll /job until it lands. The proxy's read timeout therefore never
+# decides how far an apply gets (nginx cut a 131-term apply at 300 s on
+# 2026-09-03 and PHP died mid-loop, unlogged).
+JOB_POLL_SECONDS = 2.0
+JOB_MAX_SECONDS = 3600
+JOB_STATUS_FAILURES = 5
+
+
+class BrokerJobLost(categories_service.BrokerError):
+    """The broker accepted a job but stopped reporting on it. WordPress may
+    still be working (or its worker died); the message tells the operator
+    to retry, which converges from whatever landed."""
+
+
+def _touch_run_heartbeat(run_id: int) -> None:
+    with database.cursor(write=True, actor="worker") as cursor:
+        cursor.execute(
+            "UPDATE catmgr.run SET worker_heartbeat_at = now() WHERE run_id = %s",
+            (run_id,),
+        )
+
+
+def broker_job(env: str, path: str, payload: Dict[str, Any], *,
+               run_id: Optional[int] = None) -> Any:
+    """POST one phase call; when the broker detaches it as a durable job
+    (202 + job key) poll /job until it lands. Returns the phase body the
+    synchronous broker used to return, so callers stay unchanged."""
+
+    response = broker_call(env, path, payload)
+    job = response.get("job") if isinstance(response, dict) else None
+    if not isinstance(job, dict) or job.get("status") != "running" or not job.get("key"):
+        return response
+    key = job["key"]
+    label = f"{path.strip('/')} for blog {payload.get('blog_id')}"
+    started = time.monotonic()
+    status_failures = 0
+    while True:
+        time.sleep(JOB_POLL_SECONDS)
+        if run_id is not None:
+            _touch_run_heartbeat(run_id)
+        try:
+            status = broker_call(env, "/job", {"key": key})
+        except categories_service.BrokerError as exc:
+            status_failures += 1
+            if status_failures >= JOB_STATUS_FAILURES:
+                raise BrokerJobLost(
+                    f"could not read the status of {label} ({exc}). WordPress may"
+                    " still be working on it: wait a minute, then Retry - the retry"
+                    " resumes from whatever landed.", 504,
+                ) from exc
+            continue
+        status_failures = 0
+        job = (status.get("job") if isinstance(status, dict) else None) or {}
+        state = job.get("status")
+        if state == "done":
+            result = status.get("result")
+            return result if isinstance(result, dict) else {"ok": True}
+        if state in ("failed", "refused"):
+            # A definite outcome from the site (its own error text), not a
+            # transport failure: status 500 keeps it out of wp_side_unknown.
+            raise categories_service.BrokerError(
+                f"WordPress reported {label} as {state}: {status.get('error') or 'no detail'}",
+                500,
+            )
+        elapsed = time.monotonic() - started
+        if job.get("lock_free"):
+            raise BrokerJobLost(
+                f"the WordPress worker running {label} died mid-phase"
+                f" (progress: {job.get('progress')}). Retry resumes from whatever"
+                " landed; the fences make that safe.", 504,
+            )
+        if job.get("stale") or elapsed > JOB_MAX_SECONDS:
+            reason = (f"no heartbeat for {job.get('heartbeat_age')}s" if job.get("stale")
+                      else f"still running after {int(elapsed)}s")
+            raise BrokerJobLost(
+                f"WordPress stopped reporting progress on {label} ({reason}). The"
+                " site may still be finishing it: wait a minute, then Retry - the"
+                " retry resumes from whatever landed.", 504,
+            )
 
 
 # ---------------------------------------------------------------- gating
@@ -440,8 +524,28 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
     progress = dict(job["progress"] or {})
     result: Dict[str, Any] = {"request_id": job["request_id"]}
 
+    if progress.get("snapshot_refreshed"):
+        # Every phase landed and the post-apply refresh ran; only the status
+        # flip was lost (worker died between the refresh and _finish_job).
+        # Nothing is left to do - and re-running would trip the version fence
+        # on the job's own refresh.
+        result["finalize"] = progress.get("finalize_result") or {"ok": True}
+        result["replayed"] = True
+        with database.cursor(write=True, actor=actor) as cursor:
+            record_audit(cursor, actor=actor, action="apply_succeeded",
+                         entity="job", entity_key=str(job_id),
+                         detail={"run_id": run_id, "blog_id": blog_id,
+                                 "request_id": job["request_id"],
+                                 "replayed": True})
+        _finish_job(job_id, run_id, "done", result)
+        return
+
     with database.cursor(write=True, actor=actor) as cursor:
-        # Staleness fence: the plan must match the CURRENT snapshot version.
+        # Staleness fence: the plan must match the CURRENT snapshot version -
+        # until the first mutation. Once apply-terms has landed the plan is in
+        # flight: a resumed job continues (the broker's expected-slug and SKU
+        # fences protect every remaining phase) rather than stranding a
+        # half-applied blog behind a "re-plan required".
         cursor.execute(
             "SELECT version FROM catmgr.snapshot WHERE env = %s AND blog_id = %s",
             (env, blog_id),
@@ -449,10 +553,14 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
         row = cursor.fetchone()
         current_version = row["version"] if row else None
         if current_version != payload["snapshot_version"]:
-            raise DraftConflict(
-                f"snapshot for blog {blog_id} is v{current_version}, plan was"
-                f" built on v{payload['snapshot_version']}; re-plan required"
-            )
+            if not progress.get("terms_done"):
+                raise DraftConflict(
+                    f"snapshot for blog {blog_id} is v{current_version}, plan was"
+                    f" built on v{payload['snapshot_version']}; re-plan required"
+                )
+            result["resumed_past_version_fence"] = {
+                "plan": payload["snapshot_version"], "snapshot": current_version,
+            }
         record_audit(cursor, actor=actor, action="apply_requested",
                      entity="job", entity_key=str(job_id),
                      detail={"run_id": run_id, "blog_id": blog_id,
@@ -478,7 +586,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
         _save_progress(job_id, progress)
 
     if not progress.get("terms_done"):
-        result["terms"] = broker_call(env, "/apply-terms", {
+        result["terms"] = broker_job(env, "/apply-terms", {
             "blog_id": blog_id,
             "run_id": run_id,
             "request_id": job["request_id"],
@@ -488,7 +596,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
             # in the same pass so a merge target can take their slug.
             "doomed": [{"term_id": d["term_id"], "expected_slug": d["expected_slug"]}
                        for d in payload["terms"]["delete"]],
-        })
+        }, run_id=run_id)
         if not isinstance(result["terms"], dict) or result["terms"].get("ok") is False:
             raise DraftConflict(
                 f"apply-terms was refused for blog {blog_id}: {result['terms']}"
@@ -501,12 +609,13 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
     applied = int(progress.get("membership_applied") or 0)
     while offset < len(memberships):
         page = memberships[offset:offset + MEMBERSHIP_PAGE_SIZE]
-        outcome = broker_call(env, "/apply-memberships", {
+        outcome = broker_job(env, "/apply-memberships", {
             "blog_id": blog_id,
             "run_id": run_id,
             "request_id": job["request_id"],
+            "page": offset,
             "rows": page,
-        })
+        }, run_id=run_id)
         fence = _fence_report(outcome, ("skipped", "missing_slugs"))
         if fence:
             # Rows the broker refused (product gone, SKU changed, target slug
@@ -538,7 +647,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
         # rows would duplicate); the recorded outcome stands.
         result["finalize"] = progress.get("finalize_result") or {"ok": True, "replayed": True}
     else:
-        result["finalize"] = broker_call(env, "/finalize", {
+        result["finalize"] = broker_job(env, "/finalize", {
             "blog_id": blog_id,
             "run_id": run_id,
             "request_id": job["request_id"],
@@ -549,7 +658,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
             # here can outlast the HTTP timeout when the queue has a backlog
             # (observed on dev 2026-09-01).
             "run_es": False,
-        })
+        }, run_id=run_id)
         progress["finalize_done"] = True
         progress["finalize_result"] = {
             k: v for k, v in (result["finalize"] or {}).items()
@@ -689,6 +798,11 @@ def process_run(run_id: int, *, actor: str = "worker",
                 )
                 saved = cursor.fetchone()
             failure = {"error": message, "request_id": job["request_id"]}
+            if isinstance(exc, categories_service.BrokerError) \
+                    and getattr(exc, "status", 0) in (502, 503, 504):
+                # The call died between us and WordPress: the site may have
+                # applied the step anyway. A retry converges either way.
+                failure["wp_side_unknown"] = True
             fence = (saved["progress"] or {}).get("membership_fence") if saved else None
             if fence:
                 failure["membership_fence"] = fence
@@ -768,6 +882,29 @@ def _save_restore_progress(job_id: int, restore: Dict[str, Any]) -> None:
         )
 
 
+def _restore_pages(products: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Membership rows grouped into pages that never split one product.
+
+    The broker replaces a product's whole category set per page
+    (wp_set_object_terms, append=false), and the export orders rows by TERM,
+    so a naive slice would hand the same product to several pages and each
+    later page would wipe what the earlier one set (blog 9 lost 259
+    memberships to this on 2026-09-03). Rows are sorted by product first and a
+    page only closes at a product boundary."""
+    rows = sorted(products, key=lambda r: (int(r.get("product_id") or 0), int(r.get("term_id") or 0)))
+    pages: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    for row in rows:
+        if (current and len(current) >= RESTORE_PAGE_SIZE
+                and row.get("product_id") != current[-1].get("product_id")):
+            pages.append(current)
+            current = []
+        current.append(row)
+    if current:
+        pages.append(current)
+    return pages
+
+
 def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
                     snapshot: Dict[str, Any], actor: str) -> None:
     """Paged, resumable restore: terms pass -> membership pages -> finalize.
@@ -778,12 +915,17 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
     blog_path = snapshot.get("blog_path") or ""
     restore = {"status": "running", "phase": "terms", "offset": 0,
                "total": len(products), "terms": len(terms), "error": None}
+    # One request id per restore attempt: each broker phase/page is keyed on
+    # it, so a replayed page returns its stored result instead of re-running.
+    request_id = f"restore-{job_id}-{secrets.token_hex(6)}"
+    restore["request_id"] = request_id
     _save_restore_progress(job_id, restore)
     try:
-        outcome = broker_call(env, "/restore", {
+        outcome = broker_job(env, "/restore", {
             "blog_id": blog_id, "run_id": run_id, "phase": "terms",
+            "request_id": request_id,
             "snapshot": {"terms": terms, "blog_path": blog_path},
-        })
+        }, run_id=run_id)
         if not isinstance(outcome, dict) or outcome.get("ok") is False:
             raise DraftConflict(f"restore terms pass refused: {outcome}")
         restore["terms_result"] = {k: outcome.get(k) for k in ("terms", "created", "updated")}
@@ -791,13 +933,13 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
         _save_restore_progress(job_id, restore)
         offset = 0
         restored = 0
-        while offset < len(products):
-            page = products[offset:offset + RESTORE_PAGE_SIZE]
-            outcome = broker_call(env, "/restore", {
+        for page in _restore_pages(products):
+            outcome = broker_job(env, "/restore", {
                 "blog_id": blog_id, "run_id": run_id, "phase": "memberships",
+                "request_id": request_id, "page": offset,
                 "snapshot": {"terms": terms, "products": page, "blog_path": blog_path},
                 "products_offset": offset,
-            })
+            }, run_id=run_id)
             if not isinstance(outcome, dict) or outcome.get("ok") is False:
                 raise DraftConflict(f"restore membership page refused at {offset}: {outcome}")
             restored += int(outcome.get("products_restored") or 0)
@@ -807,10 +949,11 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
             _save_restore_progress(job_id, restore)
         restore["phase"] = "finalize"
         _save_restore_progress(job_id, restore)
-        outcome = broker_call(env, "/restore", {
+        outcome = broker_job(env, "/restore", {
             "blog_id": blog_id, "run_id": run_id, "phase": "finalize",
+            "request_id": request_id,
             "snapshot": {"terms": terms, "blog_path": blog_path},
-        })
+        }, run_id=run_id)
         if not isinstance(outcome, dict) or outcome.get("ok") is False:
             raise DraftConflict(f"restore finalize refused: {outcome}")
         restore["terms_removed"] = outcome.get("terms_removed")
@@ -895,11 +1038,13 @@ def _job_restore_state(cursor, job_id: int) -> Dict[str, Any]:
 # ---------------------------------------------------------------- drift
 
 
-def drift_audit(env: str, *, actor: str) -> Dict[str, Any]:
-    """Re-import every snapshotted blog live, then report what a plan would
-    still change. All-zero stats everywhere = converged. Refused while a run
-    is active: a re-import bumps snapshot versions and would fail every
-    remaining job's staleness fence."""
+def drift_audit(env: str, *, actor: str,
+                blog_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+    """Re-import every snapshotted blog live (or just `blog_ids` for a phased
+    rollout), then report what a plan would still change. All-zero stats
+    everywhere = converged. Refused while a run is active: a re-import bumps
+    snapshot versions and would fail every remaining job's staleness fence.
+    Recorded in the audit log like every other apply-tier action."""
 
     with database.cursor() as cursor:
         _assert_env_exclusive(cursor, env, None)
@@ -907,9 +1052,16 @@ def drift_audit(env: str, *, actor: str) -> Dict[str, Any]:
             "SELECT blog_id FROM catmgr.snapshot WHERE env = %s ORDER BY blog_id",
             (env,),
         )
-        blog_ids = [row["blog_id"] for row in cursor.fetchall()]
+        known = [row["blog_id"] for row in cursor.fetchall()]
+    scope: Optional[List[int]] = None
+    if blog_ids:
+        scope = sorted({int(b) for b in blog_ids})
+        unknown = [b for b in scope if b not in known]
+        if unknown:
+            raise DraftError(f"no snapshot for {env} blog(s) {unknown}")
+    targets = scope if scope is not None else known
     refreshed = []
-    for blog_id in blog_ids:
+    for blog_id in targets:
         export = categories_service.fetch_export(env, blog_id)
         with database.cursor(write=True, actor=actor) as cursor:
             refreshed.append(categories_service.import_blog_snapshot(
@@ -921,15 +1073,24 @@ def drift_audit(env: str, *, actor: str) -> Dict[str, Any]:
             ))
     with database.cursor() as cursor:
         cursor.execute("SET LOCAL statement_timeout = '120s'")
-        outcome = categories_planner.preview(cursor, env)
+        outcome = categories_planner.preview(cursor, env, scope)
     pending = [b for b in outcome["blogs"]
                if any(b["stats"].get(k) for k in
                       ("changed_updates", "creates", "deletes",
                        "membership_changes"))]
-    return {
+    result = {
         "env": env,
+        "scope": scope,
         "refreshed_blogs": len(refreshed),
         "converged": outcome["ok"] and not pending,
         "blockers": outcome["blockers"],
         "pending": pending,
     }
+    with database.cursor(write=True, actor=actor) as cursor:
+        record_audit(cursor, actor=actor, action="drift_audit", entity="env",
+                     entity_key=env,
+                     detail={"scope": scope, "refreshed": len(refreshed),
+                             "converged": result["converged"],
+                             "pending_blogs": [b["blog_id"] for b in pending][:200],
+                             "blockers": [b["kind"] for b in outcome["blockers"]]})
+    return result

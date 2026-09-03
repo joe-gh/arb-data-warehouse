@@ -53,7 +53,7 @@ Create `/etc/arb-logo-admin.env`, owned by root and mode `0600`:
 DATABASE_DSN="dbname=arb_warehouse user=logo_admin password=REPLACE_ME host=/var/run/postgresql"
 SESSION_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES
 SESSION_COOKIE_SECURE=true
-SESSION_TTL_SECONDS=28800
+SESSION_TTL_SECONDS=86400
 
 WP_AUTH_URL=https://arb-dev.arborwear.com/wp-json/arb/v1/logo-admin/auth
 WP_SYNC_URL=https://arb-dev.arborwear.com/wp-json/arb/v1/logo-admin/sync
@@ -375,9 +375,53 @@ POST /wp-json/arb/v1/logo-admin/sync
 
 The category editor (arb-admin/arb-category-apply.php) adds, under
 `/wp-json/arb/v1/logo-admin/categories/`: `blogs`, `export`, `status`,
-`freeze`, `apply-terms`, `apply-memberships`, `finalize`, `restore` - all
-app-password authenticated like sync, all listed in the Wordfence
-app-password re-enable regexes.
+`freeze`, `apply-terms`, `apply-memberships`, `finalize`, `restore`, `job` -
+all app-password authenticated like sync, all listed in the Wordfence
+app-password re-enable regexes (a route missing from those regexes answers
+401 to the app even though it exists).
+
+#### Category editor: durable broker jobs
+
+Every mutating category phase (`apply-terms`, each `apply-memberships` page,
+`finalize`, each `restore` phase/page) runs as a durable job on the WordPress
+side, so the proxy's read timeout (nginx `fastcgi_read_timeout 300s` on both
+boxes) never decides how far an apply gets:
+
+- The broker fences synchronously (a refusal is an immediate 4xx and nothing
+  was touched), writes a row to `{base_prefix}arb_catmgr_job` keyed
+  `<request_id>:<phase>[:<page>]`, answers **202** with the job key, and keeps
+  working in the same PHP worker (`fastcgi_finish_request`) with a heartbeat
+  every 25 rows. The table is created on first use (site option
+  `arb_catmgr_job_table_version`).
+- The app polls `POST /categories/job {key}` every 2 s (touching the run
+  heartbeat each tick) until the row is `done` or `failed`. A row still
+  `running` whose per-blog MySQL lock is free means the worker died: the job
+  fails with a "retry resumes from whatever landed" message, and the retry
+  converges through the same fences. A poll of an already-`done` key returns
+  the stored result instead of running twice (idempotency), so a replayed
+  page is safe.
+- While an apply runs the broker lifts two hooks that turn one term edit into
+  minutes of work: `UNSPSC::on_category_update` (re-walks every product of the
+  category on ALL sites per edit - it took a 131-term apply past 300 s) and WP
+  Rocket's per-term purge (one domain purge per phase instead). Products
+  whose memberships change get their UNSPSC code re-derived explicitly.
+- Operator tools on the WordPress box: `wp arb-catmgr jobs` (recent rows),
+  `wp arb-catmgr job <key>`, `wp arb-catmgr run <key>` (re-run a dead job
+  synchronously from its stored request).
+
+Planner/broker delete contract: finalize deletes a doomed term only when it is
+EMPTY (anything still attached means WordPress drifted), so the planner emits
+an explicit membership row for every product on a doomed term - including
+products already in the merge target and products that end with no category.
+The export therefore covers every non-trash product status (drafts on a
+doomed term would otherwise block finalize forever). A term left parked on
+`catmgrtmp-<id>` by a refused apply is an implicit `delete` (Mapping tab and
+planner), gets no redirect, and converges on the next run. A draft node whose
+slug a doomed live term is vacating is a preview blocker
+(`recreated_slugs`): the run would swap the term's identity.
+
+The drift audit accepts the same blog scope as preview/apply (phased
+rollouts) and writes a `drift_audit` audit row.
 
 The login route accepts an operator account password and returns identity only.
 WordPress core performs application-password Basic authentication for the auth

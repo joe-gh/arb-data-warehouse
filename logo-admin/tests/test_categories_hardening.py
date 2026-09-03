@@ -211,10 +211,14 @@ def test_restore_is_paged_and_resumable(ready, monkeypatch):
     monkeypatch.setattr(categories_runs, "RESTORE_PAGE_SIZE", 1)
     monkeypatch.setattr(
         categories_service, "fetch_export",
-        lambda env, blog_id: {"blog_path": "/", "terms": [{"term_id": 1, "slug": "live", "name": "Live", "parent": 0}],
+        # Term-ordered like the real export: product 100's rows straddle what a
+        # naive 1-row page would cut. Pages must close only at product boundaries.
+        lambda env, blog_id: {"blog_path": "/", "terms": [{"term_id": 1, "slug": "live", "name": "Live", "parent": 0},
+                                                          {"term_id": 2, "slug": "other", "name": "Other", "parent": 0}],
                               "products": [{"term_id": 1, "product_id": 100, "sku": "A"},
                                            {"term_id": 1, "product_id": 101, "sku": "B"},
-                                           {"term_id": 1, "product_id": 102, "sku": "C"}]},
+                                           {"term_id": 1, "product_id": 102, "sku": "C"},
+                                           {"term_id": 2, "product_id": 100, "sku": "A"}]},
     )
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     done = categories_runs.process_run(run["run_id"], actor="tester")
@@ -224,11 +228,14 @@ def test_restore_is_paged_and_resumable(ready, monkeypatch):
     assert result["accepted"] is True and result["restore"]["status"] == "done"
     phases = [p["phase"] for _, path, p in recorder.calls if path == "/restore"]
     assert phases == ["terms", "memberships", "memberships", "memberships", "finalize"]
+    pages = [p["snapshot"]["products"] for _, path, p in recorder.calls if path == "/restore" and p["phase"] == "memberships"]
+    assert [[(r["product_id"], r["term_id"]) for r in page] for page in pages] == [
+        [(100, 1), (100, 2)], [(101, 1)], [(102, 1)]]
     offsets = [p["products_offset"] for _, path, p in recorder.calls if path == "/restore" and p["phase"] == "memberships"]
-    assert offsets == [0, 1, 2]
+    assert offsets == [0, 2, 3]
     assert all(p["snapshot"]["blog_path"] == "/" for _, path, p in recorder.calls if path == "/restore")
     detail = _read(categories_runs.get_run, run["run_id"])["jobs"][0]["restore"]
-    assert detail["offset"] == 3 and detail["phase"] == "done"
+    assert detail["offset"] == 4 and detail["phase"] == "done"
 
 
 def test_restore_refuses_while_the_run_is_active(ready):
@@ -458,3 +465,272 @@ def test_reslugging_a_node_carries_its_live_identity_mapping():
     assert update["term_id"] == 90 and update["set"]["slug"] == "safety-ppe"
     assert plan["stats"]["deletes"] == 0
     assert not any(c["slug"] == "safety-ppe" for c in plan["terms"]["create"])
+
+
+# ---------------------------------------------------------------- durable broker jobs
+
+
+class AsyncBroker(BrokerRecorder):
+    """A broker that detaches every mutating phase as a durable job (202 + key)
+    and answers /job polls: running for `polls_before_done` polls, then the
+    configured outcome."""
+
+    def __init__(self, polls_before_done=1, outcome="done", status_hiccups=0):
+        super().__init__()
+        self.jobs = {}
+        self.polls_before_done = polls_before_done
+        self.outcome = outcome
+        self.status_hiccups = status_hiccups
+
+    def __call__(self, env, path, payload):
+        if path == "/job":
+            self.calls.append((env, path, payload))
+            if self.status_hiccups > 0:
+                self.status_hiccups -= 1
+                raise categories_service.BrokerError("WordPress is currently unreachable", 502)
+            key = payload["key"]
+            job = self.jobs[key]
+            job["polls"] += 1
+            if job["polls"] < self.polls_before_done:
+                return {"ok": True, "job": {"key": key, "status": "running", "heartbeat_age": 2,
+                                            "stale": False, "progress": {"pass": "update", "updated": 25}}}
+            if self.outcome == "done":
+                return {"ok": True, "job": {"key": key, "status": "done"}, "result": job["result"], "error": None}
+            if self.outcome == "failed":
+                return {"ok": True, "job": {"key": key, "status": "failed"}, "result": None,
+                        "error": "Update failed for term 9: nope"}
+            if self.outcome == "dead":
+                return {"ok": True, "job": {"key": key, "status": "running", "stale": True, "lock_free": True,
+                                            "heartbeat_age": 40, "progress": {"pass": "update", "updated": 50}}}
+            if self.outcome == "stale":
+                return {"ok": True, "job": {"key": key, "status": "running", "stale": True,
+                                            "heartbeat_age": 400, "progress": {"pass": "update"}}}
+            raise AssertionError(self.outcome)
+        result = super().__call__(env, path, payload)
+        key = f"{payload['request_id']}:{path.strip('/')}" + (f":{payload['page']}" if "page" in payload else "")
+        self.jobs[key] = {"polls": 0, "result": result}
+        return {"ok": True, "async": True, "job": {"key": key, "status": "running", "heartbeat_age": 0}}
+
+
+@pytest.fixture
+def fast_polls(monkeypatch):
+    monkeypatch.setattr(categories_runs, "JOB_POLL_SECONDS", 0)
+
+
+def test_detached_broker_jobs_are_polled_to_completion(ready, monkeypatch, fast_polls):
+    broker = AsyncBroker(polls_before_done=3)
+    monkeypatch.setattr(categories_runs, "broker_call", broker)
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    assert done["status"] == "completed", done["jobs"][0]["result"]
+    job = done["jobs"][0]
+    # The phase bodies the engine records are the polled results, same shape as before.
+    assert job["result"]["terms"]["updated"] >= 1
+    assert job["result"]["finalize"]["ok"] is True
+    polls = [p["key"] for _, path, p in broker.calls if path == "/job"]
+    phases = {k.split(":")[1] for k in polls}
+    assert phases == {"apply-terms", "apply-memberships", "finalize"}
+    assert len(polls) >= 3 * 3
+    # Every job key carries the engine's request id; membership pages carry their page.
+    terms_key = next(k for k in polls if k.endswith(":apply-terms"))
+    assert terms_key.startswith(job["request_id"])
+    membership_call = next(p for _, path, p in broker.calls if path == "/apply-memberships")
+    assert membership_call["page"] == 0
+    # Polling kept the run's heartbeat fresh, so the stale-job reclaim never fires mid-poll.
+    detail = _read(categories_runs.get_run, run["run_id"])
+    assert detail["worker_stale"] is False
+
+
+def test_dead_broker_worker_fails_the_job_with_retry_guidance(ready, monkeypatch, fast_polls):
+    monkeypatch.setattr(categories_runs, "broker_call", AsyncBroker(outcome="dead"))
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    failed = categories_runs.process_run(run["run_id"], actor="tester")
+    assert failed["status"] == "failed"
+    result = failed["jobs"][0]["result"]
+    assert "died mid-phase" in result["error"] and "Retry" in result["error"]
+    assert result["wp_side_unknown"] is True
+    # The snapshot was taken before the phase, so a retry can still fall back on it.
+    assert failed["jobs"][0]["progress"]["snapshot_taken"] is True
+    assert "terms_done" not in failed["jobs"][0]["progress"]
+
+
+def test_stale_broker_job_fails_with_wait_then_retry(ready, monkeypatch, fast_polls):
+    monkeypatch.setattr(categories_runs, "broker_call", AsyncBroker(outcome="stale"))
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    failed = categories_runs.process_run(run["run_id"], actor="tester")
+    result = failed["jobs"][0]["result"]
+    assert "no heartbeat for 400s" in result["error"] and "wait a minute, then Retry" in result["error"]
+    assert result["wp_side_unknown"] is True
+
+
+def test_broker_reported_failure_is_definite_not_unknown(ready, monkeypatch, fast_polls):
+    monkeypatch.setattr(categories_runs, "broker_call", AsyncBroker(outcome="failed"))
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    failed = categories_runs.process_run(run["run_id"], actor="tester")
+    result = failed["jobs"][0]["result"]
+    assert "Update failed for term 9: nope" in result["error"]
+    assert "wp_side_unknown" not in result
+
+
+def test_status_poll_hiccups_are_tolerated(ready, monkeypatch, fast_polls):
+    broker = AsyncBroker(polls_before_done=1, status_hiccups=2)
+    monkeypatch.setattr(categories_runs, "broker_call", broker)
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    assert done["status"] == "completed", done["jobs"][0]["result"]
+
+
+def test_transport_failures_are_flagged_wp_side_unknown(ready, monkeypatch):
+    monkeypatch.setattr(categories_runs, "broker_call", BrokerRecorder(fail_on={"/apply-terms"}))
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    failed = categories_runs.process_run(run["run_id"], actor="tester")
+    result = failed["jobs"][0]["result"]
+    assert result["wp_side_unknown"] is True and "boom" in result["error"]
+
+
+def test_restore_pages_carry_one_request_id_and_their_page(ready, monkeypatch):
+    _, recorder = ready
+    monkeypatch.setattr(categories_runs, "RESTORE_PAGE_SIZE", 1)
+    monkeypatch.setattr(
+        categories_service, "fetch_export",
+        lambda env, blog_id: {"blog_path": "/", "terms": [{"term_id": 1, "slug": "live", "name": "Live", "parent": 0}],
+                              "products": [{"term_id": 1, "product_id": 100, "sku": "A"},
+                                           {"term_id": 1, "product_id": 101, "sku": "B"}]},
+    )
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    recorder.calls.clear()
+    categories_runs.restore_blog(run["run_id"], done["jobs"][0]["job_id"], actor="tester", background=False)
+    restores = [p for _, path, p in recorder.calls if path == "/restore"]
+    ids = {p["request_id"] for p in restores}
+    assert len(ids) == 1 and next(iter(ids)).startswith(f"restore-{done['jobs'][0]['job_id']}-")
+    assert [p.get("page") for p in restores] == [None, 0, 1, None]
+
+
+# ---------------------------------------------------------------- planner/broker delete contract
+
+
+def test_parked_slug_is_an_implicit_delete_with_explicit_membership_rows(ready):
+    """A term left on catmgrtmp-<id> by a refused apply is a doomed leftover:
+    the Mapping tab shows it as an implicit delete, the plan deletes it, and
+    every product on it gets a row - even one that keeps its other category -
+    because finalize only deletes empty terms."""
+    _write(categories_service.import_blog_snapshot, env="prod", blog_id=7, blog_path="/isa/",
+           terms=[{"term_id": 20, "slug": "men-s", "name": "Men's", "parent": 0},
+                  {"term_id": 31, "slug": "catmgrtmp-31", "name": "Women's Bargain", "parent": 0}],
+           products=[{"term_id": 20, "product_id": 200, "sku": "PANT-1"},
+                     {"term_id": 31, "product_id": 200, "sku": "PANT-1"},
+                     {"term_id": 31, "product_id": 300, "sku": "ONLY-PARKED"}])
+    status = _read(categories_mapping.mapping_status, "prod")
+    row = next(s for s in status["slugs"] if s["old_slug"] == "catmgrtmp-31")
+    assert row["action"] == "delete" and row["implicit"] is True
+    assert status["summary"]["unmapped"] == 0
+    plan = _read(categories_planner.build_blog_plan, "prod", 7)
+    assert {d["expected_slug"]: d["reason"] for d in plan["terms"]["delete"]}["catmgrtmp-31"] == "delete"
+    rows = {m["product_id"]: m["final_slugs"] for m in plan["memberships"]}
+    assert rows[200] == ["mens"]     # keeps mens, still leaves the parked term explicitly
+    assert rows[300] == []           # nothing left: detached explicitly, surfaced as zero-category
+    assert {z["sku"] for z in plan["zero_category"]} == {"ONLY-PARKED"}
+    # On blog 1 a parked slug never gets a redirect: it was never a public URL.
+    _write(categories_service.import_blog_snapshot, env="prod", blog_id=1, blog_path="/",
+           terms=[{"term_id": 10, "slug": "men-s", "name": "Men's", "parent": 0},
+                  {"term_id": 41, "slug": "catmgrtmp-41", "name": "Parked", "parent": 0}],
+           products=[{"term_id": 10, "product_id": 100, "sku": "PANT-1"},
+                     {"term_id": 41, "product_id": 100, "sku": "PANT-1"}])
+    plan1 = _read(categories_planner.build_blog_plan, "prod", 1)
+    assert any(d["expected_slug"] == "catmgrtmp-41" for d in plan1["terms"]["delete"])
+    assert not any("catmgrtmp" in r["old_path"] for r in plan1["redirects"])
+
+
+def test_preview_blocks_a_slug_deleted_and_recreated_in_one_run(ready):
+    """Mapping a live slug to delete while a draft node still carries that slug
+    would swap the term's identity (delete + create): a blocker, not a plan."""
+    _write(categories_draft.create_node, parent_id=None, name="Saws", slug="saws")
+    plan = _read(categories_planner.build_blog_plan, "prod", 1)
+    assert any(d["expected_slug"] == "saws" for d in plan["terms"]["delete"])
+    assert any(c["slug"] == "saws" for c in plan["terms"]["create"])
+    preview = _read(categories_planner.preview, "prod", [1])
+    blocker = next(b for b in preview["blockers"] if b["kind"] == "recreated_slugs")
+    assert blocker["blogs"] == [{"blog_id": 1, "slugs": ["saws"]}]
+    assert "term_id" in blocker["message"]
+    assert preview["ok"] is False
+
+
+def test_drift_audit_can_be_scoped_and_is_audited(ready):
+    result = categories_runs.drift_audit("prod", actor="tester", blog_ids=[7])
+    assert result["scope"] == [7] and result["refreshed_blogs"] == 1
+    assert {b["blog_id"] for b in result["pending"]} <= {7}
+    with database.cursor() as cursor:
+        cursor.execute("SELECT detail FROM catmgr.audit_log WHERE action = 'drift_audit' ORDER BY id DESC LIMIT 1")
+        detail = cursor.fetchone()["detail"]
+    assert detail["scope"] == [7] and detail["refreshed"] == 1 and "converged" in detail
+    with pytest.raises(DraftError):
+        categories_runs.drift_audit("prod", actor="tester", blog_ids=[999])
+    everything = categories_runs.drift_audit("prod", actor="tester")
+    assert everything["scope"] is None and everything["refreshed_blogs"] == 2
+
+
+def test_deleting_a_node_reports_the_mappings_it_drops(ready):
+    """slug_map rows cascade away with their target node; the operator is
+    told which live slugs just lost their disposition."""
+    nodes, _ = ready
+    footwear = nodes["footwear"] if "footwear" in nodes else None
+    target = footwear or next(iter(nodes.values()))
+    _write(categories_mapping.set_mapping, old_slug="old-boots", action="map",
+           target_node_id=target["node_id"], is_primary=False)
+    result = _write(categories_draft.delete_node, target["node_id"], cascade=True)
+    assert "old-boots" in result["unmapped_slugs"]
+    with database.cursor() as cursor:
+        cursor.execute("SELECT detail FROM catmgr.audit_log WHERE action = 'node_deleted' ORDER BY id DESC LIMIT 1")
+        assert "old-boots" in cursor.fetchone()["detail"]["unmapped_slugs"]
+    status = _read(categories_mapping.mapping_status, "prod")
+    assert next(s for s in status["slugs"] if s["old_slug"] == "old-boots")["action"] is None
+
+
+def test_recovery_of_a_job_that_finished_before_its_status_flip(ready, monkeypatch):
+    """A worker that died between the post-apply snapshot refresh and the
+    status flip leaves a 'running' job whose cursors say everything landed.
+    Recovery marks it done without calling WordPress again - and without
+    tripping the version fence on the job's own refresh."""
+    _, recorder = ready
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    job = done["jobs"][0]
+    assert job["progress"]["snapshot_refreshed"] is True
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE catmgr.run_job SET status='running', finished_at=NULL WHERE job_id=%s", (job["job_id"],))
+            cursor.execute("UPDATE catmgr.run SET status='running', finished_at=NULL WHERE run_id=%s", (run["run_id"],))
+    _set_heartbeat(run["run_id"], 30)
+    recorder.calls.clear()
+    categories_runs.process_run(run["run_id"], actor="tester")   # reclaims the stale job, then resumes it
+    detail = _read(categories_runs.get_run, run["run_id"])
+    assert detail["jobs"][0]["status"] == "done"
+    assert detail["jobs"][0]["result"]["replayed"] is True
+    assert recorder.calls == []                      # WordPress was not touched again
+
+
+def test_in_flight_job_continues_past_a_bumped_snapshot_version(ready, monkeypatch):
+    """Once apply-terms has landed, a snapshot re-import must not strand the
+    blog behind 're-plan required': the remaining phases run under the
+    broker's own fences."""
+    _, recorder = ready
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    job = done["jobs"][0]
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE catmgr.run_job SET status='pending', finished_at=NULL,"
+                " progress = '{\"snapshot_taken\": true, \"terms_done\": true}'::jsonb WHERE job_id=%s",
+                (job["job_id"],))
+            cursor.execute("UPDATE catmgr.run SET status='queued', finished_at=NULL WHERE run_id=%s", (run["run_id"],))
+            cursor.execute("UPDATE catmgr.snapshot SET version = version + 1 WHERE env='prod' AND blog_id=1")
+    recorder.calls.clear()
+    categories_runs.process_run(run["run_id"], actor="tester")
+    detail = _read(categories_runs.get_run, run["run_id"])
+    assert detail["jobs"][0]["status"] == "done", detail["jobs"][0]["result"]
+    paths = [p for _, p, _ in recorder.calls]
+    assert "/apply-terms" not in paths and "/finalize" in paths
+    fence = detail["jobs"][0]["result"]["resumed_past_version_fence"]
+    assert fence["snapshot"] > fence["plan"]

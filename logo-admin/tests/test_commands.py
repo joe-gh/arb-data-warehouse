@@ -20,17 +20,46 @@ from commands import (
 
 
 EXPECTED_COMMANDS = {
+    # assignments
     "save_assignment",
     "deactivate_assignment",
     "hard_delete_assignment",
     "deactivate_color",
     "hard_delete_color",
     "set_style_active",
+    "set_styles_active",
     "apply_to_colors",
     "copy_style",
+    "copy_style_to_many",
+    "paste_logo_set",
+    "reorder_logo_rows",
+    "replace_design",
+    "bulk_apply",
+    # store settings and pricing
     "update_store_settings",
+    "set_store_extra_customers",
     "set_store_pricing_tier",
     "delete_store_pricing_tier",
+    "set_price_rule_active",
+    "delete_price_rule",
+    # logo names, costs, colors
+    "set_logo_name",
+    "clear_logo_name",
+    "set_logo_cost",
+    "set_logo_default_cost",
+    "set_color_class",
+    # stock rules and sync blocks
+    "set_brand_stock_rule",
+    "remove_brand_stock_rule",
+    "set_stock_override",
+    "remove_stock_override",
+    "set_sync_block",
+    "remove_sync_block",
+    # product mix
+    "set_product_mix",
+    "disable_product_mix",
+    "add_mix_styles",
+    "remove_mix_styles",
 }
 
 

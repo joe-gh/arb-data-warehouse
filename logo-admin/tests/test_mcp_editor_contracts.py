@@ -21,6 +21,7 @@ def test_mcp_has_editor_tools():
         "copy_style_batch_preview", "copy_style_batch",
         "design_swap_preview", "design_swap",
         "find_similar_styles", "store_logo_coverage",
+        "fill_gaps_preview", "fill_gaps_execute",
     } <= set(mcp_server.tool_names())
 
 

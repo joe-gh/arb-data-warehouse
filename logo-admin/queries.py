@@ -657,6 +657,95 @@ def store_logo_coverage(cursor, *, fdm4_store: str,
     }
 
 
+def fill_gaps_plan(cursor, *, fdm4_store: str, styles=None) -> dict:
+    """Plan for copying a style's own configured logos onto its logo-less
+    colors. Splits gap styles into `copyable` (>= 1 configured live color)
+    and `no_source` (no logos anywhere). A copyable style gets an
+    `auto_source` only when every configured color carries an IDENTICAL
+    logo set; otherwise `needs_choice` is true and the operator picks the
+    source color. Read-only."""
+    store = _clean(fdm4_store, "fdm4_store")
+    catalog = _catalog_for_store(cursor, store)
+    if catalog is None:
+        raise QueryNotFound("Store not found")
+    style_filter = ""
+    params: list = [store, catalog]
+    if styles:
+        style_filter = "AND style_code = ANY(%s)"
+        params.append([_clean(s, "style") for s in styles])
+    params.append(COVERAGE_STYLE_RESULT_LIMIT)
+    cursor.execute(
+        f"""
+        SELECT style_code AS product_style,
+               max(name) FILTER (WHERE kind = 'parent') AS name,
+               COALESCE(array_agg(DISTINCT color_code) FILTER (
+                   WHERE kind = 'variation'
+                     AND NULLIF(btrim(color_code), '') IS NOT NULL
+               ), '{{}}'::text[]) AS colors
+          FROM woo.store_product_state
+         WHERE fdm4_store = %s AND catalog_id = %s AND is_active = true
+           AND style_code IS NOT NULL {style_filter}
+         GROUP BY style_code
+         ORDER BY style_code
+         LIMIT %s
+        """,
+        params,
+    )
+    live = {str(r["product_style"]): (str(r["name"] or ""), sorted(str(c) for c in r["colors"]))
+            for r in cursor.fetchall()}
+    if not live:
+        return {"store": store, "copyable": [], "no_source": [], "truncated": False}
+    cursor.execute(
+        """
+        SELECT product_style, garment_color_code, option_row, position, design_id,
+               logo_code, color_scheme_id, location, optional, background,
+               cost_override, sort_order, image_url, name_override
+          FROM logo.assignment
+         WHERE fdm4_store = %s AND active AND product_style = ANY(%s)
+         ORDER BY product_style, garment_color_code, option_row, position
+        """,
+        (store, list(live)),
+    )
+    assigned: dict = {}
+    for row in cursor.fetchall():
+        style = str(row["product_style"])
+        color = str(row["garment_color_code"])
+        assigned.setdefault(style, {}).setdefault(color, []).append((
+            int(row["option_row"]), int(row["position"]), str(row["design_id"]),
+            str(row["logo_code"] or ""), str(row["color_scheme_id"] or ""),
+            str(row["location"] or ""), bool(row["optional"]),
+            str(row["background"] or ""),
+            None if row["cost_override"] is None else float(row["cost_override"]),
+            int(row["sort_order"] or 0), str(row["image_url"] or ""),
+            row["name_override"],
+        ))
+    copyable, no_source = [], []
+    for style in sorted(live):
+        name, colors = live[style]
+        by_color = assigned.get(style, {})
+        configured = sorted(c for c in colors if c in by_color)
+        targets = sorted(c for c in colors if c not in by_color)
+        if not targets:
+            continue
+        if not configured:
+            no_source.append({"style": style, "name": name, "unconfigured": targets})
+            continue
+        signatures = {c: tuple(by_color[c]) for c in configured}
+        identical = len(set(signatures.values())) == 1
+        auto_source = configured[0] if identical else None
+        copyable.append({
+            "style": style,
+            "name": name,
+            "targets": targets,
+            "sources": [{"color": c, "rows": len(by_color[c])} for c in configured],
+            "auto_source": auto_source,
+            "needs_choice": not identical,
+            "slots": len(by_color[auto_source]) * len(targets) if auto_source else None,
+        })
+    return {"store": store, "copyable": copyable, "no_source": no_source,
+            "truncated": len(live) >= COVERAGE_STYLE_RESULT_LIMIT}
+
+
 def search_designs(
     cursor,
     *,

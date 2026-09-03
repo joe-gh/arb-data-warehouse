@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import DatabaseError, InterfaceError, OperationalError
 from psycopg2.pool import PoolError
 
-from auth import read_session, verify_csrf
+from auth import read_session, renew_session_if_due, verify_csrf
 from authorization import agent_access_allowed
 from config import get_settings
 from database_contract import validate_write_database_contract
@@ -151,6 +151,7 @@ def shutdown() -> None:
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
+    renew_session_if_due(request, response)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"

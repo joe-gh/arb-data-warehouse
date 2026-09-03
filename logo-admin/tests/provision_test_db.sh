@@ -111,6 +111,10 @@ if [[ "$repull_present" == "t" && -z "$repull_function_sha256" ]]; then
   exit 2
 fi
 
+# The pim schema is bootstrapped out-of-band on real databases
+# (sql/pim_schema.sql, idempotent); later migrations assume it exists.
+psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 -f "$repo_root/sql/pim_schema.sql"
+
 while IFS= read -r migration; do
   psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 -f "$migration"
 done < <(

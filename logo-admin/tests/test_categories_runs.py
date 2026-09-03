@@ -109,10 +109,10 @@ def test_membership_paging_and_progress(broker, monkeypatch):
     assert done["status"] == "completed"
     membership_calls = [p for _, p, _ in broker.calls
                         if p == "/apply-memberships"]
-    assert len(membership_calls) == 2  # blog1 has 2 membership rows, page=1
+    assert len(membership_calls) == 5  # blog1 has 5 membership rows, page=1
     job = done["jobs"][0]
-    assert job["progress"]["membership_offset"] == 2
-    assert job["result"]["memberships"] == {"applied": 2, "total": 2}
+    assert job["progress"]["membership_offset"] == 5
+    assert job["result"]["memberships"] == {"applied": 5, "total": 5}
 
 
 def test_failure_stops_run_and_retry_resumes(ready_scenario, monkeypatch):

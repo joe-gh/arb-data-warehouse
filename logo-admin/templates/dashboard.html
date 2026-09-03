@@ -32,10 +32,11 @@
       <button class="main-nav__link" type="button" data-view="dashboard">Dashboard</button>
       <button class="main-nav__link" type="button" data-view="health">Health</button>
       <button class="main-nav__link" type="button" data-view="help">Help</button>
-      <div class="main-nav__group" data-group="logo,names,colors">
+      <div class="main-nav__group" data-group="logo,names,colors,bulk">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-logos">Logos<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu" id="nav-menu-logos" hidden>
           <button class="main-nav__item" type="button" data-view="logo">Logo Configuration</button>
+          <button class="main-nav__item" type="button" data-view="bulk">Bulk Operations<small>Multi-style jobs: fill missing colors, paste, activate, bulk apply</small></button>
           <button class="main-nav__item" type="button" data-view="names">Logo Names</button>
           <button class="main-nav__item" type="button" data-view="colors">Logo Colors</button>
           <div class="main-nav__divider" role="separator"></div>
@@ -110,6 +111,10 @@
             <button class="dash-card" type="button" data-view="colors">
               <span class="dash-card__title">Logo Colors</span>
               <span class="dash-card__desc">Mark garment colors light or dark so Bulk Apply picks the black or white version of the logo.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="bulk">
+              <span class="dash-card__title">Bulk Operations</span>
+              <span class="dash-card__desc">Multi-style jobs with preview and undo: fill missing colors, paste to many styles, activate, bulk apply.</span>
             </button>
             <button class="dash-card" type="button" id="dash-ownership">
               <span class="dash-card__title">Logo Sync Stores</span>
@@ -212,21 +217,9 @@
           <div id="style-options" class="combobox__options" role="listbox" hidden></div>
         </div>
       </div>
-      <div id="batch-bar" class="batch-bar">
-        <button id="batch-select" class="button button--ghost button--small" type="button">Select styles…</button>
-        <span id="batch-count" class="muted">No styles selected</span>
-        <select id="batch-scope" title="Which colors of each selected style receive the paste">
-          <option value="match">Same color as copied</option>
-          <option value="all">All colors</option>
-          <option value="light">Light colors</option>
-          <option value="dark">Dark colors</option>
-        </select>
-        <button id="batch-paste" class="button button--secondary button--small" type="button" disabled>Paste clipboard <span class="badge badge--writes">Makes changes</span></button>
-        <button id="batch-activate" class="button button--ghost button--small" type="button" disabled>Set active</button>
-        <button id="batch-deactivate" class="button button--ghost button--small" type="button" disabled>Set inactive</button>
-        <button id="batch-bulk-apply" class="button button--ghost button--small" type="button" disabled>Bulk Apply to selection…</button>
-        <button id="batch-copy-from-open" class="button button--ghost button--small" type="button" disabled>Copy open style to selection…</button>
-        <button id="batch-clear" class="icon-button" type="button" aria-label="Clear selection" hidden><span aria-hidden="true">×</span></button>
+      <div class="batch-bar">
+        <button id="open-bulk-view" class="button button--ghost button--small" type="button" title="Multi-style jobs with preview and undo - fill missing colors, paste to many styles, activate, bulk apply">&#9889; Bulk operations</button>
+        <span class="muted text-small">Work on many styles at once - fill missing colors, paste, activate, bulk apply.</span>
       </div>
       <p id="selection-status" class="selection-status" aria-live="polite">Loading available storefronts...</p>
     </section>
@@ -308,6 +301,121 @@
     </div><!-- /view-logo -->
 
     <!-- Pricing management -->
+    <section id="view-bulk" class="view" hidden aria-label="Bulk operations">
+      <section class="card" aria-labelledby="bulk-title">
+        <div class="card__header">
+          <div>
+            <p class="eyebrow">Multi-style jobs</p>
+            <h2 id="bulk-title">Bulk Operations</h2>
+            <p class="muted text-small">Pick a job, choose target styles, preview, apply. Every run lands in Bulk history with one-click undo.</p>
+          </div>
+          <div class="field bulk-store-field">
+            <label class="field__label" for="bulk-store">Store</label>
+            <select id="bulk-store"><option value="">Choose a store…</option></select>
+          </div>
+        </div>
+      </section>
+
+      <div id="bulk-jobs" class="dashboard__cards">
+        <button class="dash-card" type="button" data-bulk-job="fill">
+          <span class="dash-card__title">Fill missing colors</span>
+          <span class="dash-card__desc">Copy each style's own logos onto its colors that have none. Occupied slots are never touched.</span>
+        </button>
+        <button class="dash-card" type="button" data-bulk-job="coverage">
+          <span class="dash-card__title">Coverage report</span>
+          <span class="dash-card__desc">Every style with logo-less colors, split into fixable and no-logos-anywhere. Exportable.</span>
+        </button>
+        <button class="dash-card" type="button" data-bulk-job="paste">
+          <span class="dash-card__title">Paste logos to many styles</span>
+          <span class="dash-card__desc">Copy a color in the Logo editor, then paste it onto selected styles by color scope.</span>
+        </button>
+        <button class="dash-card" type="button" data-bulk-job="bulkapply">
+          <span class="dash-card__title">Bulk apply a logo</span>
+          <span class="dash-card__desc">Put one logo on the selected styles - light/dark aware.</span>
+        </button>
+        <button class="dash-card" type="button" data-bulk-job="activate">
+          <span class="dash-card__title">Activate / deactivate styles</span>
+          <span class="dash-card__desc">Turn every logo assignment on the selected styles on or off.</span>
+        </button>
+        <button class="dash-card" type="button" data-bulk-job="copy">
+          <span class="dash-card__title">Copy style config to many</span>
+          <span class="dash-card__desc">Copy one style's whole logo setup onto the selected styles, color-matched.</span>
+        </button>
+      </div>
+
+      <div id="bulk-flow" hidden>
+        <div class="title-row bulk-flow-head">
+          <button id="bulk-flow-back" class="button button--ghost button--small" type="button">&lsaquo; All jobs</button>
+          <h3 id="bulk-flow-title"></h3>
+        </div>
+
+        <section id="bulk-flow-fill" class="card" hidden aria-label="Fill missing colors">
+          <div class="card__header">
+            <div>
+              <p class="eyebrow">Fill missing colors</p>
+              <p class="muted text-small">Each style copies from its own configured color. The source is picked automatically when every configured color carries the same logos; otherwise choose one. Occupied slots are skipped.</p>
+            </div>
+            <button id="fill-refresh" class="button button--ghost button--small" type="button">Refresh</button>
+          </div>
+          <div id="fill-summary" class="muted text-small" aria-live="polite"></div>
+          <div id="fill-copyable" class="table-wrap"></div>
+          <details id="fill-nosource-wrap" hidden>
+            <summary id="fill-nosource-count"></summary>
+            <div id="fill-nosource" class="table-wrap"></div>
+          </details>
+          <div class="footer-actions bulk-flow-actions">
+            <span id="fill-preview-line" class="muted"></span>
+            <button id="fill-undo" class="button button--ghost button--small" type="button" hidden></button>
+            <button id="fill-apply" class="button button--primary" type="button" disabled>Fill selected styles <span class="badge badge--writes">Makes changes</span></button>
+          </div>
+        </section>
+
+        <section id="bulk-flow-coverage" class="card" hidden aria-label="Coverage report">
+          <div class="card__header">
+            <div>
+              <p class="eyebrow">Coverage report</p>
+              <p class="muted text-small">Live styles with at least one garment color lacking an active logo.</p>
+            </div>
+            <button id="coverage-export" class="button button--secondary button--small" type="button" disabled>Export CSV</button>
+          </div>
+          <div id="coverage-summary" class="muted text-small" aria-live="polite"></div>
+          <div id="coverage-table" class="table-wrap"></div>
+        </section>
+
+        <section id="bulk-flow-targets" class="card" hidden aria-label="Target styles">
+          <div class="card__header">
+            <div>
+              <p class="eyebrow">Target styles</p>
+              <p class="muted text-small" id="bulk-targets-hint"></p>
+            </div>
+          </div>
+          <div class="field"><input id="batch-search" type="search" placeholder="Filter by style number or name..." autocomplete="off"></div>
+          <div class="batch-filters">
+            <label class="check-row check-row--inline"><input id="batch-assigned-only" type="checkbox" checked><span>Only styles with logos</span></label>
+            <label class="check-row check-row--inline"><input id="batch-unconfigured-only" type="checkbox"><span>Only styles with unconfigured colors</span></label>
+            <button id="batch-select-similar" class="button button--ghost button--small" type="button" disabled>Select styles with the same logos as the open style</button>
+            <button id="batch-select-visible" class="button button--ghost button--small" type="button">Select all shown</button>
+          </div>
+          <div id="batch-table" class="table-wrap"></div>
+          <div id="batch-bar" class="batch-bar">
+            <span id="batch-count" class="muted">No styles selected</span>
+            <select id="batch-scope" title="Which colors of each selected style receive the paste">
+              <option value="match">Same color as copied</option>
+              <option value="all">All colors</option>
+              <option value="light">Light colors</option>
+              <option value="dark">Dark colors</option>
+            </select>
+            <button id="batch-paste" class="button button--secondary button--small" type="button" disabled>Paste clipboard <span class="badge badge--writes">Makes changes</span></button>
+            <button id="batch-activate" class="button button--ghost button--small" type="button" disabled>Set active</button>
+            <button id="batch-deactivate" class="button button--ghost button--small" type="button" disabled>Set inactive</button>
+            <button id="batch-bulk-apply" class="button button--ghost button--small" type="button" disabled>Bulk Apply to selection…</button>
+            <button id="batch-copy-from-open" class="button button--ghost button--small" type="button" disabled>Copy open style to selection…</button>
+            <button id="batch-clear" class="icon-button" type="button" aria-label="Clear selection" hidden><span aria-hidden="true">×</span></button>
+          </div>
+        </section>
+      </div>
+    </section>
+
     <section id="view-pricing" class="view" hidden aria-label="Pricing management">
       <div class="pricing">
         <div class="pricing__head">
@@ -1600,22 +1708,6 @@
     <div class="dialog__footer"><span></span><button class="button button--primary dialog-close" type="button">Done</button></div>
   </dialog>
 
-  <dialog id="batch-dialog" class="dialog dialog--wide" aria-labelledby="batch-title">
-    <div class="dialog__header">
-      <div><p class="eyebrow">Batch</p><h2 id="batch-title">Select styles</h2><p id="batch-context" class="muted"></p></div>
-      <button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button>
-    </div>
-    <div class="dialog__body">
-      <div class="field"><input id="batch-search" type="search" placeholder="Filter by style number or name..." autocomplete="off"></div>
-      <div class="batch-filters">
-        <label class="check-row check-row--inline"><input id="batch-assigned-only" type="checkbox" checked><span>Only styles with logos</span></label>
-        <label class="check-row check-row--inline"><input id="batch-unconfigured-only" type="checkbox"><span>Only styles with unconfigured colors</span></label>
-        <button id="batch-select-similar" class="button button--ghost button--small" type="button" disabled>Select styles with the same logos as the open style</button>
-      </div>
-      <div id="batch-table" class="table-wrap"></div>
-    </div>
-    <div class="dialog__footer"><span id="batch-dialog-count" class="muted"></span><div class="footer-actions"><button id="batch-select-visible" class="button button--ghost" type="button">Select all shown</button><button id="batch-apply" class="button button--primary" type="button">Use selection</button></div></div>
-  </dialog>
 
   <dialog id="copy-many-dialog" class="dialog dialog--wide" aria-labelledby="copy-many-title">
     <div class="dialog__header">

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import secrets
+import time
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -13,7 +14,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from fastapi import Depends, Header, HTTPException, Request as FastAPIRequest, Response
 from itsdangerous import BadData, SignatureExpired, URLSafeTimedSerializer
 
-from config import Settings, get_settings
+from config import MAX_SESSION_SECONDS, Settings, get_settings
 from db import database
 
 
@@ -169,17 +170,36 @@ def _serializer(settings: Settings) -> URLSafeTimedSerializer:
     )
 
 
+# A cookie older than this is re-issued on the next authenticated request,
+# sliding the session's expiry forward (an operator working through a long
+# migration day never gets signed out mid-run) ...
+SESSION_RENEW_AFTER_SECONDS = 60 * 60
+# ... until this much time has passed since sign-in: then the next expiry is
+# final and they sign in again.
+SESSION_ABSOLUTE_MAX_SECONDS = 7 * 24 * 60 * 60
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _session_ttl(settings: Settings) -> int:
+    return int(min(settings.session_max_age, MAX_SESSION_SECONDS))
+
+
 def create_session(identity: Dict[str, str]) -> str:
-    """Create an eight-hour-max signed session containing no credentials."""
+    """Create a signed session containing no credentials (24 h max per
+    cookie, renewed while in use - see SESSION_RENEW_AFTER_SECONDS)."""
 
     settings = get_settings()
     session_id = secrets.token_urlsafe(32)
-    ttl = min(settings.session_max_age, 8 * 60 * 60)
+    ttl = _session_ttl(settings)
     payload = {
         "session_id": session_id,
         "user_login": identity["user_login"],
         "display_name": identity.get("display_name") or identity["user_login"],
         "csrf": secrets.token_urlsafe(32),
+        "first_issued": int(_now()),
     }
     with database.cursor(write=True, actor=identity["user_login"]) as cursor:
         cursor.execute(
@@ -203,8 +223,8 @@ def read_session(request: FastAPIRequest) -> Optional[Dict[str, str]]:
     if not cookie:
         return None
     try:
-        payload = _serializer(settings).loads(
-            cookie, max_age=min(settings.session_max_age, 8 * 60 * 60)
+        payload, issued_at = _serializer(settings).loads(
+            cookie, max_age=_session_ttl(settings), return_timestamp=True
         )
     except (SignatureExpired, BadData):
         return None
@@ -237,12 +257,56 @@ def read_session(request: FastAPIRequest) -> Optional[Dict[str, str]]:
         )
         if cursor.fetchone() is None:
             return None
+    # Sliding renewal: flag the request so the outermost middleware re-issues
+    # the cookie (same session, fresh timestamp) and extends the registry row.
+    issued = issued_at.timestamp() if hasattr(issued_at, "timestamp") else float(issued_at)
+    first_issued = payload.get("first_issued")
+    first = float(first_issued) if isinstance(first_issued, (int, float)) else issued
+    now = _now()
+    if (now - issued >= SESSION_RENEW_AFTER_SECONDS
+            and now - first < SESSION_ABSOLUTE_MAX_SECONDS):
+        request.state.session_renewal = {
+            "payload": {**payload, "first_issued": int(first)},
+            "session_hash": session_hash,
+            "user_login": user_login,
+        }
     return {
         "user_login": user_login,
         "display_name": str(payload.get("display_name") or user_login),
         "csrf": csrf,
         "_session_hash": session_hash,
     }
+
+
+def renew_session_if_due(request: FastAPIRequest, response: Response) -> bool:
+    """Re-issue the session cookie flagged by read_session and push the
+    registry expiry out by a full TTL. Never lets a failure break the
+    response: the old cookie simply stays valid until its own expiry."""
+
+    renewal = getattr(request.state, "session_renewal", None)
+    if not renewal:
+        return False
+    request.state.session_renewal = None
+    settings = get_settings()
+    try:
+        token = _serializer(settings).dumps(renewal["payload"])
+        with database.cursor(write=True, actor=renewal["user_login"]) as cursor:
+            cursor.execute(
+                """
+                UPDATE logo.admin_session
+                   SET expires_at = now() + (%s || ' seconds')::interval
+                 WHERE session_hash = %s
+                   AND user_login = %s
+                   AND revoked_at IS NULL
+                """,
+                (str(_session_ttl(settings)), renewal["session_hash"], renewal["user_login"]),
+            )
+            if cursor.rowcount != 1:
+                return False
+    except Exception:  # noqa: BLE001 - renewal is best effort
+        return False
+    set_session_cookie(response, token)
+    return True
 
 
 def revoke_session(user: Dict[str, str]) -> None:
@@ -266,7 +330,7 @@ def set_session_cookie(response: Response, value: str) -> None:
     response.set_cookie(
         settings.session_cookie_name,
         value,
-        max_age=min(settings.session_max_age, 8 * 60 * 60),
+        max_age=_session_ttl(settings),
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite="strict",

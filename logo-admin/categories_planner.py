@@ -28,6 +28,10 @@ from categories_service import record_audit
 
 CATEGORY_BASE = "/product-category/"
 DELETED_REDIRECT_PATH = "/store/"
+# The broker parks a changing/doomed term on catmgrtmp-<term_id> during its
+# temp pass; a live slug still wearing it is the leftover of a refused or
+# crashed apply.
+TEMP_SLUG_PREFIX = "catmgrtmp-"
 
 # Static reminders the planner cannot automate; surfaced as preview warnings.
 CODE_WARNINGS = [
@@ -241,6 +245,17 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
     kept = target["kept"]                       # node_id -> desired term
     terms = _snapshot_terms(cursor, env, blog_id)
 
+    # A parked slug is always a doomed leftover: its original disposition was
+    # delete or merge, and the products it still carries get explicit rows
+    # below. Implicit delete, so a re-plan converges it without operator
+    # ceremony; a product left with no category at all surfaces as the usual
+    # zero-category blocker.
+    for term in terms:
+        if term["slug"].startswith(TEMP_SLUG_PREFIX) and term["slug"] not in dispositions:
+            dispositions[term["slug"]] = {
+                "old_slug": term["slug"], "action": "delete", "target_node_id": None,
+                "is_primary": False, "override_id": None, "implicit": True, "parked": True,
+            }
     unmapped = [t["slug"] for t in terms if t["slug"] not in dispositions]
     if unmapped:
         raise DraftError(
@@ -420,8 +435,12 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
         create_order[c["slug"]] = depth_of(c["slug"])
     creates.sort(key=lambda c: (create_order[c["slug"]], c["slug"]))
 
-    # ----- memberships: only products whose final set differs from what the
-    # term operations alone would leave behind.
+    # ----- memberships: products whose final set differs from what the term
+    # operations alone would leave behind, PLUS every product on a doomed
+    # term. finalize deletes a doomed term only when it is EMPTY (anything
+    # still attached there means WordPress drifted), so a product that is
+    # already in the merge target - or ends with no category at all - still
+    # needs its explicit row to leave the doomed term first.
     node_final_slug_here = {n: d["slug"] for n, d in kept.items()}
     sku_extra_add: Dict[str, Set[str]] = {}
     sku_remove: Dict[str, Set[str]] = {}
@@ -454,7 +473,8 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
         if not final:
             zero_category.append({"product_id": product["product_id"],
                                   "sku": product["sku"]})
-        if final != after_term_ops:
+        touches_doomed = any(slug in merge_target_slug for slug in product["slugs"])
+        if final != after_term_ops or touches_doomed:
             memberships.append({
                 "product_id": product["product_id"],
                 "expected_sku": product["sku"],
@@ -472,6 +492,8 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
                     "new_path": f"{CATEGORY_BASE}{update['set']['slug']}/",
                 })
         for delete in deletes:
+            if delete["expected_slug"].startswith(TEMP_SLUG_PREFIX):
+                continue  # a parked slug was never a public URL
             if delete["reason"] == "merge":
                 target_slug = merge_target_slug.get(delete["expected_slug"])
                 if target_slug:
@@ -595,6 +617,7 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
     zero_by_sku: Dict[str, int] = {}
     zero_detail: Dict[str, Dict[str, Any]] = {}
     changed_blog1_slugs: List[Dict[str, str]] = []
+    recreated: Dict[int, List[str]] = {}
     redirect_count = 0
     totals = {"updates": 0, "creates": 0, "deletes": 0,
               "membership_changes": 0, "reslugs": 0, "renames": 0}
@@ -613,6 +636,9 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
             row_collisions = _plan_slug_collisions(plan)
             if row_collisions:
                 collisions[blog_id] = row_collisions
+            row_recreated = _plan_recreated_slugs(plan)
+            if row_recreated:
+                recreated[blog_id] = row_recreated
             for zero in plan["zero_category"]:
                 if zero["sku"] and zero["sku"] not in acked:
                     zero_by_sku[zero["sku"]] = zero_by_sku.get(zero["sku"], 0) + 1
@@ -649,6 +675,16 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
             "kind": "slug_collisions",
             "blogs": [{"blog_id": b, "slugs": s[:20]}
                       for b, s in sorted(collisions.items())][:20],
+        })
+    if recreated:
+        blockers.append({
+            "kind": "recreated_slugs",
+            "message": "These slugs would be deleted and re-created as NEW terms"
+                       " in the same run (new term_id; menus, ES documents and"
+                       " design maps key on term_id). Map the live slug into the"
+                       " node instead, or remove the node from the draft.",
+            "blogs": [{"blog_id": b, "slugs": s[:20]}
+                      for b, s in sorted(recreated.items())][:20],
         })
     if zero_by_sku:
         blockers.append({
@@ -687,6 +723,15 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
         "totals": totals,
         "blogs": blogs,
     }
+
+
+def _plan_recreated_slugs(plan: Dict[str, Any]) -> List[str]:
+    """Creates whose slug a doomed live term on the same blog is vacating:
+    the operator mapped the live term away (delete / merge) but left a draft
+    node with the same slug, so the run would swap the term's identity. The
+    design rule is mutate-in-place, never delete+recreate: a blocker."""
+    doomed = {d["expected_slug"] for d in plan["terms"]["delete"]}
+    return sorted(c["slug"] for c in plan["terms"]["create"] if c["slug"] in doomed)
 
 
 def _plan_slug_collisions(plan: Dict[str, Any]) -> List[str]:

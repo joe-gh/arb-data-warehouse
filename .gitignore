@@ -32,3 +32,7 @@ __pycache__/
 *.bak.*
 *.bak-*
 .pytest_cache/
+
+# --- local tooling (never commit) ---
+.superpowers/
+logo-admin/.venv/

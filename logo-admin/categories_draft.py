@@ -360,11 +360,34 @@ def delete_node(cursor, node_id: int, *, cascade: bool = False,
         cursor.execute("DELETE FROM catmgr.node WHERE node_id = %s", (target,))
         deleted.append(target)
 
+    # Explicit slug_map rows pointing at the subtree cascade away with it:
+    # every live slug they covered needs a new disposition before the next
+    # preview. Report them so the operator is not surprised by an
+    # "unmapped slugs" blocker later.
+    cursor.execute(
+        "SELECT old_slug FROM catmgr.slug_map WHERE target_node_id = ANY(%s)"
+        " ORDER BY old_slug",
+        (list(_subtree_ids(cursor, node_id)),),
+    )
+    unmapped_slugs = [row["old_slug"] for row in cursor.fetchall()]
     _delete_subtree(node_id)
     record_audit(cursor, actor=actor, action="node_deleted", entity="node",
                  entity_key=str(node_id),
-                 detail={"slug": node["slug"], "deleted": deleted})
-    return {"deleted": deleted}
+                 detail={"slug": node["slug"], "deleted": deleted,
+                         "unmapped_slugs": unmapped_slugs})
+    return {"deleted": deleted, "unmapped_slugs": unmapped_slugs}
+
+
+def _subtree_ids(cursor, node_id: int) -> List[int]:
+    ids = [node_id]
+    frontier = [node_id]
+    while frontier:
+        cursor.execute(
+            "SELECT node_id FROM catmgr.node WHERE parent_id = ANY(%s)", (frontier,)
+        )
+        frontier = [row["node_id"] for row in cursor.fetchall()]
+        ids.extend(frontier)
+    return ids
 
 
 def seed_from_snapshot(cursor, *, env: str, blog_id: int, actor: str,

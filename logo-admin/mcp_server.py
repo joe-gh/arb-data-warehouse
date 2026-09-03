@@ -112,6 +112,30 @@ def store_logo_coverage(fdm4_store: str, unconfigured_only: bool = True) -> Any:
 
 
 @mcp.tool()
+def fill_gaps_preview(fdm4_store: str, styles: Optional[List[str]] = None) -> Any:
+    """Plan for copying each style's own configured logos onto its logo-less
+    colors: `copyable` styles (with auto_source when every configured color
+    matches, else needs_choice + per-color sources) and `no_source` styles
+    (no logos anywhere). Read-only."""
+    body: Dict[str, Any] = {"store": fdm4_store}
+    if styles:
+        body["styles"] = styles
+    return _call("POST", "/api/styles/fill-gaps/preview", json_body=body)
+
+
+@mcp.tool()
+def fill_gaps_execute(fdm4_store: str, entries: List[Dict[str, Any]],
+                      overwrite: bool = False) -> Any:
+    """Fill logo-less colors from each style's own source color. entries =
+    [{style, source_color, colors?}] (colors defaults to every logo-less
+    color of the style). Occupied slots are skipped unless overwrite. One
+    journal batch for the whole run - undo via bulk_apply_undo."""
+    return _call("POST", "/api/styles/fill-gaps", json_body={
+        "store": fdm4_store, "entries": entries, "overwrite": overwrite,
+    })
+
+
+@mcp.tool()
 def search_designs(q: str = "", store: Optional[str] = None) -> Any:
     """Search FDM4 designs by description/id/logo code. With a store and empty
     q, browses designs used by that store and its owning FDM4 customers."""
@@ -999,11 +1023,14 @@ def cat_freeze_set(env: str, on: bool) -> Any:
 
 
 @mcp.tool()
-def cat_drift_audit(env: str) -> Any:
-    """Re-import every snapshotted blog live, then report what a plan would
-    still change. converged=true and empty pending = WordPress matches the
-    draft exactly."""
-    return _call("POST", "/api/categories/drift-audit", json_body={"env": env})
+def cat_drift_audit(env: str, blog_ids: Optional[List[int]] = None) -> Any:
+    """Re-import every snapshotted blog live (or only blog_ids, for a phased
+    rollout), then report what a plan would still change. converged=true and
+    empty pending = WordPress matches the draft exactly."""
+    body: Dict[str, Any] = {"env": env}
+    if blog_ids:
+        body["blog_ids"] = [int(b) for b in blog_ids]
+    return _call("POST", "/api/categories/drift-audit", json_body=body)
 
 
 # ---------------------------------------------------- shared-kernel parity
