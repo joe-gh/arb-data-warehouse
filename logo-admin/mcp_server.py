@@ -588,12 +588,14 @@ def list_logo_names(q: str = "", limit: int = 50, offset: int = 0) -> Any:
 
 
 @mcp.tool()
-def set_logo_name(design_id: str, color_scheme_id: str, name: str) -> Any:
-    """Set the shopper-facing name for one (design, color scheme). Marks the row
-    manual + locked so a later FDM4 re-pull will not overwrite it. Takes effect
-    on the next store logo sync."""
+def set_logo_name(design_id: str, color_scheme_id: str, name: str, fdm4_store: str = "") -> Any:
+    """Set the shopper-facing name for one (design, color scheme): the shared
+    default (fdm4_store '') or one store's own name. Marks the row manual +
+    locked so a later FDM4 re-pull will not overwrite it. Takes effect on the
+    next store logo sync."""
     return _call("PUT", "/api/logo-names", json_body={
         "design_id": design_id, "color_scheme_id": color_scheme_id, "name": name,
+        "fdm4_store": fdm4_store,
     })
 
 
@@ -994,6 +996,145 @@ def cat_drift_audit(env: str) -> Any:
     still change. converged=true and empty pending = WordPress matches the
     draft exactly."""
     return _call("POST", "/api/categories/drift-audit", json_body={"env": env})
+
+
+# ---------------------------------------------------- shared-kernel parity
+# Every tool below calls a route that runs the same mutations.* handler (or
+# queries.* read) the in-app assistant stages, with MCP's identity instead of
+# a browser session.
+
+
+@mcp.tool()
+def get_sync_status(store: Optional[str] = None) -> Any:
+    """Pipeline liveness: latest FDM4 pull and website reconcile with timing
+    and errors, 24h counts; with a store also its logo-sync ownership, freezes,
+    recent sync events and last logo edit."""
+    return _call("GET", "/api/sync-status", params={"store": store} if store else None)
+
+
+@mcp.tool()
+def list_design_usage(store: str, design_id: str, color_scheme_id: Optional[str] = None) -> Any:
+    """Styles of a store carrying a design (optionally one scheme): rows,
+    colors, schemes, logo codes and style_codes for a swap."""
+    params = {"store": store, "design_id": design_id}
+    if color_scheme_id:
+        params["color_scheme_id"] = color_scheme_id
+    return _call("GET", "/api/design-usage", params=params)
+
+
+@mcp.tool()
+def set_logo_cost(store: str, design_id: str, styles: List[str], cost_override: Optional[str] = None,
+                  color_scheme_id: Optional[str] = None) -> Any:
+    """One shopper charge for a logo on every row of the named styles in a
+    store (cost_override as a decimal string; None clears the override so the
+    logo's default cost applies)."""
+    return _call("POST", "/api/assignments/logo-cost", json_body={
+        "store": store, "design_id": design_id, "color_scheme_id": color_scheme_id,
+        "cost_override": cost_override, "styles": styles,
+    })
+
+
+@mcp.tool()
+def set_store_extra_customers(store: str, customers: List[str]) -> Any:
+    """Replace the other FDM4 customer numbers whose designs a store may use."""
+    return _call("PUT", f"/api/settings/{store}/extra-customers", json_body={"customers": customers})
+
+
+@mcp.tool()
+def set_logo_default_cost(logo_code: str, color_scheme_id: str, cost: str, locked: bool = True) -> Any:
+    """A logo variant's default shopper charge (every store without a row
+    override); cost as a decimal string."""
+    return _call("PUT", "/api/default-costs", json_body={
+        "logo_code": logo_code, "color_scheme_id": color_scheme_id, "cost": cost, "locked": locked,
+    })
+
+
+@mcp.tool()
+def set_price_rule_active(rule_id: int, active: bool) -> Any:
+    """Switch a price rule on or off (on requires an app preview since its last edit)."""
+    return _call("PUT", "/api/price-rules/toggle", json_body={"rule_id": rule_id, "active": active})
+
+
+@mcp.tool()
+def delete_price_rule(rule_id: int) -> Any:
+    """Remove a price rule entirely."""
+    return _call("DELETE", "/api/price-rules", params={"rule_id": rule_id})
+
+
+@mcp.tool()
+def list_price_rules(store: Optional[str] = None) -> Any:
+    """Price rules (optionally only those that can affect one store)."""
+    return _call("GET", "/api/price-rules", params={"store": store} if store else None)
+
+
+@mcp.tool()
+def set_stock_override(style_code: str, mode: str, note: str = "") -> Any:
+    """Fake Inventory style exception: mode 'fake' (always in stock) or 'real'."""
+    return _call("PUT", "/api/stock-overrides", json_body={"style_code": style_code, "mode": mode, "note": note})
+
+
+@mcp.tool()
+def remove_stock_override(style_code: str) -> Any:
+    """Remove a style's Fake Inventory exception."""
+    return _call("DELETE", "/api/stock-overrides", params={"style": style_code})
+
+
+@mcp.tool()
+def set_brand_stock_rule(mill_code: str, mode: str) -> Any:
+    """Fake Inventory brand rule by FDM4 mill code: mode 'real' or 'fake'."""
+    return _call("PUT", "/api/stock-overrides/brands", json_body={"mill_code": mill_code, "mode": mode})
+
+
+@mcp.tool()
+def remove_brand_stock_rule(mill_code: str) -> Any:
+    """Remove a brand's Fake Inventory rule."""
+    return _call("DELETE", "/api/stock-overrides/brands", params={"mill": mill_code})
+
+
+@mcp.tool()
+def set_sync_block(fdm4_store: str, styles: Optional[List[str]] = None, scope: str = "full", note: str = "") -> Any:
+    """Freeze the hourly update for a whole store (styles empty; scope full|pricing)
+    or for named styles."""
+    styles = styles or []
+    return _call("PUT", "/api/sync-blocks", json_body={
+        "fdm4_store": fdm4_store, "whole_store": not styles, "styles": styles, "scope": scope, "note": note,
+    })
+
+
+@mcp.tool()
+def remove_sync_block(fdm4_store: str, style_code: str = "") -> Any:
+    """Remove a whole-store freeze (style_code '') or one style's freeze."""
+    return _call("DELETE", "/api/sync-blocks", params={"store": fdm4_store, "style": style_code})
+
+
+@mcp.tool()
+def set_product_mix(fdm4_store: str, mode: str, note: str = "") -> Any:
+    """Enrol a store in Product Mix ('all' follows FDM4; 'list' = curated list,
+    seeded from the current mix) or switch its mode."""
+    try:
+        return _call("PUT", "/api/product-mix/stores", json_body={"fdm4_store": fdm4_store, "mode": mode, "note": note})
+    except RuntimeError as exc:
+        if "already has a product-mix override" not in str(exc):
+            raise
+        return _call("PUT", "/api/product-mix/stores/mode", json_body={"fdm4_store": fdm4_store, "mode": mode})
+
+
+@mcp.tool()
+def disable_product_mix(fdm4_store: str) -> Any:
+    """Switch a store's Product Mix override off (it follows FDM4 again)."""
+    return _call("DELETE", "/api/product-mix/stores", params={"store": fdm4_store})
+
+
+@mcp.tool()
+def add_mix_styles(fdm4_store: str, styles: List[str]) -> Any:
+    """Add styles (all colors) to a list-mode store's curated product list."""
+    return _call("PUT", "/api/product-mix", json_body={"store": fdm4_store, "styles": styles})
+
+
+@mcp.tool()
+def remove_mix_styles(fdm4_store: str, styles: List[str]) -> Any:
+    """Drop styles from a list-mode store's curated list (never empties it)."""
+    return _call("DELETE", "/api/product-mix", json_body={"store": fdm4_store, "styles": styles})
 
 
 def tool_names() -> List[str]:

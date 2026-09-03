@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from auth import WordPressRequestError, wordpress_json_request
 from config import get_settings
+import queries
 
 
 def wp_admin_call(path: str, *, method: str = "GET", payload: Optional[dict] = None,
@@ -71,3 +72,12 @@ def store_ownership(store: str) -> Dict[str, Any]:
             }
     return {"available": True, "owned": None, "blog_id": None, "store": wanted,
             "note": "store is not mapped to a WordPress site"}
+
+
+def sync_status_report(cursor, store: Optional[str] = None) -> Dict[str, Any]:
+    """queries.get_sync_status plus the store's logo-sync ownership from
+    WordPress; the assistant read tool, the HTTP route and MCP all use this."""
+    result = queries.get_sync_status(cursor, store=store)
+    if result.get("store"):
+        result["logo_sync_ownership"] = store_ownership(result["store"])
+    return result

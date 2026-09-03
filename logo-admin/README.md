@@ -603,5 +603,26 @@ tables is a single-row exact-undo scope (`snapshots.SIMPLE_ROW_SCOPES`), so the
 write-enabled startup contract now pins their columns, primary keys and CHECK
 constraints too (`database_contract.RESTORE_COLUMN_CONTRACTS`,
 `EXPECTED_PRIMARY_KEYS`, `EXPECTED_CHECKS`); a schema change to any of them
-must be mirrored there or the service refuses to start with writes on. Price
-rules and product mix remain app-only.
+must be mirrored there or the service refuses to start with writes on.
+
+Later the same day the set grew again: `set_logo_cost` (one charge for a logo
+across the named styles of a store), `set_store_extra_customers`,
+`bulk_apply` (the Bulk Apply page; whole-store scope `assignment_store`,
+optional `design_id` when a logo code is shared by several designs),
+`set_logo_default_cost` (`logo.default_cost`), `set_price_rule_active` /
+`delete_price_rule` (`woo.price_rule`; activation still needs an app preview),
+and Product Mix: `set_product_mix`, `disable_product_mix`, `add_mix_styles`,
+`remove_mix_styles` (`woo.store_mix_store` + the whole-store item scope
+`store_mix_items`). Reads added: `get_sync_status` (pipeline + ownership) and
+`get_product_link`. 35 writes / 22 reads in total.
+
+Shared kernel, different gates: every write is one `mutations.*` handler.
+The assistant stages it (`staging.py`), the HTTP routes run it directly through
+`_execute_mutation`, and the MCP server calls those routes in-process with its
+own identity. Product-mix rules live once in `mix_service.py`; WordPress calls
+(product link, ownership, sync status) once in `wp_bridge.py`. Before a
+write-enabled deploy, validate the contract against prod from a staging copy:
+rsync to `/tmp/arb-logo-admin-stage` on the box, source
+`/etc/arb-logo-admin.env`, and run `validate_write_database_contract` with
+`/opt/arb-logo-admin-venv/bin/python` (a sequence default renders with or
+without its schema depending on search_path; the normalizer ignores that).

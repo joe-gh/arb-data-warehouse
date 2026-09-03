@@ -13,6 +13,8 @@ READ_ROUTES = {
     ("GET", "/api/designs/{design_id}"),
     ("GET", "/api/vocab"),
     ("GET", "/api/settings/{store}"),
+    ("GET", "/api/sync-status"),
+    ("GET", "/api/design-usage"),
     ("GET", "/api/import-report"),
     ("GET", "/api/audit-log"),
     ("GET", "/api/pricing/tiers"),
@@ -52,6 +54,9 @@ READ_ROUTES = {
 
 TRANSACTIONAL_WRITES = {
     ("PUT", "/api/settings/{store}"),
+    ("PUT", "/api/settings/{store}/extra-customers"),
+    ("POST", "/api/assignments/logo-cost"),
+    ("PUT", "/api/default-costs"),
     ("PUT", "/api/assignments"),
     ("DELETE", "/api/assignments"),
     ("DELETE", "/api/assignments-by-color"),

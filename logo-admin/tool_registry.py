@@ -317,11 +317,7 @@ def _get_product_link(cursor, command, settings):
 
 def _get_sync_status(cursor, command, settings):
     del settings
-    args = _model_arguments(command)
-    result = queries.get_sync_status(cursor, **args)
-    if result.get("store"):
-        result["logo_sync_ownership"] = wp_bridge.store_ownership(result["store"])
-    return result
+    return wp_bridge.sync_status_report(cursor, _model_arguments(command).get("store"))
 
 
 CANONICAL_AGENT_READ_CONTRACTS = {

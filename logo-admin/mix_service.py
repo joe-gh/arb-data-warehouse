@@ -170,6 +170,8 @@ def add_styles(cursor, store: str, styles: List[str], actor: str) -> Dict[str, A
     reg = registry(cursor, store)
     require_list_mode(reg)
     saved = 0
+    added: List[str] = []
+    already: List[str] = []
     for style in styles:
         cursor.execute(
             """
@@ -181,7 +183,12 @@ def add_styles(cursor, store: str, styles: List[str], actor: str) -> Dict[str, A
             (store, style, actor, actor),
         )
         saved += cursor.rowcount
-    return {"saved": saved, "per_style": product_counts(cursor, store, styles)}
+        (added if cursor.rowcount else already).append(style)
+    per_style = product_counts(cursor, store, styles)
+    return {
+        "saved": saved, "per_style": per_style, "added": added, "already_listed": already,
+        "no_live_products": [p["style"] for p in per_style if p["products"] == 0],
+    }
 
 
 def remove_styles(cursor, store: str, styles: List[str]) -> int:

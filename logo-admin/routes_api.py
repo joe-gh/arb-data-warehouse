@@ -61,6 +61,20 @@ import mutations
 import queries as read_queries
 import mix_service
 import wp_bridge
+from commands import (
+    DeletePriceRuleCommand,
+    RemoveBrandStockRuleCommand,
+    RemoveStockOverrideCommand,
+    RemoveSyncBlockCommand,
+    SetBrandStockRuleCommand,
+    SetLogoCostCommand,
+    SetLogoDefaultCostCommand,
+    SetLogoNameCommand,
+    SetPriceRuleActiveCommand,
+    SetStockOverrideCommand,
+    SetStoreExtraCustomersCommand,
+    SetSyncBlockCommand,
+)
 from snapshots import lock_scopes
 
 
@@ -1787,6 +1801,24 @@ def sync_blocks(user: Dict[str, str] = Depends(require_user)):
 
 @router.put("/sync-blocks")
 def save_sync_block(body: SyncBlockBody, user: Dict[str, str] = Depends(require_csrf)):
+    styles = _clean_list(body.styles, upper=True, field="styles")
+    if body.whole_store and styles:
+        raise HTTPException(
+            status_code=400,
+            detail="Untick 'entire store' if you are listing specific style numbers")
+    if not body.whole_store and not styles:
+        raise HTTPException(status_code=400, detail="Choose whole-store or provide at least one style")
+    result = _execute_mutation(
+        SetSyncBlockCommand(
+            store=body.fdm4_store, styles=[] if body.whole_store else styles,
+            scope=body.scope if body.whole_store else "full", note=body.note, active=True,
+        ),
+        user,
+    )
+    return {"ok": True, "saved": result["saved"], "per_style": result["per_style"]}
+
+
+def save_sync_block(body: SyncBlockBody, user: Dict[str, str] = Depends(require_csrf)):
     store = " ".join(body.fdm4_store.split()).upper()
     styles = _clean_list(body.styles, upper=True, field="styles")
     if body.whole_store and styles:
@@ -1899,6 +1931,12 @@ def brand_stock_rules(
 
 @router.put("/stock-overrides/brands")
 def set_brand_stock_rule(body: BrandStockRuleBody, user: Dict[str, str] = Depends(require_csrf)):
+    return _execute_mutation(
+        SetBrandStockRuleCommand(mill_code=body.mill_code, mode=body.mode, active=True), user,
+    )
+
+
+def set_brand_stock_rule(body: BrandStockRuleBody, user: Dict[str, str] = Depends(require_csrf)):
     mill = _clean(body.mill_code, "mill_code")
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         cursor.execute(
@@ -1927,6 +1965,14 @@ def set_brand_stock_rule(body: BrandStockRuleBody, user: Dict[str, str] = Depend
 
 
 @router.delete("/stock-overrides/brands")
+def delete_brand_stock_rule(
+    mill: str = Query(..., min_length=1, max_length=32),
+    user: Dict[str, str] = Depends(require_csrf),
+):
+    _execute_mutation(RemoveBrandStockRuleCommand(mill_code=mill), user)
+    return {"ok": True}
+
+
 def delete_brand_stock_rule(
     mill: str = Query(..., min_length=1, max_length=32),
     user: Dict[str, str] = Depends(require_csrf),
@@ -1992,6 +2038,13 @@ def stock_overrides(
 
 @router.put("/stock-overrides")
 def save_stock_override(body: StockOverrideBody, user: Dict[str, str] = Depends(require_csrf)):
+    return _execute_mutation(
+        SetStockOverrideCommand(style_code=body.style_code, mode=body.mode, note=body.note, active=True),
+        user,
+    )
+
+
+def save_stock_override(body: StockOverrideBody, user: Dict[str, str] = Depends(require_csrf)):
     style = " ".join(body.style_code.split()).upper()
     note = body.note.strip()
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
@@ -2040,6 +2093,11 @@ def toggle_stock_override(body: StockOverrideToggleBody, user: Dict[str, str] = 
 
 
 @router.delete("/stock-overrides")
+def delete_stock_override(style: str = Query(min_length=1, max_length=100), user: Dict[str, str] = Depends(require_csrf)):
+    _execute_mutation(RemoveStockOverrideCommand(style_code=style), user)
+    return {"ok": True}
+
+
 def delete_stock_override(style: str, user: Dict[str, str] = Depends(require_csrf)):
     style = " ".join(style.split()).upper()
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
@@ -2067,6 +2125,15 @@ def toggle_sync_block(body: SyncBlockToggleBody, user: Dict[str, str] = Depends(
 
 
 @router.delete("/sync-blocks")
+def delete_sync_block(
+    store: str = Query(min_length=1, max_length=100),
+    style: str = Query(default="", max_length=100),
+    user: Dict[str, str] = Depends(require_csrf),
+):
+    _execute_mutation(RemoveSyncBlockCommand(store=store, styles=[style] if style.strip() else []), user)
+    return {"ok": True}
+
+
 def delete_sync_block(
     store: str = Query(min_length=1, max_length=100),
     style: str = Query(default="", max_length=100),
@@ -2357,6 +2424,23 @@ class PriceRuleToggleBody(BaseModel):
 
 @router.put("/price-rules/toggle")
 def toggle_price_rule(body: PriceRuleToggleBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Flip active only - never touches rule content. Activation requires a
+    preview stamp newer than the last material edit (shared rule in
+    mutations.set_price_rule_active; the UI keys off preview_required)."""
+    try:
+        _execute_mutation(SetPriceRuleActiveCommand(rule_id=body.rule_id, active=body.active), user)
+    except HTTPException as exc:
+        if exc.status_code == 422 and "Preview" in str(exc.detail):
+            return JSONResponse(
+                status_code=409,
+                content={"error": "preview_required",
+                         "message": "Preview this rule before activating - "
+                                    "its settings changed since the last preview."})
+        raise
+    return {"ok": True, "rule_id": body.rule_id, "active": body.active}
+
+
+def toggle_price_rule(body: PriceRuleToggleBody, user: Dict[str, str] = Depends(require_csrf)):
     """Flip active only - never touches rule content, so a stale client list
     can't clobber another operator's edits. Activation requires a preview
     stamp newer than the last material edit (the save path clears it)."""
@@ -2382,6 +2466,11 @@ def toggle_price_rule(body: PriceRuleToggleBody, user: Dict[str, str] = Depends(
 
 
 @router.delete("/price-rules")
+def delete_price_rule(rule_id: int = Query(ge=1), user: Dict[str, str] = Depends(require_csrf)):
+    _execute_mutation(DeletePriceRuleCommand(rule_id=rule_id), user)
+    return {"ok": True}
+
+
 def delete_price_rule(rule_id: int = Query(ge=1), user: Dict[str, str] = Depends(require_csrf)):
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         cursor.execute("DELETE FROM woo.price_rule WHERE rule_id=%s RETURNING rule_id", (rule_id,))
@@ -3617,6 +3706,19 @@ def logo_names(
 
 @router.put("/logo-names")
 def set_logo_name(body: LogoNameBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Shared with the assistant (mutations.set_logo_name): '' = the global
+    default row; a store code writes a store-specific row that beats it."""
+    result = _execute_mutation(
+        SetLogoNameCommand(
+            design_id=body.design_id, color_scheme_id=body.color_scheme_id,
+            name=body.name, store=body.fdm4_store.strip() or None,
+        ),
+        user,
+    )
+    return {"ok": True, "name": result}
+
+
+def set_logo_name(body: LogoNameBody, user: Dict[str, str] = Depends(require_csrf)):
     design_id = _clean(body.design_id, "design_id", 64)
     scheme = _clean(body.color_scheme_id, "color_scheme_id", 64).upper()
     name = _clean(body.name, "name", 200)
@@ -4350,3 +4452,68 @@ def health_overview(user: Dict[str, str] = Depends(require_user)):
             consumers = [dict(r) for r in cursor.fetchall()]
         out["feeds"] = {"available": feeds_present, "consumers": consumers}
     return out
+
+
+# ---- Shared with the assistant: logo cost, extra customers, default cost,
+# sync status and design usage. Same handlers, session/CSRF auth here.
+
+
+class LogoCostBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    store: str = Field(min_length=1, max_length=100)
+    design_id: str = Field(min_length=1, max_length=100)
+    color_scheme_id: Optional[str] = Field(default=None, max_length=100)
+    cost_override: Optional[Decimal] = None
+    styles: List[str] = Field(min_length=1, max_length=50)
+
+
+@router.post("/assignments/logo-cost")
+def set_logo_cost(body: LogoCostBody, user: Dict[str, str] = Depends(require_csrf)):
+    """One shopper charge (or none) for a logo across the named styles of a store."""
+    return _execute_mutation(SetLogoCostCommand.model_validate(body.model_dump()), user)
+
+
+class ExtraCustomersBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    customers: List[str] = Field(default=[], max_length=20)
+
+
+@router.put("/settings/{store}/extra-customers")
+def set_store_extra_customers(store: str, body: ExtraCustomersBody, user: Dict[str, str] = Depends(require_csrf)):
+    return _execute_mutation(SetStoreExtraCustomersCommand(store=store, customers=body.customers), user)
+
+
+class DefaultCostBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    logo_code: str = Field(min_length=1, max_length=100)
+    color_scheme_id: str = Field(min_length=1, max_length=100)
+    cost: Decimal = Field(ge=0)
+    locked: bool = True
+
+
+@router.put("/default-costs")
+def set_logo_default_cost(body: DefaultCostBody, user: Dict[str, str] = Depends(require_csrf)):
+    return _execute_mutation(SetLogoDefaultCostCommand.model_validate(body.model_dump()), user)
+
+
+@router.get("/sync-status")
+def sync_status(
+    store: Optional[str] = Query(default=None, max_length=100),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """Pipeline liveness (latest pull / reconcile) and, with a store, its
+    logo-sync ownership, freezes and recent sync events."""
+    del user
+    with database.cursor() as cursor:
+        return wp_bridge.sync_status_report(cursor, store)
+
+
+@router.get("/design-usage")
+def design_usage(
+    store: str = Query(..., min_length=1, max_length=100),
+    design_id: str = Query(..., min_length=1, max_length=100),
+    color_scheme_id: Optional[str] = Query(default=None, max_length=100),
+    user: Dict[str, str] = Depends(require_user),
+):
+    del user
+    return _read_service(read_queries.list_design_usage, store=store, design_id=design_id, color_scheme_id=color_scheme_id)

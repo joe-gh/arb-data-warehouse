@@ -2376,7 +2376,7 @@
     name_override: "name", cost_override: "cost override", sort_order: "sort order", optional: "optional",
     active: "active", image_url: "image", background: "background tag", enabled: "logos enabled",
     allows_none: "allow no logo", tier_name: "pricing level", note: "note",
-    name: "name", light_dark: "light/dark class", mode: "stock mode", scope: "freeze scope",
+    name: "name", light_dark: "light/dark class", mode: "mode", scope: "freeze scope",
     locked: "locked", source: "source", uses: "uses", brand_name: "brand", confidence: "confidence",
     color_name: "color name", fdm4_description: "FDM4 description", style_code: "style", mill_code: "mill code",
     extra_customers: "extra customers", enabled: "logos enabled", cost: "default cost", priority: "priority",
