@@ -1827,3 +1827,54 @@ def get_product_mix(cursor, *, store: str, limit: int = 200) -> dict:
         "truncated": truncated or byte_truncated,
         "truncation": {"rows": truncated, "bytes": byte_truncated},
     }
+
+
+DESIGN_USAGE_RESULT_LIMIT = 500
+
+
+def list_design_usage(cursor, *, store: str, design_id: str,
+                      color_scheme_id: Optional[str] = None) -> dict:
+    """Styles in one store whose logo rows carry a design (optionally one
+    color scheme): row counts, colors and schemes per style. Feeds
+    replace_design, which needs the style list up front."""
+    store = _clean(store, "store")
+    design = _clean(design_id, "design_id")
+    scheme = (
+        _clean(color_scheme_id, "color_scheme_id").upper()
+        if color_scheme_id not in (None, "") else None
+    )
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        SELECT a.product_style,
+               left(max(p.name), {READ_TEXT_CHAR_LIMIT}) AS name,
+               count(*)::integer AS rows,
+               count(*) FILTER (WHERE a.active)::integer AS active_rows,
+               array_to_string(array_agg(DISTINCT a.garment_color_code), ', ') AS colors,
+               array_to_string(array_agg(DISTINCT upper(btrim(a.color_scheme_id))), ', ') AS schemes,
+               array_to_string(array_agg(DISTINCT upper(btrim(a.logo_code))), ', ') AS logo_codes
+          FROM logo.assignment a
+          LEFT JOIN woo.store_product_state p
+                 ON p.fdm4_store = a.fdm4_store AND p.style_code = a.product_style
+                AND p.kind = 'parent'
+         WHERE a.fdm4_store = %(store)s
+           AND btrim(a.design_id) = %(design)s
+           AND (%(scheme)s IS NULL OR upper(btrim(a.color_scheme_id)) = %(scheme)s)
+         GROUP BY a.product_style
+         ORDER BY a.product_style
+         LIMIT %(limit)s
+        """,
+        {"store": store, "design": design, "scheme": scheme,
+         "limit": DESIGN_USAGE_RESULT_LIMIT + 1},
+        DESIGN_USAGE_RESULT_LIMIT,
+    )
+    return {
+        "store": store,
+        "design_id": design,
+        "color_scheme_id": scheme,
+        "styles": rows,
+        "style_codes": [str(r["product_style"]) for r in rows],
+        "total_rows": sum(int(r["rows"]) for r in rows),
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }

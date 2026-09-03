@@ -582,3 +582,14 @@ every approved write. Names must come from the approved write set (the service
 refuses to start otherwise). Reads are never affected. Pilot sequence: start
 with `AGENT_WRITE_TOOLS=save_assignment`, stage → review → apply → undo on a
 sandbox store, then widen the list one tool at a time.
+
+Bulk writes (added 2026-09-03) follow the same staging kernel: each stages one
+change set the person reviews row by row, and undo restores the exact prior
+state. `copy_style_to_many`, `paste_logo_set`, `replace_design` and
+`set_styles_active` accept up to 50 styles per call (the model splits larger
+jobs); `reorder_logo_rows` covers one style. They wrap the editor's batch
+functions (`copy_style_batch`, `paste_batch`, `design_swap`,
+`reorder_option_rows`), so an applied change also appears in the editor's
+bulk history; the editor's own batch undo and the assistant's undo each
+refuse rows the other already restored. The read tool `list_design_usage`
+feeds `replace_design` its style list.

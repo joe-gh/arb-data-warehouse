@@ -16,15 +16,20 @@ from commands import (
     AssignmentTarget,
     ColorTarget,
     CopyStyleCommand,
+    CopyStyleToManyCommand,
     DeactivateAssignmentCommand,
     DeactivateColorCommand,
     DeleteStorePricingTierCommand,
     HardDeleteAssignmentCommand,
     HardDeleteColorCommand,
     MutationCommand,
+    PasteLogoSetCommand,
+    ReorderLogoRowsCommand,
+    ReplaceDesignCommand,
     SaveAssignmentCommand,
     SetStorePricingTierCommand,
     SetStyleActiveCommand,
+    SetStylesActiveCommand,
     UpdateStoreSettingsCommand,
 )
 from design_resolver import (
@@ -48,6 +53,9 @@ ScopeKind = Literal[
 # journalable boundary even if warehouse data is unexpectedly dirty.
 MAX_ASSIGNMENT_MUTATION_ROWS = 2_000
 MAX_STYLE_COLOR_ROWS = 500
+# Styles one agent bulk command may touch; larger jobs are split into calls
+# so every change set stays reviewable in one card.
+MAX_BULK_STYLES = 50
 
 
 # Closed declaration of every scope a canonical command can affect.  Startup
@@ -65,6 +73,11 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "update_store_settings": frozenset({"store_settings_row"}),
     "set_store_pricing_tier": frozenset({"store_pricing_tier_row"}),
     "delete_store_pricing_tier": frozenset({"store_pricing_tier_row"}),
+    "copy_style_to_many": frozenset({"assignment_style"}),
+    "paste_logo_set": frozenset({"assignment_style"}),
+    "replace_design": frozenset({"assignment_style"}),
+    "reorder_logo_rows": frozenset({"assignment_style"}),
+    "set_styles_active": frozenset({"assignment_style"}),
 }
 
 
@@ -442,6 +455,27 @@ def assignment_style_scope(store: str, style: str) -> MutationScope:
     )
 
 
+def _clean_styles(values, field: str) -> list:
+    """Distinct, cleaned style codes in the given order; bounded per call."""
+    cleaned: list = []
+    for value in values or ():
+        style = _clean(value, field)
+        if style not in cleaned:
+            cleaned.append(style)
+    if not cleaned:
+        raise InvalidCommand(f"{field} must name at least one style")
+    if len(cleaned) > MAX_BULK_STYLES:
+        raise InvalidCommand(f"{field} may name at most {MAX_BULK_STYLES} styles per call")
+    return cleaned
+
+
+def _style_scopes(store: str, styles) -> tuple:
+    return tuple(
+        assignment_style_scope(store, style)
+        for style in sorted(_clean_styles(styles, "styles"))
+    )
+
+
 def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
     if isinstance(command, AssignmentTarget):
         scopes = (assignment_option_scope(command),)
@@ -453,6 +487,12 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = (assignment_style_scope(command.store, command.style),)
     elif isinstance(command, CopyStyleCommand):
         scopes = (assignment_style_scope(command.store, command.target_style),)
+    elif isinstance(command, CopyStyleToManyCommand):
+        scopes = _style_scopes(command.store, command.target_styles)
+    elif isinstance(command, (PasteLogoSetCommand, ReplaceDesignCommand, SetStylesActiveCommand)):
+        scopes = _style_scopes(command.store, command.styles)
+    elif isinstance(command, ReorderLogoRowsCommand):
+        scopes = (assignment_style_scope(command.store, command.style),)
     elif isinstance(command, UpdateStoreSettingsCommand):
         scopes = (
             MutationScope(
@@ -943,6 +983,112 @@ def delete_store_pricing_tier(
     return MutationResult({"ok": True}, affected_scopes(command))
 
 
+def copy_style_to_many(cursor, actor: str, command: CopyStyleToManyCommand) -> MutationResult:
+    """Agent wrapper over copy_style_batch: one style's logo setup fanned out
+    to up to MAX_BULK_STYLES styles, staged and undone through the exact
+    per-style snapshot. Replace mode (channel wipe) is deliberately not
+    offered to the agent; merge/overwrite never remove rows."""
+    store = _clean(command.store, "store")
+    source = _clean(command.source_style, "source_style")
+    targets = _clean_styles(command.target_styles, "target_styles")
+    if source in targets:
+        raise InvalidCommand("target_styles must not include the source style")
+    outcome = copy_style_batch(
+        cursor, fdm4_store=store, source_style=source, target_styles=targets,
+        color_match=command.color_match, mode=command.mode, actor=actor,
+    )
+    return MutationResult(
+        {"ok": True, "source_style": source, "targets": len(targets),
+         "totals": outcome["totals"], "results": outcome["results"]},
+        affected_scopes(command),
+    )
+
+
+def paste_logo_set(cursor, actor: str, command: PasteLogoSetCommand) -> MutationResult:
+    """Agent wrapper over paste_batch: the same logo rows placed on every
+    targeted color of up to MAX_BULK_STYLES styles."""
+    store = _clean(command.store, "store")
+    styles = _clean_styles(command.styles, "styles")
+    match_color = (
+        _clean(command.match_color, "match_color")
+        if command.match_color not in (None, "") else None
+    )
+    if command.color_scope == "match" and match_color is None:
+        raise InvalidCommand("match_color is required when color_scope is match")
+    rows = [row.model_dump() for row in command.rows]
+    outcome = paste_batch(
+        cursor, fdm4_store=store, styles=styles, color_scope=command.color_scope,
+        match_color=match_color, rows=rows, overwrite=command.overwrite,
+        as_new_rows=command.as_new_rows, actor=actor,
+    )
+    return MutationResult(
+        {"ok": True, "styles": len(styles), "rows_per_color": len(rows),
+         "totals": outcome["totals"], "results": outcome["results"]},
+        affected_scopes(command),
+    )
+
+
+def replace_design(cursor, actor: str, command: ReplaceDesignCommand) -> MutationResult:
+    """Agent wrapper over design_swap on an explicit style list (the exact
+    snapshot needs the styles up front; list_design_usage finds them)."""
+    store = _clean(command.store, "store")
+    styles = _clean_styles(command.styles, "styles")
+    outcome = design_swap(
+        cursor, fdm4_store=store, from_design_id=command.from_design_id,
+        from_color_scheme_id=command.from_color_scheme_id,
+        to_design_id=command.to_design_id, to_color_scheme_id=command.to_color_scheme_id,
+        to_logo_code=command.to_logo_code, styles=styles, actor=actor,
+    )
+    return MutationResult(
+        {"ok": True, "applied": outcome["applied"], "unchanged": outcome["unchanged"],
+         "skipped_invalid": outcome["skipped_invalid"], "styles": outcome["styles"],
+         "target": outcome["target"], "problems": outcome["problems"]},
+        affected_scopes(command),
+    )
+
+
+def reorder_logo_rows(cursor, actor: str, command: ReorderLogoRowsCommand) -> MutationResult:
+    """Agent wrapper over reorder_option_rows (sort_order renumbering)."""
+    store = _clean(command.store, "store")
+    style = _clean(command.style, "style")
+    color = _clean(command.garment_color_code, "garment_color_code")
+    outcome = reorder_option_rows(
+        cursor, fdm4_store=store, product_style=style, garment_color_code=color,
+        option_rows=list(command.option_rows), apply_to=command.apply_to, actor=actor,
+    )
+    return MutationResult(
+        {"ok": True, "updated": outcome["updated"], "colors": outcome["colors"],
+         "order": list(command.option_rows), "apply_to": command.apply_to},
+        affected_scopes(command),
+    )
+
+
+def set_styles_active(cursor, actor: str, command: SetStylesActiveCommand) -> MutationResult:
+    """set_style_active over up to MAX_BULK_STYLES styles; styles without
+    rows are reported, not fatal, unless none had rows."""
+    store = _clean(command.store, "store")
+    styles = _clean_styles(command.styles, "styles")
+    results = []
+    updated = 0
+    for style in styles:
+        try:
+            single = set_style_active(
+                cursor, actor,
+                SetStyleActiveCommand(store=store, style=style, active=command.active),
+            )
+        except NotFound as exc:
+            results.append({"style": style, "updated": 0, "error": str(exc)})
+            continue
+        results.append({"style": style, "updated": single.value["updated"]})
+        updated += int(single.value["updated"])
+    if updated == 0:
+        raise NotFound("None of the styles have logo rows")
+    return MutationResult(
+        {"ok": True, "updated": updated, "active": command.active, "results": results},
+        affected_scopes(command),
+    )
+
+
 MUTATION_HANDLERS: Dict[str, Callable] = {
     "save_assignment": save_assignment,
     "deactivate_assignment": deactivate_assignment,
@@ -955,6 +1101,11 @@ MUTATION_HANDLERS: Dict[str, Callable] = {
     "update_store_settings": update_store_settings,
     "set_store_pricing_tier": set_store_pricing_tier,
     "delete_store_pricing_tier": delete_store_pricing_tier,
+    "copy_style_to_many": copy_style_to_many,
+    "paste_logo_set": paste_logo_set,
+    "replace_design": replace_design,
+    "reorder_logo_rows": reorder_logo_rows,
+    "set_styles_active": set_styles_active,
 }
 
 

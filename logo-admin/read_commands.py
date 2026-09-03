@@ -153,3 +153,9 @@ class ListSyncBlocksCommand(ReadCommand):
 class GetProductMixCommand(ReadCommand):
     store: str = Field(min_length=1, max_length=100, description=STORE)
     limit: int = Field(default=200, ge=1, le=500, description="Max curated styles to list when the store is on a curated list (max 500).")
+
+
+class ListDesignUsageCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id to look for on the store's logo rows.")
+    color_scheme_id: Optional[str] = Field(default=None, max_length=100, description="Optional color scheme to narrow to (e.g. BK); null = every scheme.")

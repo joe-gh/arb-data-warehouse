@@ -30,6 +30,11 @@ EXPECTED_SCOPES = {
     "update_store_settings": frozenset({"store_settings_row"}),
     "set_store_pricing_tier": frozenset({"store_pricing_tier_row"}),
     "delete_store_pricing_tier": frozenset({"store_pricing_tier_row"}),
+    "copy_style_to_many": frozenset({"assignment_style"}),
+    "paste_logo_set": frozenset({"assignment_style"}),
+    "replace_design": frozenset({"assignment_style"}),
+    "reorder_logo_rows": frozenset({"assignment_style"}),
+    "set_styles_active": frozenset({"assignment_style"}),
 }
 
 

@@ -2322,7 +2322,23 @@
     update_store_settings: "Change store logo settings",
     set_store_pricing_tier: "Set a store's pricing level",
     delete_store_pricing_tier: "Remove a store's pricing level",
+    copy_style_to_many: "Copy a style's logos to many styles",
+    paste_logo_set: "Put a set of logos on many styles",
+    replace_design: "Replace a design on many styles",
+    reorder_logo_rows: "Reorder a color's logo choices",
+    set_styles_active: "Show or hide logos on many styles",
   };
+  function reviewStyleList(codes) {
+    const list = Array.isArray(codes) ? codes.map((c) => text(c).trim()).filter(Boolean) : [];
+    const shown = list.slice(0, 12).map((c) => reviewStyleLabel(c));
+    const more = list.length > 12 ? ` and ${list.length - 12} more` : "";
+    return `${list.length} style${list.length === 1 ? "" : "s"}: ${shown.join(", ")}${more}`;
+  }
+  function reviewColorScope(scope, matchColor, style) {
+    if (scope === "match") return `only color ${reviewColorLabel(style, text(matchColor))}`;
+    if (scope === "light" || scope === "dark") return `${scope} colors only`;
+    return "every live color";
+  }
   const REVIEW_FIELD_LABELS = {
     design_id: "design", logo_code: "logo code", color_scheme_id: "color scheme", location: "placement",
     name_override: "name", cost_override: "cost override", sort_order: "sort order", optional: "optional",
@@ -2374,6 +2390,15 @@
       case "update_store_settings": return `Store ${store}: logos ${a.enabled ? "enabled" : "disabled"}, "No logo" choice ${a.allows_none ? "allowed" : "not allowed"}.`;
       case "set_store_pricing_tier": return `Set store ${store} to pricing level ${a.tier_name}${a.note ? ` (${a.note})` : ""}. Only fills prices FDM4 leaves blank.`;
       case "delete_store_pricing_tier": return `Remove the pricing level from store ${store}; blank prices fall back to retail.`;
+      case "copy_style_to_many": return `Copy all logos from ${reviewStyleLabel(text(a.source_style))} to ${reviewStyleList(a.target_styles)} (${a.color_match === "like" ? "matching colors, plus other colors filled by light/dark class" : "matching color codes only"}; ${a.mode === "overwrite" ? "replacing occupied slots" : "keeping rows the targets already have"}). No rows are removed.`;
+      case "paste_logo_set": {
+        const rows = Array.isArray(a.rows) ? a.rows : [];
+        const logos = rows.slice(0, 6).map((r) => [r.logo_code && `${r.logo_code} · ${r.color_scheme_id || ""}`.trim(), r.design_id && `design ${r.design_id}`, r.location].filter(Boolean).join(" — ")).join("; ");
+        return `Put ${rows.length} logo row${rows.length === 1 ? "" : "s"} (${logos}${rows.length > 6 ? "; …" : ""}) on ${reviewStyleList(a.styles)}, ${reviewColorScope(a.color_scope, a.match_color, "")}${a.as_new_rows ? ", added as new choices after each color's existing rows" : ""}${a.overwrite ? ", replacing occupied slots" : ", skipping slots that already hold a logo"}.`;
+      }
+      case "replace_design": return `Replace design ${a.from_design_id}${a.from_color_scheme_id ? ` (scheme ${a.from_color_scheme_id})` : " (every scheme)"} with design ${a.to_design_id}, scheme ${a.to_color_scheme_id}${a.to_logo_code ? `, code ${a.to_logo_code}` : ""} on ${reviewStyleList(a.styles)}. Placement, cost, order, names and active flags stay as they are.`;
+      case "reorder_logo_rows": return `Show the logo choices on ${reviewStyleLabel(style)}, color ${reviewColorLabel(style, color)} in this order: rows ${(Array.isArray(a.option_rows) ? a.option_rows : []).join(" → ")}${a.apply_to === "color" ? " (this color only)" : ", and rank every other color of the style the same way"}.`;
+      case "set_styles_active": return `${a.active ? "Show" : "Hide"} every logo on ${reviewStyleList(a.styles)}. Rows are kept, not deleted.`;
       default: return `${REVIEW_VERBS[tool] || tool || "Command"}${where ? ` on ${where}` : ""}.`;
     }
   }

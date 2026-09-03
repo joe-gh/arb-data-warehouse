@@ -17,14 +17,19 @@ from commands import (
     COMMAND_MODELS,
     ApplyToColorsCommand,
     CopyStyleCommand,
+    CopyStyleToManyCommand,
     DeactivateAssignmentCommand,
     DeactivateColorCommand,
     DeleteStorePricingTierCommand,
     HardDeleteAssignmentCommand,
     HardDeleteColorCommand,
+    PasteLogoSetCommand,
+    ReorderLogoRowsCommand,
+    ReplaceDesignCommand,
     SaveAssignmentCommand,
     SetStorePricingTierCommand,
     SetStyleActiveCommand,
+    SetStylesActiveCommand,
     UpdateStoreSettingsCommand,
 )
 from config import Settings
@@ -43,6 +48,7 @@ from read_commands import (
     GetStoreSettingsCommand,
     GetStyleCommand,
     ListColorsCommand,
+    ListDesignUsageCommand,
     ListLogoNamesCommand,
     ListPriceRulesCommand,
     ListPricingTiersCommand,
@@ -105,6 +111,11 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
     "update_store_settings",
     "set_store_pricing_tier",
     "delete_store_pricing_tier",
+    "copy_style_to_many",
+    "paste_logo_set",
+    "replace_design",
+    "reorder_logo_rows",
+    "set_styles_active",
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
@@ -127,6 +138,7 @@ APPROVED_AGENT_READ_NAMES = frozenset({
     "list_price_rules",
     "list_sync_blocks",
     "get_product_mix",
+    "list_design_usage",
 })
 
 EXCLUDED_AGENT_TOOLS = frozenset({
@@ -247,6 +259,11 @@ def _get_product_mix(cursor, command, settings):
     return queries.get_product_mix(cursor, **_model_arguments(command))
 
 
+def _list_design_usage(cursor, command, settings):
+    del settings
+    return queries.list_design_usage(cursor, **_model_arguments(command))
+
+
 CANONICAL_AGENT_READ_CONTRACTS = {
     "list_stores": (ListStoresCommand, _list_stores),
     "list_styles": (ListStylesCommand, _list_styles),
@@ -273,6 +290,7 @@ CANONICAL_AGENT_READ_CONTRACTS = {
     "list_price_rules": (ListPriceRulesCommand, _list_price_rules),
     "list_sync_blocks": (ListSyncBlocksCommand, _list_sync_blocks),
     "get_product_mix": (GetProductMixCommand, _get_product_mix),
+    "list_design_usage": (ListDesignUsageCommand, _list_design_usage),
 }
 
 
@@ -353,6 +371,31 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
             DeleteStorePricingTierCommand,
             mutations.delete_store_pricing_tier,
             "store_pricing_tier_row",
+        ),
+        "copy_style_to_many": _canonical_write_contract(
+            CopyStyleToManyCommand,
+            mutations.copy_style_to_many,
+            "assignment_style",
+        ),
+        "paste_logo_set": _canonical_write_contract(
+            PasteLogoSetCommand,
+            mutations.paste_logo_set,
+            "assignment_style",
+        ),
+        "replace_design": _canonical_write_contract(
+            ReplaceDesignCommand,
+            mutations.replace_design,
+            "assignment_style",
+        ),
+        "reorder_logo_rows": _canonical_write_contract(
+            ReorderLogoRowsCommand,
+            mutations.reorder_logo_rows,
+            "assignment_style",
+        ),
+        "set_styles_active": _canonical_write_contract(
+            SetStylesActiveCommand,
+            mutations.set_styles_active,
+            "assignment_style",
         ),
     })
 )
@@ -513,6 +556,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ListStorePricingTiersCommand,
         _list_store_pricing_tiers,
     ),
+    _read_spec(
+        "list_design_usage",
+        "Which styles of a store carry a given design (optionally one color scheme): per style the row count, active rows, colors, schemes and logo codes, plus style_codes ready to pass to replace_design. Use it before replacing a design.",
+        ListDesignUsageCommand,
+        _list_design_usage,
+    ),
     _write_spec(
         "save_assignment",
         "Stage adding or updating one logo row (store, style, color, option row, position). Validated against FDM4 designs; the person confirms the review card before anything changes.",
@@ -578,6 +627,36 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Stage removing a store's pricing level so blank prices fall back to retail.",
         DeleteStorePricingTierCommand,
         mutations.delete_store_pricing_tier,
+    ),
+    _write_spec(
+        "copy_style_to_many",
+        "Copy one style's complete logo setup to up to 50 other styles of the same store in one reviewable change. exact = only colors both styles share; like = also fill the target's other colors from a source color of the same light/dark class. merge keeps rows the targets already have; overwrite replaces occupied slots. Never removes rows. Stages a proposal; the person confirms.",
+        CopyStyleToManyCommand,
+        mutations.copy_style_to_many,
+    ),
+    _write_spec(
+        "paste_logo_set",
+        "Place the same set of logo rows on up to 50 styles at once: on all their live colors, on one matching color, or on light/dark colors only. Rows are validated exactly like a manual save (design ownership, scheme, placement, position-1 anchor); invalid rows are reported per style, not fatal. Stages a proposal; the person confirms.",
+        PasteLogoSetCommand,
+        mutations.paste_logo_set,
+    ),
+    _write_spec(
+        "replace_design",
+        "Swap every logo row that uses one design (optionally one color scheme) for another design + scheme on the named styles (max 50 per call; find them with list_design_usage). Only design, logo code, scheme and image change; placement, cost, order, names and active flags stay. Rows that would be invalid are skipped and reported. Stages a proposal; the person confirms.",
+        ReplaceDesignCommand,
+        mutations.replace_design,
+    ),
+    _write_spec(
+        "reorder_logo_rows",
+        "Change the order shoppers see a color's logo choices in: give every option row of that color in the wanted order. apply_to style (default) also ranks every other color of the style by the same designs, like the app's drag-and-drop. Stages a proposal; the person confirms.",
+        ReorderLogoRowsCommand,
+        mutations.reorder_logo_rows,
+    ),
+    _write_spec(
+        "set_styles_active",
+        "Show or hide every logo row on up to 50 styles of a store in one change (rows are kept, never deleted). Styles without rows are reported, not fatal. Stages a proposal; the person confirms.",
+        SetStylesActiveCommand,
+        mutations.set_styles_active,
     ),
 )
 
