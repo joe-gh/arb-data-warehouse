@@ -414,3 +414,25 @@ def test_startup_recovery_reclaims_running_jobs_immediately(ready, monkeypatch):
     assert started == [run["run_id"]]
     recovered = _read(categories_runs.get_run, run["run_id"])
     assert recovered["status"] == "queued" and recovered["jobs"][0]["status"] == "pending"
+
+
+def test_mapping_into_a_node_with_a_live_identity_term_defaults_to_merge():
+    _build_scenario()
+    nodes = _read(categories_draft.list_nodes)
+    footwear = next(n for n in nodes if n["slug"] == "footwear")
+    # 'footwear' is not live anywhere in the scenario -> first mapping is primary
+    first = _write(categories_mapping.set_mapping, old_slug="saws", action="map", target_node_id=footwear["node_id"])
+    assert first["is_primary"] is True
+    # A node whose own slug IS live (men-s? no: mens is the node slug; make 'ppe' live on blog 7)
+    ppe = next(n for n in nodes if n["slug"] == "ppe")
+    with database.cursor(write=True, actor="seed") as cursor:
+        categories_service.import_blog_snapshot(
+            cursor, env="prod", blog_id=9, blog_path="/nelson/",
+            terms=[{"term_id": 90, "slug": "ppe", "name": "PPE", "parent": 0},
+                   {"term_id": 91, "slug": "safety-gear", "name": "Safety Gear", "parent": 0}],
+            products=[{"term_id": 91, "product_id": 900, "sku": "SAFE-1"}], actor="seed")
+    merged = _write(categories_mapping.set_mapping, old_slug="safety-gear", action="map", target_node_id=ppe["node_id"])
+    assert merged["is_primary"] is False          # the live 'ppe' term survives; safety-gear merges into it
+    plan = _read(categories_planner.build_blog_plan, "prod", 9)
+    assert [d["expected_slug"] for d in plan["terms"]["delete"] if d["reason"] == "merge"] == ["safety-gear"]
+    assert not any(u["expected_slug"] == "safety-gear" for u in plan["terms"]["update"])

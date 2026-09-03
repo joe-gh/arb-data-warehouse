@@ -131,7 +131,11 @@ def set_mapping(cursor, *, old_slug: str, action: str,
             raise DraftError(f"unknown node: {target_node_id}")
         override_id = None
         if is_primary is None:
-            # First mapping into a node becomes the in-place survivor.
+            # First mapping into a node becomes the in-place survivor - UNLESS
+            # a live term already carries the node's own slug (the implicit
+            # identity mapping): that term is the survivor and a new mapping
+            # merges into it. Otherwise "map X into Y" would silently rename
+            # X's term to Y's slug and delete the real Y.
             cursor.execute(
                 """
                 SELECT 1 FROM catmgr.slug_map
@@ -139,7 +143,11 @@ def set_mapping(cursor, *, old_slug: str, action: str,
                 """,
                 (target_node_id, old_slug),
             )
-            is_primary = cursor.fetchone() is None
+            has_explicit_primary = cursor.fetchone() is not None
+            cursor.execute("SELECT slug FROM catmgr.node WHERE node_id = %s", (target_node_id,))
+            node_slug = cursor.fetchone()["slug"]
+            live_identity = node_slug != old_slug and _slug_exists_in_snapshots(cursor, node_slug)
+            is_primary = not has_explicit_primary and not live_identity
         elif is_primary:
             cursor.execute(
                 """
