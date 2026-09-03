@@ -136,7 +136,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "updated_at": ('timestamp with time zone', False, 'now'),
     },
     "woo.price_rule": {
-        "rule_id": ('bigint', False, "nextval'woo.price_rule_rule_id_seq'::regclass"),
+        "rule_id": ('bigint', False, "nextval'price_rule_rule_id_seq'::regclass"),
         "name": ('text', False, None),
         "active": ('boolean', False, 'false'),
         "priority": ('integer', False, '100'),
@@ -1541,7 +1541,14 @@ def _assert_restore_column_contract(
         )
 
 
+_SEQUENCE_DEFAULT = re.compile(r"nextval\('(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)'::regclass\)")
+
+
 def _normalized_sql_expression(value: Any) -> str:
+    # A serial default renders its sequence with or without the schema
+    # depending on the connection's search_path (prod: price_rule_rule_id_seq,
+    # a clone: woo.price_rule_rule_id_seq); compare the bare sequence name.
+    value = _SEQUENCE_DEFAULT.sub(r"nextval('\1'::regclass)", str(value or "").lower())
     normalized = re.sub(
         r"::(?:timestamp\s+(?:with|without)\s+time\s+zone|"
         r"character\s+varying|smallint|integer|bigint|text|date|jsonb|"
