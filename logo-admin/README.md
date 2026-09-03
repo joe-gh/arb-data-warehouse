@@ -195,6 +195,16 @@ idempotent, so a partially completed pass can simply be repeated.
    sudo install -o root -g root -m 0644 /opt/arb-logo-admin/agent-maintenance.timer /etc/systemd/system/
    sudo systemctl daemon-reload && sudo systemctl enable --now agent-maintenance.timer
    ```
+   The service unit sandboxes the filesystem, so write mode (which chmods the
+   uploads directory at startup) needs the directory in `ReadWritePaths`.
+   Add a drop-in once per box, or the app crash-loops the moment
+   `AGENT_WRITES_ENABLED=true` (seen on prod 2026-09-03):
+   ```bash
+   sudo mkdir -p /etc/systemd/system/arb-logo-admin.service.d
+   printf '[Service]\nReadWritePaths=/var/lib/arb-logo-admin/uploads /var/lib/arb-logo-admin/agent-uploads\n' \
+     | sudo tee /etc/systemd/system/arb-logo-admin.service.d/agent-uploads.conf
+   sudo systemctl daemon-reload && sudo systemctl restart arb-logo-admin
+   ```
 5. Environment, reads first (`sudoedit /etc/arb-logo-admin.env`):
 
    ```ini
