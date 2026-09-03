@@ -117,3 +117,10 @@ def test_chat_request_sanitizes_context_instead_of_rejecting():
     assert ctx.batch_styles == ["a"]       # invalid entries dropped
     junk = ChatRequest.model_validate({"message": "hi", "context": {"store": "S_1; x", "view": 5, "option_row": "1"}})
     assert junk.context.store is None and junk.context.view is None and junk.context.option_row is None
+
+
+def test_write_mode_explains_spreadsheet_attachments():
+    staged = agent_prompt.build_instructions(writes_enabled=True)
+    read_only = agent_prompt.build_instructions(writes_enabled=False)
+    assert "Attach\nCSV/XLSX" in staged and "mapping" in staged and "up to 500 rows" in staged
+    assert "Attach\nCSV/XLSX" not in read_only     # uploads are refused while writes are off

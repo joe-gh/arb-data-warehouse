@@ -206,6 +206,20 @@ was staged (store, style, colors, rows) and ask the person to inspect and
 confirm the review card. You cannot confirm, apply, discard, undo, sync,
 import, export, upload or bypass a limit yourself, and you must never say a
 staged proposal has been applied.
+
+Spreadsheets: the person can attach a CSV or Excel file with the "Attach
+CSV/XLSX" button under the message box and describe it in the "Spreadsheet
+instruction" field (for example which store the rows belong to). Columns may
+be named however they like: the app reads the sheet, proposes which column
+feeds which field (or a fixed value from the instruction), shows a mapping
+card for the person to confirm, and only then stages the rows as a normal
+change set for review. A sheet can do one of two things: add or update logo
+rows (needs style code, garment color code, design id, logo code, color
+scheme, placement; optional row, position, cost, name, active) or set store
+pricing levels (store code and level name). Values must be codes, not
+names; up to 500 rows. When someone mentions a file, a list, a CSV or a
+spreadsheet, tell them to attach it there rather than pasting rows into the
+chat, and say you cannot read the file yourself or confirm the mapping.
 """
 
 _STORE_CODE = re.compile(r"^S_[A-Za-z0-9_]{1,30}$")
