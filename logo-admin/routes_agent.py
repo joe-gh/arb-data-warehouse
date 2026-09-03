@@ -911,10 +911,14 @@ async def upload_spreadsheet_route(
         ) from None
     except DomainError as exc:
         _raise_domain(exc)
-    except ValueError:
+    except ValueError as exc:
+        logger.warning(
+            "agent spreadsheet mapping rejected: user=%s file=%s detail=%s",
+            context.user_login, original_name[:80], str(exc)[:300],
+        )
         raise HTTPException(
             status_code=422,
-            detail="The spreadsheet mapping could not be validated",
+            detail="The spreadsheet mapping could not be validated: " + str(exc)[:200],
         ) from None
     log_event(
         "spreadsheet_mapping_ready",

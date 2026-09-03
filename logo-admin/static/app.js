@@ -2646,6 +2646,55 @@
     };
   }
 
+
+  // ----- Spreadsheet mapping card: readable rendering -----
+  const MAPPING_COMMAND_LABELS = { save_assignment: "Add or update logo rows", set_store_pricing_tier: "Set store pricing levels" };
+  function buildMappingSummary(mapping) {
+    const box = agentNode("div", "assistant-review__section");
+    const command = text(mapping?.command).trim();
+    box.append(agentNode("h4", "", `This sheet will: ${MAPPING_COMMAND_LABELS[command] || command || "(unknown)"}`));
+    const columns = mapping?.columns && typeof mapping.columns === "object" ? mapping.columns : {};
+    const constants = mapping?.constants && typeof mapping.constants === "object" ? mapping.constants : {};
+    const table = agentNode("table", "assistant-change-table");
+    const head = agentNode("thead"); const hr = agentNode("tr");
+    ["Field", "Comes from"].forEach((h) => hr.append(agentNode("th", "", h)));
+    head.append(hr); table.append(head);
+    const body = agentNode("tbody");
+    Object.entries(columns).forEach(([field, column]) => {
+      const row = agentNode("tr");
+      row.append(agentNode("td", "", REVIEW_FIELD_LABELS[field] || field.replaceAll("_", " ")), agentNode("td", "", `spreadsheet column "${column}"`));
+      body.append(row);
+    });
+    Object.entries(constants).forEach(([field, value]) => {
+      const row = agentNode("tr");
+      row.append(agentNode("td", "", REVIEW_FIELD_LABELS[field] || field.replaceAll("_", " ")), agentNode("td", "", `the same value for every row: ${agentValue(value)}`));
+      body.append(row);
+    });
+    table.append(body);
+    const wrap = agentNode("div", "assistant-change-table-wrap"); wrap.append(table); box.append(wrap);
+    box.append(agentNode("p", "muted", "Check that each field reads from the right column, then confirm to stage the rows for a second review. Nothing changes until that review is confirmed."));
+    return box;
+  }
+  function buildRejectedRowsTable(rows) {
+    const box = agentNode("div", "assistant-review__section");
+    box.append(agentNode("h4", "", rows.length === 1 ? "1 row needs attention" : `${rows.length} rows need attention`));
+    const table = agentNode("table", "assistant-change-table");
+    const head = agentNode("thead"); const hr = agentNode("tr");
+    ["Row", "Problem"].forEach((h) => hr.append(agentNode("th", "", h)));
+    head.append(hr); table.append(head);
+    const body = agentNode("tbody");
+    rows.slice(0, 200).forEach((item) => {
+      const row = agentNode("tr");
+      const number = item?.row_number ?? item?.row ?? item?.line ?? "";
+      const reason = item?.reason ?? item?.error ?? item?.detail ?? agentValue(item);
+      row.append(agentNode("td", "", String(number)), agentNode("td", "", String(reason)));
+      body.append(row);
+    });
+    table.append(body);
+    const wrap = agentNode("div", "assistant-change-table-wrap"); wrap.append(table); box.append(wrap);
+    return box;
+  }
+
   function renderMappingJob(elements, payload) {
     const job = normalizeMappingJob(payload);
     if (!job) {
@@ -2680,17 +2729,15 @@
     appendReviewField(fields, "Mapping revision", job.revision);
     appendReviewField(fields, "Mapping hash", job.mappingHash);
     elements.mapping.append(fields);
-    elements.mapping.append(
-      agentNode("h4", "", "Proposed column mapping"),
-      agentNode("pre", "assistant-code", agentValue(job.mapping)),
-    );
-
+    elements.mapping.append(buildMappingSummary(job.mapping));
     if (job.rejectedRows.length) {
-      elements.mapping.append(
-        agentNode("h4", "", "Rows requiring attention"),
-        agentNode("pre", "assistant-code", agentValue(job.rejectedRows)),
-      );
+      elements.mapping.append(buildRejectedRowsTable(job.rejectedRows));
     }
+    const mappingTechnical = document.createElement("details");
+    mappingTechnical.className = "assistant-review__technical";
+    mappingTechnical.append(agentNode("summary", "", "Technical details"), agentNode("pre", "assistant-code", agentValue(job.mapping)));
+    if (job.rejectedRows.length) mappingTechnical.append(agentNode("pre", "assistant-code", agentValue(job.rejectedRows)));
+    elements.mapping.append(mappingTechnical);
 
     if (["mapping_pending", "mapping_confirmed"].includes(job.status) && assistantState.writesEnabled) {
       const actions = agentNode("div", "assistant-review__actions");
