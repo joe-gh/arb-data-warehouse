@@ -4,6 +4,7 @@ import asyncio
 from contextlib import AsyncExitStack
 import inspect
 import json
+import logging
 import time
 from typing import Any, AsyncIterator, Callable, Optional
 
@@ -29,6 +30,20 @@ from agent_prompt import (  # noqa: F401 - re-exported for callers/tests
     WRITE_STAGING_INSTRUCTIONS,
     build_instructions,
 )
+
+
+def _tool_error_detail(exc: BaseException, limit: int = 500) -> str:
+    """Compact, model-readable reason a tool call was rejected."""
+    if isinstance(exc, ValidationError):
+        parts = []
+        for error in exc.errors()[:8]:
+            loc = ".".join(str(x) for x in error.get("loc", ()))
+            parts.append(f"{loc or 'input'}: {error.get('msg', 'invalid')}")
+        return "; ".join(parts)[:limit]
+    return str(exc)[:limit] or type(exc).__name__
+
+
+logger = logging.getLogger("arb_logo_admin.agent")
 
 
 class AgentError(RuntimeError):
@@ -411,6 +426,20 @@ async def run_turn(
                     arguments = json.loads(str(raw_arguments))
                     if not isinstance(arguments, dict):
                         raise ValueError("arguments must be an object")
+                except ValueError as exc:
+                    # Not JSON at all: the model malfunctioned rather than
+                    # chose bad values, so the turn stops here.
+                    log_event(
+                        "tool_failure",
+                        user_login=context.user_login,
+                        tool_name=name,
+                        status="rejected",
+                        kind="MalformedArguments",
+                    )
+                    raise AgentToolError(
+                        f"Tool {name or 'unknown'} rejected its arguments"
+                    ) from exc
+                try:
                     if dispatch is None:
                         result = await _joinable_to_thread(
                             execute_agent_tool,
@@ -432,24 +461,40 @@ async def run_turn(
                             settings,
                         )
                 except (
-                    ValueError,
                     ValidationError,
                     ToolRegistryError,
                     queries.QueryServiceError,
                     DomainError,
+                    ValueError,
                 ) as exc:
+                    # A rejected call is information for the model, not a
+                    # reason to abandon the turn: hand the (bounded) reason
+                    # back as the tool output so it can correct the call or
+                    # explain to the person what is missing. Logged so the
+                    # cause is visible server-side.
+                    detail = _tool_error_detail(exc)
+                    logger.warning(
+                        "agent tool %s rejected: %s: %s", name or "unknown", type(exc).__name__, detail,
+                    )
                     log_event(
                         "tool_failure",
                         user_login=context.user_login,
                         tool_name=name,
                         status="rejected",
+                        kind=type(exc).__name__,
                         duration_ms=round(
                             (time.monotonic() - tool_started) * 1000,
                         ),
                     )
-                    raise AgentToolError(
-                        f"Tool {name or 'unknown'} rejected its arguments"
-                    ) from exc
+                    result = {
+                        "ok": False,
+                        "error": type(exc).__name__,
+                        "detail": detail,
+                        "hint": (
+                            "The call was not executed. Fix the arguments and call the "
+                            "tool again, or tell the person what is missing."
+                        ),
+                    }
                 bounded = bounded_tool_output(
                     result,
                     settings.agent_max_tool_result_bytes,
