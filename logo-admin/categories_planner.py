@@ -82,6 +82,7 @@ def blog_target(cursor, blog_id: int) -> Dict[str, Any]:
         extra_targets.append({
             "override_id": extra["override_id"],
             "slug": extra["slug"],
+            "previous_slug": extra.get("previous_slug"),
             "name": extra["name"],
             "parent_slug": kept[graft]["slug"] if graft in kept else "",
             "sort_order": extra.get("sort_order", 0),
@@ -126,8 +127,8 @@ def load_dispositions(cursor) -> Dict[str, Dict[str, Any]]:
     # Store-local extra nodes: a live term carrying an extra's slug is that
     # extra, materialized - implicitly store_custom (left untouched).
     cursor.execute(
-        "SELECT override_id, slug FROM catmgr.node_store_override"
-        " WHERE kind = 'extra_node'"
+        "SELECT override_id, blog_id, slug, previous_slug"
+        " FROM catmgr.node_store_override WHERE kind = 'extra_node'"
     )
     for row in cursor.fetchall():
         slug = row["slug"]
@@ -139,6 +140,21 @@ def load_dispositions(cursor) -> Dict[str, Dict[str, Any]]:
                 "is_primary": False,
                 "override_id": row["override_id"],
                 "implicit": True,
+            }
+        # The slug the extra's live term STILL carries after a draft re-slug:
+        # store_custom everywhere, but on the extra's own blog the planner
+        # converges that term in place to the new slug.
+        previous = row["previous_slug"]
+        if previous and previous not in dispositions:
+            dispositions[previous] = {
+                "old_slug": previous,
+                "action": "store_custom",
+                "target_node_id": None,
+                "is_primary": False,
+                "override_id": row["override_id"],
+                "implicit": True,
+                "extra_reslug": {"blog_id": row["blog_id"], "new_slug": slug,
+                                 "override_id": row["override_id"]},
             }
     return dispositions
 
@@ -240,9 +256,47 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
     live_by_slug = {t["slug"]: t for t in terms}
     live_by_id = {t["term_id"]: t for t in terms}
 
+    extra_by_override = {e["override_id"]: e for e in target["extras"]}
+    reslugged_extras: Set[int] = set()   # override_ids converged in place here
     for term in terms:
         disposition = dispositions[term["slug"]]
         action = disposition["action"]
+        reslug = disposition.get("extra_reslug")
+        if (action == "store_custom" and reslug and reslug["blog_id"] == blog_id
+                and reslug["override_id"] in extra_by_override):
+            extra = extra_by_override[reslug["override_id"]]
+            if extra["slug"] in live_by_slug:
+                # The new slug already exists live (converged earlier, or a
+                # collision): the old term merges into it.
+                deletes.append({"term_id": term["term_id"],
+                                "expected_slug": term["slug"],
+                                "reason": "merge"})
+                merge_target_slug[term["slug"]] = extra["slug"]
+                continue
+            reslugged_extras.add(extra["override_id"])
+            kept_current[term["slug"]] = extra["slug"]
+            live_parent = live_by_id.get(term["parent_term_id"] or 0)
+            live_parent_slug = live_parent["slug"] if live_parent else ""
+            changes = {"slug": True}
+            if normalize_wp_name(term["name"]) != extra["name"]:
+                changes["name"] = True
+            if live_parent_slug != extra["parent_slug"]:
+                changes["parent"] = True
+            if int(term["sort_order"] or 0) != int(extra["sort_order"] or 0):
+                changes["sort_order"] = True
+            updates.append({
+                "term_id": term["term_id"],
+                "expected_slug": term["slug"],
+                "set": {
+                    "slug": extra["slug"],
+                    "name": extra["name"],
+                    "parent_slug": extra["parent_slug"],
+                    "description": term["description"] or "",
+                    "sort_order": extra["sort_order"],
+                },
+                "changed": changes,
+            })
+            continue
         if action == "store_custom":
             kept_current[term["slug"]] = term["slug"]
             continue
@@ -317,12 +371,19 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
             )
 
     creates: List[Dict[str, Any]] = []
+    absorbed: List[str] = []
     for node_id, desired in kept.items():
         if node_id in nodes_with_primary_here:
             continue
         if desired["slug"] in live_by_slug and \
                 dispositions.get(desired["slug"], {}).get("action") == "store_custom":
-            continue  # a store-custom live term already owns this slug here
+            # A store-custom live term already owns this slug here. Creating
+            # the node would converge INTO that term (the broker updates an
+            # existing slug in place), silently turning the store's custom
+            # category into the global one. Surface it as a collision instead:
+            # the operator maps the slug into the node or renames the node.
+            absorbed.append(desired["slug"])
+            continue
         creates.append({
             "slug": desired["slug"],
             "name": desired["name"],
@@ -331,8 +392,8 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
             "sort_order": desired["sort_order"],
         })
     for extra in target["extras"]:
-        if extra["slug"] in live_by_slug:
-            continue  # store_custom live term stays as-is
+        if extra["slug"] in live_by_slug or extra["override_id"] in reslugged_extras:
+            continue  # store_custom live term stays as-is / converged in place
         creates.append({
             "slug": extra["slug"],
             "name": extra["name"],
@@ -446,6 +507,13 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
         "memberships": memberships,
         "redirects": redirects,
         "zero_category": zero_category,
+        # Live slugs that stay exactly as they are (store customs and
+        # unchanged kept terms): a final slug landing on one of these is a
+        # collision the broker would silently absorb.
+        "kept_slugs": sorted(
+            slug for slug, final in kept_current.items() if slug == final
+        ),
+        "absorbed_slugs": sorted(absorbed),
         "stats": stats,
     }
 
@@ -504,7 +572,13 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
     )
     known = [row["blog_id"] for row in cursor.fetchall()]
     if blog_ids:
-        blog_ids = [b for b in blog_ids if b in known]
+        unknown = sorted(set(blog_ids) - set(known))
+        if unknown:
+            raise DraftError(
+                f"no {env} snapshot for blog(s) {', '.join(map(str, unknown))};"
+                " import them first"
+            )
+        blog_ids = [b for b in known if b in set(blog_ids)]
     else:
         blog_ids = known
 
@@ -519,6 +593,7 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
     blocked_blogs: List[Dict[str, Any]] = []
     collisions: Dict[int, List[str]] = {}
     zero_by_sku: Dict[str, int] = {}
+    zero_detail: Dict[str, Dict[str, Any]] = {}
     changed_blog1_slugs: List[Dict[str, str]] = []
     redirect_count = 0
     totals = {"updates": 0, "creates": 0, "deletes": 0,
@@ -541,6 +616,9 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
             for zero in plan["zero_category"]:
                 if zero["sku"] and zero["sku"] not in acked:
                     zero_by_sku[zero["sku"]] = zero_by_sku.get(zero["sku"], 0) + 1
+                    detail = zero_detail.setdefault(zero["sku"], {"sku": zero["sku"], "blogs": []})
+                    if len(detail["blogs"]) < 10:
+                        detail["blogs"].append({"blog_id": blog_id, "product_id": zero["product_id"]})
             if blog_id == 1:
                 changed_blog1_slugs = [
                     {"from": u["expected_slug"], "to": u["set"]["slug"]}
@@ -580,6 +658,12 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
                 {"sku": sku, "blogs": count}
                 for sku, count in sorted(zero_by_sku.items())[:100]
             ],
+            # Enough detail for the UI to acknowledge or rescue each one.
+            "skus": [
+                {"sku": sku, "blogs": zero_by_sku[sku],
+                 "where": zero_detail[sku]["blogs"]}
+                for sku in sorted(zero_by_sku)[:500]
+            ],
         })
 
     warnings: List[Dict[str, Any]] = [
@@ -606,14 +690,20 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
 
 
 def _plan_slug_collisions(plan: Dict[str, Any]) -> List[str]:
+    """Two final slugs on one blog, or a final slug landing on a live term the
+    plan leaves untouched (a store custom), would make the broker converge two
+    categories into one. Both are blockers."""
     seen: Set[str] = set()
     collisions: Set[str] = set()
+    changing = {u["expected_slug"] for u in plan["terms"]["update"]}
+    kept = set(plan.get("kept_slugs") or []) - changing
     finals = (
         [u["set"]["slug"] for u in plan["terms"]["update"]]
         + [c["slug"] for c in plan["terms"]["create"]]
     )
     for slug in finals:
-        if slug in seen:
+        if slug in seen or slug in kept:
             collisions.add(slug)
         seen.add(slug)
+    collisions.update(plan.get("absorbed_slugs") or [])
     return sorted(collisions)

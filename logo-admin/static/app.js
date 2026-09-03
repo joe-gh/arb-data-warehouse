@@ -4951,7 +4951,14 @@
       if (catState.importing || btn.dataset.env === catState.env) return;
       catState.env = btn.dataset.env;
       catState.selected.clear();
-      loadCategories();
+      // Everything computed for the previous environment is stale now:
+      // mapping grid, products, effective tree, preview + the Apply button.
+      catResetPreview();
+      if (catMapState.table) { try { catMapState.table.destroy(); } catch (e) {} catMapState.table = null; }
+      catTreeState.effective = [];
+      catRunState.runs = [];
+      clearTimeout(catRunState.activeTimer);
+      loadCategories().then(() => showCatTab(catTreeState.tab));
     }));
   }
 
@@ -5058,6 +5065,7 @@
       if (!confirmed) return;
     }
     catState.importing = true;
+    ["#cat-import-all", "#cat-import-selected"].forEach((sel) => { const b = $(sel); if (b) b.disabled = true; });
     const progress = $("#cat-import-progress");
     const failures = [];
     let done = 0;
@@ -5078,6 +5086,7 @@
       }
     } finally {
       catState.importing = false;
+      ["#cat-import-all", "#cat-import-selected"].forEach((sel) => { const b = $(sel); if (b) b.disabled = false; });
       if (progress) progress.textContent = "";
     }
     await refreshCatSnapshots().catch(() => {});
@@ -5109,24 +5118,94 @@
 
 
   // ------------------------------------------- categories: preview + runs
-  const catRunState = { preview: null, runs: [], activeTimer: null, freeze: null };
+  const catRunState = { preview: null, runs: [], activeTimer: null, freeze: null, openRuns: new Set() };
 
   async function loadCatPreviewTab() {
     const box = $("#cat-preview-result");
     if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
   }
 
+  function catApplyAllowed() {
+    const view = $("#view-categories");
+    return Boolean(view && view.dataset.applyAllowed === "1");
+  }
+
+  function catResetPreview() {
+    catRunState.preview = null;
+    const apply = $("#cat-apply-run");
+    if (apply) apply.disabled = true;
+    const box = $("#cat-preview-result");
+    if (box) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
+    const ack = $("#cat-ack-panel");
+    if (ack) ack.hidden = true;
+  }
+
   async function runCatPreview() {
     const button = $("#cat-preview-run");
     const box = $("#cat-preview-result");
     setBusy(button, true, "Computing\u2026");
+    catResetPreview();
     try {
       const preview = await api("/api/categories/preview", { method: "POST", body: { env: catState.env } });
       catRunState.preview = preview;
       renderCatPreview(preview);
-      $("#cat-apply-run").disabled = !preview.ok;
+      $("#cat-apply-run").disabled = !(preview.ok && catApplyAllowed());
+      renderCatAckPanel(preview);
     } catch (error) {
+      catResetPreview();
       renderErrorState(box, friendlyLoadError("the preview", error), runCatPreview);
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function renderCatAckPanel(preview) {
+    const panel = $("#cat-ack-panel");
+    if (!panel) return;
+    const blocker = (preview.blockers || []).find((b) => b.kind === "zero_category_skus");
+    const listBox = $("#cat-ack-list");
+    const ackedBox = $("#cat-acked-list");
+    let acked = [];
+    try { acked = (await api("/api/categories/uncategorized-ack")).acks || []; } catch (e) { acked = []; }
+    panel.hidden = !blocker && !acked.length;
+    if (panel.hidden) return;
+    const rows = blocker ? (blocker.skus || blocker.sample || []) : [];
+    listBox.innerHTML = rows.length ? `
+      <table class="table cat-table"><thead><tr><th><input type="checkbox" id="cat-ack-check-all"></th><th>SKU</th><th>Blogs</th><th>Where</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td><input type="checkbox" class="cat-ack-check" value="${escapeHtml(r.sku)}"></td><td>${escapeHtml(r.sku)}</td><td>${r.blogs || ""}</td><td class="muted">${(r.where || []).map((w) => `blog ${w.blog_id} #${w.product_id}`).join(", ")}</td></tr>`).join("")}
+      </tbody></table>${blocker && blocker.count > rows.length ? `<p class="muted">Showing ${rows.length} of ${blocker.count}.</p>` : ""}`
+      : '<p class="muted">No products would end without a category.</p>';
+    const all = $("#cat-ack-check-all");
+    if (all) all.addEventListener("change", () => $$(".cat-ack-check", listBox).forEach((c) => { c.checked = all.checked; }));
+    ackedBox.innerHTML = acked.length ? `<h4>Acknowledged (${acked.length})</h4><div class="cat-membership">${acked.map((a) => `<span class="cat-chip">${escapeHtml(a.sku)}${a.note ? ` <span class="muted">${escapeHtml(a.note)}</span>` : ""} <button type="button" class="cat-ack-del" data-sku="${escapeHtml(a.sku)}" title="Remove acknowledgement">\u00d7</button></span>`).join("")}</div>` : "";
+    $$(".cat-ack-del", ackedBox).forEach((btn) => btn.addEventListener("click", async () => {
+      try {
+        await api(`/api/categories/uncategorized-ack/${encodeURIComponent(btn.dataset.sku)}`, { method: "DELETE" });
+        toast(`${btn.dataset.sku} will block again until rescued or re-acknowledged.`, "success");
+        await runCatPreview();
+      } catch (error) { toast(errorMessage(error), "error"); }
+    }));
+  }
+
+  async function catAcknowledge(skus) {
+    if (!skus.length) { toast("Select SKUs first.", "error"); return; }
+    const note = ($("#cat-ack-note").value || "").trim();
+    const confirmed = await confirmAction({
+      title: `Acknowledge ${skus.length} SKU(s) as intentionally uncategorized?`,
+      message: "They will no longer block the plan. On the next apply these products keep NO category on the affected stores.",
+      actionLabel: "Acknowledge",
+    });
+    if (!confirmed) return;
+    const button = $("#cat-ack-selected");
+    setBusy(button, true, "Saving\u2026");
+    try {
+      for (let i = 0; i < skus.length; i += 500) {
+        await api("/api/categories/uncategorized-ack", { method: "PUT", body: { skus: skus.slice(i, i + 500), note } });
+      }
+      toast(`Acknowledged ${skus.length} SKU(s).`, "success");
+      await runCatPreview();
+    } catch (error) {
+      toast(errorMessage(error), "error");
     } finally {
       setBusy(button, false);
     }
@@ -5214,9 +5293,10 @@
       const data = await api(`/api/categories/runs?env=${encodeURIComponent(catState.env)}`);
       catRunState.runs = data.runs || [];
       renderCatRuns();
-      const active = catRunState.runs.find((r) => ["queued", "running"].includes(r.status));
+      const restoring = catRunState.runs.some((r) => r.restoring);
+      const active = catRunState.runs.find((r) => ["queued", "running"].includes(r.status)) || restoring;
       clearTimeout(catRunState.activeTimer);
-      if (active && catTreeState.tab === "runs") {
+      if (active && catTreeState.tab === "runs" && document.body.dataset.view === "categories") {
         catRunState.activeTimer = setTimeout(loadCatRuns, 3000);
       }
       loadCatFreezeState();
@@ -5230,8 +5310,16 @@
       const data = await api(`/api/categories/wp-status?env=${encodeURIComponent(catState.env)}`);
       catRunState.freeze = Boolean(data.status && data.status.freeze);
       const button = $("#cat-freeze-toggle");
-      if (button) button.textContent = catRunState.freeze ? "Unfreeze WP category edits" : "Freeze WP category edits";
-    } catch (error) { /* status strip already reports unreachable WP */ }
+      if (button) {
+        button.textContent = catRunState.freeze ? "Unfreeze WP category edits" : "Freeze WP category edits";
+        if (catApplyAllowed()) button.disabled = false;
+      }
+    } catch (error) {
+      // Unknown freeze state: never let the button guess.
+      catRunState.freeze = null;
+      const button = $("#cat-freeze-toggle");
+      if (button) { button.textContent = "Freeze state unknown (WP unreachable)"; button.disabled = true; }
+    }
   }
 
   function renderCatRuns() {
@@ -5243,13 +5331,15 @@
     }
     box.innerHTML = catRunState.runs.map((run) => {
       const controls = [];
-      if (["queued", "running"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="pause" data-run="${run.run_id}">Pause</button>`);
-      if (["paused", "failed"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="resume" data-run="${run.run_id}">Resume</button>`);
-      if (["paused", "queued"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-danger cat-run-ctl" data-act="cancel" data-run="${run.run_id}">Cancel</button>`);
+      const allowed = catApplyAllowed();
+      const dis = allowed ? "" : " disabled title=\"Apply allowlist only\"";
+      if (["queued", "running"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="pause" data-run="${run.run_id}"${dis}>Pause</button>`);
+      if (["paused", "failed"].includes(run.status) || run.worker_stale) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="resume" data-run="${run.run_id}"${dis}>${run.worker_stale ? "Recover" : "Resume"}</button>`);
+      if (["paused", "queued", "failed"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-danger cat-run-ctl" data-act="cancel" data-run="${run.run_id}"${dis}>Cancel</button>`);
       return `<div class="cat-run" data-run="${run.run_id}">
         <div class="cat-run__head">
           <strong>Run ${run.run_id}</strong>
-          <span class="cat-badge cat-run--${escapeHtml(run.status)}">${escapeHtml(run.status)}</span>
+          <span class="cat-badge cat-run--${escapeHtml(run.status)}">${escapeHtml(run.status)}${run.worker_stale ? " (worker lost)" : ""}</span>
           <span class="muted">${escapeHtml(String(run.env))} \u00b7 ${run.target_blogs.length} blogs \u00b7 by ${escapeHtml(run.created_by || "?")} \u00b7 ${escapeHtml(formatDate(run.created_at))}</span>
           ${controls.join(" ")}
           <button class="button button--ghost button--small cat-run-open" data-run="${run.run_id}">Details</button>
@@ -5258,18 +5348,22 @@
       </div>`;
     }).join("");
     $$(".cat-run-ctl", box).forEach((btn) => btn.addEventListener("click", async () => {
+      setBusy(btn, true, "\u2026");
       try {
         await api(`/api/categories/runs/${btn.dataset.run}/${btn.dataset.act}`, { method: "POST" });
         await loadCatRuns();
-      } catch (error) { toast(errorMessage(error), "error"); }
+      } catch (error) { toast(errorMessage(error), "error"); setBusy(btn, false); }
     }));
-    $$(".cat-run-open", box).forEach((btn) => btn.addEventListener("click", () => openCatRun(Number(btn.dataset.run))));
+    $$(".cat-run-open", box).forEach((btn) => btn.addEventListener("click", () => openCatRun(Number(btn.dataset.run), true)));
+    // Re-open the job tables the operator had expanded before this re-render.
+    catRunState.openRuns.forEach((runId) => { openCatRun(runId, false); });
   }
 
-  async function openCatRun(runId) {
+  async function openCatRun(runId, toggle) {
     const holder = $(`#cat-run-jobs-${runId}`);
     if (!holder) return;
-    if (!holder.hidden) { holder.hidden = true; return; }
+    if (toggle && catRunState.openRuns.has(runId)) { holder.hidden = true; catRunState.openRuns.delete(runId); return; }
+    catRunState.openRuns.add(runId);
     try {
       const data = await api(`/api/categories/runs/${runId}`);
       const jobs = data.run.jobs || [];
@@ -5284,12 +5378,19 @@
             controls.push(`<button class="button button--ghost button--small cat-job-ctl" data-act="retry" data-run="${runId}" data-job="${job.job_id}">Retry</button>`);
             controls.push(`<button class="button button--ghost button--small cat-job-ctl" data-act="skip" data-run="${runId}" data-job="${job.job_id}">Skip</button>`);
           }
-          if (job.status === "done" && job.has_snapshot) {
-            controls.push(`<button class="button button--ghost button--small cat-danger cat-job-ctl" data-act="restore" data-run="${runId}" data-job="${job.job_id}">Restore</button>`);
+          const restore = job.restore || null;
+          if (["done", "failed"].includes(job.status) && job.has_snapshot && !(restore && restore.status === "running")) {
+            controls.push(`<button class="button button--ghost button--small cat-danger cat-job-ctl" data-act="restore" data-run="${runId}" data-job="${job.job_id}"${catApplyAllowed() ? "" : " disabled"}>${restore && restore.status === "done" ? "Restore again" : "Restore"}</button>`);
           }
-          const resultText = job.result && job.result.error
-            ? escapeHtml(String(job.result.error).slice(0, 160))
+          let resultText = job.result && job.result.error
+            ? escapeHtml(String(job.result.error).slice(0, 220))
             : (job.status === "done" ? "ok" : "");
+          if (job.result && job.result.membership_fence) resultText += ` <span class="muted">(fence: ${escapeHtml(JSON.stringify(job.result.membership_fence).slice(0, 160))})</span>`;
+          if (job.result && job.result.redirect_failures) resultText += ` <span class="muted">(${job.result.redirect_failures.length} redirect(s) failed)</span>`;
+          if (restore) {
+            const pct = restore.total ? Math.round(100 * (restore.offset || 0) / restore.total) : 100;
+            resultText += `<div class="cat-restore cat-restore--${escapeHtml(restore.status || "")}">restore ${escapeHtml(restore.status || "")}: ${escapeHtml(restore.phase || "")}${restore.status === "running" ? ` ${pct}%` : ""}${restore.error ? ` \u2014 ${escapeHtml(String(restore.error).slice(0, 160))}` : ""}</div>`;
+          }
           return `<tr><td>${job.seq}</td>
             <td>${job.blog_id} <span class="muted">${escapeHtml(job.blog_path || "")}</span></td>
             <td><span class="cat-badge cat-run--${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
@@ -5304,17 +5405,18 @@
         if (btn.dataset.act === "restore") {
           const sure = await confirmAction({
             title: `Restore blog from its pre-apply snapshot?`,
-            message: "Emergency rollback: converges the blog back to how it looked before this job ran. Deleted terms recreate with new ids.",
+            message: "Emergency rollback: converges the blog back to how it looked before this job ran (terms, then memberships in pages, then cleanup). Deleted terms recreate with new ids. Runs in the background; watch the job row.",
             actionLabel: "Restore",
             danger: true,
           });
           if (!sure) return;
         }
+        setBusy(btn, true, "\u2026");
         try {
           await api(`/api/categories/runs/${btn.dataset.run}/jobs/${btn.dataset.job}/${btn.dataset.act}`, { method: "POST" });
-          toast(`${btn.dataset.act} accepted.`, "success");
+          toast(btn.dataset.act === "restore" ? "Restore started - progress shows on the job row." : `${btn.dataset.act} accepted.`, "success");
           await loadCatRuns();
-        } catch (error) { toast(errorMessage(error), "error"); }
+        } catch (error) { toast(errorMessage(error), "error"); setBusy(btn, false); }
       }));
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -5325,7 +5427,12 @@
     if (!$("#cat-runs-panel")) return;
     $("#cat-preview-run").addEventListener("click", runCatPreview);
     $("#cat-apply-run").addEventListener("click", runCatApply);
+    $("#cat-ack-selected").addEventListener("click", () =>
+      catAcknowledge($$(".cat-ack-check:checked", $("#cat-ack-list")).map((c) => c.value)));
+    $("#cat-ack-all").addEventListener("click", () =>
+      catAcknowledge($$(".cat-ack-check", $("#cat-ack-list")).map((c) => c.value)));
     $("#cat-freeze-toggle").addEventListener("click", async () => {
+      if (catRunState.freeze === null) { toast("Freeze state unknown - WordPress is unreachable.", "error"); return; }
       const next = !catRunState.freeze;
       const confirmed = await confirmAction({
         title: next ? "Freeze WordPress category edits?" : "Unfreeze WordPress category edits?",
@@ -5379,7 +5486,7 @@
 
   async function loadCatMapping() {
     if (!$("#cat-mapping-table")) return;
-    if (!catState.env) return;
+    if (!catState.env) { $("#cat-mapping-table").innerHTML = '<p class="muted">No WordPress target is configured for this environment.</p>'; return; }
     try {
       if (!catTreeState.nodes.length) {
         const tree = await api("/api/categories/tree");
@@ -5433,38 +5540,91 @@
     }
   }
 
+  const CAT_MAPPING_CHUNK = 500;   // PUT /mapping accepts at most 500 rows
+  let catMapBusy = false;
+
+  function catMapSetBusy(text) {
+    catMapBusy = Boolean(text);
+    const label = $("#cat-map-busy");
+    if (label) label.textContent = text || "";
+    ["#cat-map-apply", "#cat-map-delete", "#cat-map-custom", "#cat-map-clear", "#cat-map-primary", "#cat-map-suggest"]
+      .forEach((sel) => { const b = $(sel); if (b) b.disabled = catMapBusy; });
+  }
+
+  async function catMappingSaveRows(rows) {
+    const failures = [];
+    let saved = 0;
+    for (let i = 0; i < rows.length; i += CAT_MAPPING_CHUNK) {
+      const chunk = rows.slice(i, i + CAT_MAPPING_CHUNK);
+      catMapSetBusy(`Saving ${Math.min(i + chunk.length, rows.length)} of ${rows.length}\u2026`);
+      const result = await api("/api/categories/mapping", { method: "PUT", body: { rows: chunk } });
+      (result.results || []).forEach((r) => { if (r.ok === false) failures.push(r); else saved += 1; });
+    }
+    return { saved, failures };
+  }
+
   async function catMappingBulk(rowsBuilder) {
-    if (!catMapState.table) return;
+    if (!catMapState.table || catMapBusy) return;
     const selected = catMapState.table.getSelectedData();
     if (!selected.length) { toast("Select rows first.", "error"); return; }
     const rows = rowsBuilder(selected).filter(Boolean);
     if (!rows.length) return;
     try {
-      const result = await api("/api/categories/mapping", { method: "PUT", body: { rows } });
-      const failures = (result.results || []).filter((r) => !r.ok);
-      if (result.mapping) {
-        toast("Saved.", "success");
-      } else if (failures.length) {
+      const { saved, failures } = await catMappingSaveRows(rows);
+      if (failures.length) {
         toast(`${failures.length} of ${rows.length} failed: ${failures.slice(0, 2).map((f) => `${f.old_slug}: ${f.error}`).join("; ")}`, "error");
       } else {
-        toast(`Updated ${rows.length} slugs.`, "success");
+        toast(rows.length === 1 ? "Saved." : `Updated ${saved} slugs.`, "success");
       }
     } catch (error) {
       toast(errorMessage(error), "error");
+    } finally {
+      catMapSetBusy("");
     }
     await loadCatMapping();
   }
 
   async function catMappingClearSelected() {
-    if (!catMapState.table) return;
-    const selected = catMapState.table.getSelectedData().filter((r) => r.action);
-    if (!selected.length) { toast("Select mapped rows first.", "error"); return; }
-    for (const row of selected) {
-      try {
-        await api(`/api/categories/mapping/${encodeURIComponent(row.old_slug)}`, { method: "DELETE" });
-      } catch (error) {
-        toast(`${row.old_slug}: ${errorMessage(error)}`, "error");
+    if (!catMapState.table || catMapBusy) return;
+    const selected = catMapState.table.getSelectedData().filter((r) => r.action && !r.implicit);
+    if (!selected.length) { toast("Select explicitly mapped rows first (automatic mappings have nothing to clear).", "error"); return; }
+    let failed = 0;
+    try {
+      for (let i = 0; i < selected.length; i++) {
+        if (i % 25 === 0) catMapSetBusy(`Clearing ${i + 1} of ${selected.length}\u2026`);
+        try {
+          await api(`/api/categories/mapping/${encodeURIComponent(selected[i].old_slug)}`, { method: "DELETE" });
+        } catch (error) {
+          failed += 1;
+          if (failed <= 3) toast(`${selected[i].old_slug}: ${errorMessage(error)}`, "error");
+        }
       }
+      if (!failed) toast(`Cleared ${selected.length} mapping(s).`, "success");
+    } finally {
+      catMapSetBusy("");
+    }
+    await loadCatMapping();
+  }
+
+  async function catMappingMakePrimary() {
+    if (!catMapState.table || catMapBusy) return;
+    const selected = catMapState.table.getSelectedData();
+    if (selected.length !== 1) { toast("Select exactly one mapped slug to make primary.", "error"); return; }
+    const row = selected[0];
+    if (row.action !== "map" || !row.target_node_id) { toast("Only a slug mapped into a category can be primary.", "error"); return; }
+    try {
+      catMapSetBusy("Saving\u2026");
+      // Demote the node's current primary first (the API refuses two primaries).
+      const current = catMapState.table.getData().find((r) => r.target_node_id === row.target_node_id && r.is_primary && r.old_slug !== row.old_slug && !r.implicit);
+      if (current) {
+        await api("/api/categories/mapping", { method: "PUT", body: { rows: [{ old_slug: current.old_slug, action: "map", target_node_id: current.target_node_id, is_primary: false }] } });
+      }
+      await api("/api/categories/mapping", { method: "PUT", body: { rows: [{ old_slug: row.old_slug, action: "map", target_node_id: row.target_node_id, is_primary: true }] } });
+      toast(`${row.old_slug} is now the primary (in-place) slug for its category.`, "success");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      catMapSetBusy("");
     }
     await loadCatMapping();
   }
@@ -5480,12 +5640,13 @@
         actionLabel: "Accept",
       });
       if (!confirmed) return;
-      await api("/api/categories/mapping", { method: "PUT", body: {
-        rows: suggestions.map((sug) => ({ old_slug: sug.old_slug, action: "map", target_node_id: sug.node_id })),
-      } });
-      toast(`Accepted ${suggestions.length} suggestions.`, "success");
+      const { saved, failures } = await catMappingSaveRows(
+        suggestions.map((sug) => ({ old_slug: sug.old_slug, action: "map", target_node_id: sug.node_id })));
+      toast(failures.length ? `Accepted ${saved}; ${failures.length} failed.` : `Accepted ${saved} suggestions.`, failures.length ? "error" : "success");
     } catch (error) {
       toast(errorMessage(error), "error");
+    } finally {
+      catMapSetBusy("");
     }
     await loadCatMapping();
   }
@@ -5502,6 +5663,7 @@
     $("#cat-map-custom").addEventListener("click", () =>
       catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "store_custom" }))));
     $("#cat-map-clear").addEventListener("click", catMappingClearSelected);
+    $("#cat-map-primary").addEventListener("click", catMappingMakePrimary);
     $("#cat-map-suggest").addEventListener("click", catMappingAcceptSuggestions);
   }
 
@@ -5556,24 +5718,43 @@
           </tr>`).join("")}
         </tbody></table>` : '<p class="muted">No explicit assignments.</p>';
       $$(".cat-assign-del", list).forEach((btn) => btn.addEventListener("click", async () => {
+        setBusy(btn, true, "\u2026");
         try {
           await api(`/api/categories/assignments/${btn.dataset.id}`, { method: "DELETE" });
           await refreshCatProducts();
-        } catch (error) { toast(errorMessage(error), "error"); }
+        } catch (error) { toast(errorMessage(error), "error"); setBusy(btn, false); }
       }));
       const ruleList = $("#cat-rule-list");
       const ruleRows = rules.rules || [];
+      catProdState.rules = ruleRows;
       ruleList.innerHTML = ruleRows.length ? ruleRows.map((r) => `
         <div class="cat-override-row">
-          <span class="cat-badge">rule</span>
-          <span>${escapeHtml(r.spec.field)} ${escapeHtml(r.spec.op)} \u201c${escapeHtml(r.spec.value)}\u201d${r.spec.from !== "all" ? ` (from ${escapeHtml((r.spec.from || []).join(", "))})` : ""}</span>
+          <span class="cat-badge">rule${r.priority ? ` p${r.priority}` : ""}</span>
+          <span>${escapeHtml(r.spec.field)} ${escapeHtml(r.spec.op)} \u201c${escapeHtml(r.spec.value)}\u201d${r.spec.from && r.spec.from !== "all" ? ` (from ${escapeHtml((r.spec.from || []).join(", "))})` : ""}${r.note ? ` <span class="muted">${escapeHtml(r.note)}</span>` : ""}</span>
+          <button type="button" class="button button--ghost button--small cat-rule-edit" data-id="${r.rule_id}">Edit</button>
           <button type="button" class="button button--ghost button--small cat-rule-del" data-id="${r.rule_id}">Delete</button>
         </div>`).join("") : '<p class="muted">No rules.</p>';
+      $$(".cat-rule-edit", ruleList).forEach((btn) => btn.addEventListener("click", () => {
+        const rule = ruleRows.find((r) => String(r.rule_id) === btn.dataset.id);
+        if (!rule) return;
+        catProdState.editingRule = rule.rule_id;
+        $("#cat-rule-field").value = rule.spec.field;
+        $("#cat-rule-op").value = rule.spec.op;
+        $("#cat-rule-value").value = rule.spec.value || "";
+        $("#cat-rule-from").value = Array.isArray(rule.spec.from) ? rule.spec.from.join(", ") : "";
+        $("#cat-rule-priority").value = rule.priority || 0;
+        $("#cat-rule-note").value = rule.note || "";
+        $("#cat-rule-save").textContent = "Update rule";
+        $("#cat-rule-cancel").hidden = false;
+      }));
       $$(".cat-rule-del", ruleList).forEach((btn) => btn.addEventListener("click", async () => {
+        const sure = await confirmAction({ title: "Delete this rule?", message: "Products it added are no longer assigned by it (explicit assignments stay).", actionLabel: "Delete", danger: true });
+        if (!sure) return;
+        setBusy(btn, true, "\u2026");
         try {
           await api(`/api/categories/rules/${btn.dataset.id}`, { method: "DELETE" });
           await refreshCatProducts();
-        } catch (error) { toast(errorMessage(error), "error"); }
+        } catch (error) { toast(errorMessage(error), "error"); setBusy(btn, false); }
       }));
     } catch (error) {
       membershipBox.innerHTML = "";
@@ -5596,14 +5777,19 @@
     if (!catProdState.nodeId) return;
     const skus = $("#cat-assign-skus").value.split(/\s+/).map((sku) => sku.trim()).filter(Boolean);
     if (!skus.length) { toast("Enter at least one SKU.", "error"); return; }
+    const button = $(mode === "add" ? "#cat-assign-add" : "#cat-assign-remove");
+    setBusy(button, true, "Saving\u2026");
     try {
       await api("/api/categories/assignments", { method: "PUT", body: {
         node_id: catProdState.nodeId, skus, mode,
       } });
       $("#cat-assign-skus").value = "";
+      toast(`${skus.length} SKU(s) ${mode === "add" ? "added" : "marked for removal"}.`, "success");
       await refreshCatProducts();
     } catch (error) {
       toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
     }
   }
 
@@ -5637,16 +5823,33 @@
         $("#cat-rule-result").textContent = errorMessage(error);
       }
     });
+    const resetRuleForm = () => {
+      catProdState.editingRule = null;
+      $("#cat-rule-value").value = ""; $("#cat-rule-from").value = ""; $("#cat-rule-priority").value = 0; $("#cat-rule-note").value = "";
+      $("#cat-rule-save").textContent = "Save rule";
+      $("#cat-rule-cancel").hidden = true;
+      $("#cat-rule-result").textContent = "";
+    };
+    $("#cat-rule-cancel").addEventListener("click", resetRuleForm);
     $("#cat-rule-save").addEventListener("click", async () => {
       if (!catProdState.nodeId) return;
+      const button = $("#cat-rule-save");
+      setBusy(button, true, "Saving\u2026");
       try {
-        await api("/api/categories/rules", { method: "PUT", body: {
+        const body = {
           node_id: catProdState.nodeId, spec: catRuleSpecFromForm(),
-        } });
-        toast("Rule saved.", "success");
+          priority: Number($("#cat-rule-priority").value) || 0,
+          note: $("#cat-rule-note").value.trim(),
+        };
+        if (catProdState.editingRule) body.rule_id = catProdState.editingRule;
+        await api("/api/categories/rules", { method: "PUT", body });
+        toast(catProdState.editingRule ? "Rule updated." : "Rule saved.", "success");
+        resetRuleForm();
         await refreshCatProducts();
       } catch (error) {
         toast(errorMessage(error), "error");
+      } finally {
+        setBusy(button, false);
       }
     });
   }
@@ -5807,7 +6010,8 @@
       if (event.key === "Enter") finish(true);
       if (event.key === "Escape") finish(false);
     });
-    input.addEventListener("blur", () => finish(true));
+    // Clicking away cancels; only Enter commits a rename.
+    input.addEventListener("blur", () => finish(false));
   }
 
   function attachCatSortables(box) {
@@ -5882,6 +6086,8 @@
   async function addCatChild(parentId) {
     const name = window.prompt("New category name:");
     if (!name || !name.trim()) return;
+    const button = parentId === null ? $("#cat-add-root") : $("#cat-detail-add-child");
+    if (button) setBusy(button, true, "Adding\u2026");
     try {
       await api("/api/categories/nodes", {
         method: "POST",
@@ -5890,6 +6096,8 @@
       await loadCatTree();
     } catch (error) {
       toast(errorMessage(error), "error");
+    } finally {
+      if (button) setBusy(button, false);
     }
   }
 
@@ -5969,7 +6177,7 @@
 
   function renderCatStoreSelect() {
     const select = $("#cat-tree-store");
-    if (!select || select.dataset.filled === "1") return;
+    if (!select) return;
     const known = new Map();
     catState.blogs.forEach((b) => known.set(b.blog_id, b));
     catState.snapshots.forEach((sRow) => {
@@ -5979,8 +6187,12 @@
     const options = [...known.values()].sort((a, b) => a.blog_id - b.blog_id).map((b) =>
       `<option value="${b.blog_id}">${b.blog_id} \u00b7 ${escapeHtml(b.name || b.path || "")}</option>`
     ).join("");
+    const signature = [...known.keys()].sort((a, b) => a - b).join(",");
+    if (select.dataset.signature === signature) return;
+    const current = select.value;
     select.innerHTML = `<option value="">Global draft (all stores)</option>${options}`;
-    select.dataset.filled = "1";
+    select.dataset.signature = signature;
+    if (current && [...select.options].some((o) => o.value === current)) select.value = current;
   }
 
   function renderCatStoreOverrides() {
@@ -5995,25 +6207,69 @@
     } else {
       list.innerHTML = catTreeState.overrides.map((o) => `
         <div class="cat-override-row">
-          <span class="cat-badge">${escapeHtml(o.kind)}</span>
+          <span class="cat-badge">${escapeHtml(o.kind.replace("_", " "))}</span>
           <span>${escapeHtml(o.kind === "extra_node" ? `${o.name} [${o.slug}]` : (o.node_name || `node ${o.node_id}`))}</span>
           ${o.kind === "rename" ? `<span class="muted">\u2192 ${escapeHtml(o.name)}</span>` : ""}
+          ${o.kind === "exclude" ? `<span class="muted">${o.include_descendants ? "with subtree" : "this category only"}</span>` : ""}
+          ${o.kind === "extra_node" && o.previous_slug ? `<span class="muted" title="The live term still has this slug; the apply re-slugs it in place">was ${escapeHtml(o.previous_slug)}</span>` : ""}
+          <button type="button" class="button button--ghost button--small cat-ov-edit" data-id="${o.override_id}">Edit</button>
           <button type="button" class="button button--ghost button--small cat-ov-delete" data-id="${o.override_id}">Remove</button>
         </div>`).join("");
+      $$(".cat-ov-edit", list).forEach((btn) => btn.addEventListener("click", () => {
+        const o = catTreeState.overrides.find((row) => String(row.override_id) === btn.dataset.id);
+        if (!o) return;
+        catTreeState.editingOverride = o.override_id;
+        $("#cat-ov-kind").value = o.kind;
+        $("#cat-ov-name").value = o.name || "";
+        $("#cat-ov-slug").value = o.slug || "";
+        $("#cat-ov-sort").value = o.sort_order || 0;
+        $("#cat-ov-descendants").checked = o.include_descendants !== false;
+        catOverrideFormShape();
+        const nodeSelect = $("#cat-ov-node");
+        if (o.kind === "extra_node") { if (o.parent_node_id) nodeSelect.value = String(o.parent_node_id); }
+        else nodeSelect.value = String(o.node_id);
+        $("#cat-ov-save").textContent = "Update override";
+        $("#cat-ov-cancel").hidden = false;
+      }));
       $$(".cat-ov-delete", list).forEach((btn) => btn.addEventListener("click", async () => {
+        const sure = await confirmAction({ title: "Remove this override?", message: "The store falls back to the global draft for it on the next apply.", actionLabel: "Remove", danger: true });
+        if (!sure) return;
+        setBusy(btn, true, "\u2026");
         try {
           await api(`/api/categories/overrides/${btn.dataset.id}`, { method: "DELETE" });
           await loadCatTree();
         } catch (error) {
           toast(errorMessage(error), "error");
+          setBusy(btn, false);
         }
       }));
     }
     const nodeSelect = $("#cat-ov-node");
+    const keep = nodeSelect.value;
     nodeSelect.innerHTML = (catTreeState.nodes.length ? catTreeState.nodes : catTreeState.effective)
       .filter((n) => n.node_id)
       .map((n) => `<option value="${n.node_id}">${escapeHtml(n.name)} [${escapeHtml(n.slug)}]</option>`)
       .join("");
+    if (keep && [...nodeSelect.options].some((o) => o.value === keep)) nodeSelect.value = keep;
+    catOverrideFormShape();
+  }
+
+  function catOverrideFormShape() {
+    const kind = $("#cat-ov-kind") ? $("#cat-ov-kind").value : "rename";
+    const show = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
+    show("#cat-ov-slug-field", kind === "extra_node");
+    show("#cat-ov-sort-field", kind === "extra_node");
+    show("#cat-ov-desc-field", kind === "exclude");
+    const nameField = $("#cat-ov-name");
+    if (nameField) nameField.closest("label").hidden = kind === "exclude";
+  }
+
+  function catResetOverrideForm() {
+    catTreeState.editingOverride = null;
+    $("#cat-ov-name").value = ""; $("#cat-ov-slug").value = ""; $("#cat-ov-sort").value = 0;
+    $("#cat-ov-descendants").checked = true;
+    $("#cat-ov-save").textContent = "Add override";
+    $("#cat-ov-cancel").hidden = true;
   }
 
   async function saveCatOverride() {
@@ -6022,19 +6278,28 @@
     const nodeId = Number($("#cat-ov-node").value) || null;
     const name = $("#cat-ov-name").value.trim();
     const body = { blog_id: Number(catTreeState.storeBlog), kind };
+    if (catTreeState.editingOverride) body.override_id = catTreeState.editingOverride;
     if (kind === "extra_node") {
       body.name = name;
       body.parent_node_id = nodeId;
+      const slug = $("#cat-ov-slug").value.trim();
+      if (slug) body.slug = slug;
+      body.sort_order = Number($("#cat-ov-sort").value) || 0;
     } else {
       body.node_id = nodeId;
       if (kind === "rename") body.name = name;
+      if (kind === "exclude") body.include_descendants = $("#cat-ov-descendants").checked;
     }
+    const button = $("#cat-ov-save");
+    setBusy(button, true, "Saving\u2026");
     try {
       await api("/api/categories/overrides", { method: "PUT", body });
-      $("#cat-ov-name").value = "";
+      catResetOverrideForm();
       await loadCatTree();
     } catch (error) {
       toast(errorMessage(error), "error");
+    } finally {
+      setBusy(button, false);
     }
   }
 
@@ -6055,6 +6320,8 @@
     $("#cat-detail-delete").addEventListener("click", deleteCatNode);
     $("#cat-seed-run").addEventListener("click", runCatSeed);
     $("#cat-ov-save").addEventListener("click", saveCatOverride);
+    $("#cat-ov-cancel").addEventListener("click", catResetOverrideForm);
+    $("#cat-ov-kind").addEventListener("change", catOverrideFormShape);
   }
 
   async function loadCategories() {
@@ -6086,6 +6353,7 @@
       if (trigger) trigger.classList.toggle("is-active", (g.dataset.group || "").split(",").includes(name));
     });
     document.body.dataset.view = name;
+    if (name !== "categories" && typeof catRunState !== "undefined") clearTimeout(catRunState.activeTimer);
     const url = new URL(window.location.href);
     url.searchParams.set("view", name);
     window.history.replaceState({}, "", url);

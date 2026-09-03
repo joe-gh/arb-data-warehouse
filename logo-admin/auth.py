@@ -62,7 +62,7 @@ def wordpress_json_request(
     request = Request(url, data=body, headers=headers, method=method)
     try:
         with build_opener(_NoRedirectHandler()).open(request, timeout=timeout) as response:
-            raw = response.read(1024 * 1024)
+            raw = response.read(WORDPRESS_RESPONSE_CAP_BYTES)
             status = response.status
     except HTTPError as exc:
         raw = exc.read(64 * 1024)
@@ -84,14 +84,40 @@ def wordpress_json_request(
     return result
 
 
+# Category exports for a large blog run to several MB per page; the broker
+# pages memberships at 5,000 rows so this stays a safety cap, not a limit.
+WORDPRESS_RESPONSE_CAP_BYTES = 16 * 1024 * 1024
+
+
 def _wordpress_error_message(raw: bytes) -> str:
+    """The operator-facing text of a WordPress error body. Besides ``message``
+    it carries the broker's structured drift/fence reports (``code`` plus a
+    compact ``drift`` / ``report`` list) so a refused apply says WHICH terms
+    moved instead of a generic rejection."""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return ""
-    if isinstance(payload, dict) and isinstance(payload.get("message"), str):
-        return payload["message"][:500]
-    return ""
+    if not isinstance(payload, dict):
+        return ""
+    parts = []
+    if isinstance(payload.get("message"), str) and payload["message"]:
+        parts.append(payload["message"])
+    code = payload.get("code")
+    if isinstance(code, str) and code and not parts:
+        parts.append(code)
+    for key in ("drift", "report"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and rows:
+            rendered = []
+            for row in rows[:10]:
+                if isinstance(row, dict):
+                    rendered.append(", ".join(f"{k}={v}" for k, v in row.items() if v not in (None, "")))
+                else:
+                    rendered.append(str(row))
+            more = f" (+{len(rows) - 10} more)" if len(rows) > 10 else ""
+            parts.append(f"{key}: " + "; ".join(rendered) + more)
+    return " | ".join(parts)[:1500]
 
 
 def validate_wordpress_login(username: str, password: str) -> Dict[str, str]:

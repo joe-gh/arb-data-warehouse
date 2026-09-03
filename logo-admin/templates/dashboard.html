@@ -604,7 +604,7 @@
     <!-- System health -->
     {% if categories_enabled %}
     <!-- Category editor -->
-    <section id="view-categories" class="view" hidden aria-label="Category editor">
+    <section id="view-categories" class="view" hidden aria-label="Category editor" data-apply-allowed="{{ 1 if categories_apply_allowed else 0 }}">
       <div class="pricing">
         <div class="pricing__head">
           <p class="eyebrow">Category editor</p>
@@ -707,8 +707,17 @@
                 <label class="field"><span>Name (rename / extra)</span>
                   <input id="cat-ov-name" type="text" maxlength="200">
                 </label>
+                <label class="field field--xs" id="cat-ov-slug-field"><span>Slug (extra)</span>
+                  <input id="cat-ov-slug" type="text" maxlength="200" spellcheck="false" placeholder="auto from name">
+                </label>
+                <label class="field field--xs" id="cat-ov-sort-field"><span>Sort</span>
+                  <input id="cat-ov-sort" type="number" min="0" max="100000" value="0">
+                </label>
+                <label class="field field--check" id="cat-ov-desc-field"><input id="cat-ov-descendants" type="checkbox" checked> <span>Exclude the whole subtree</span></label>
                 <button id="cat-ov-save" class="button button--ghost" type="button">Add override</button>
+                <button id="cat-ov-cancel" class="button button--ghost" type="button" hidden>Cancel edit</button>
               </div>
+              <p class="muted">Editing a store extra's slug keeps its live term: the apply re-slugs it in place (and adds a redirect on blog 1).</p>
             </div>
           </div>
         </section>
@@ -728,7 +737,9 @@
               <button id="cat-map-delete" class="button button--ghost" type="button">Mark delete</button>
               <button id="cat-map-custom" class="button button--ghost" type="button">Store custom</button>
               <button id="cat-map-clear" class="button button--ghost" type="button">Clear</button>
+              <button id="cat-map-primary" class="button button--ghost" type="button" title="The primary slug's live term survives in place (keeps its term id and SEO); other mapped slugs merge into it">Make primary</button>
               <button id="cat-map-suggest" class="button button--ghost" type="button">Accept suggestions</button>
+              <span id="cat-map-busy" class="muted" aria-live="polite"></span>
             </div>
             <div id="cat-mapping-table"></div>
           </div>
@@ -793,8 +804,17 @@
                     </label>
                   </div>
                   <div class="form-row">
+                    <label class="field field--xs"><span>Priority</span>
+                      <input id="cat-rule-priority" type="number" min="0" max="100000" value="0">
+                    </label>
+                    <label class="field"><span>Note</span>
+                      <input id="cat-rule-note" type="text" maxlength="500">
+                    </label>
+                  </div>
+                  <div class="form-row">
                     <button id="cat-rule-test" class="button button--ghost" type="button">Test rule</button>
                     <button id="cat-rule-save" class="button" type="button">Save rule</button>
+                    <button id="cat-rule-cancel" class="button button--ghost" type="button" hidden>Cancel edit</button>
                     <span id="cat-rule-result" class="muted"></span>
                   </div>
                 </div>
@@ -808,12 +828,23 @@
             <div><p class="eyebrow">Plan</p><h3>Preview &amp; apply</h3></div>
             <div class="cat-header-actions">
               <button id="cat-preview-run" class="button" type="button">Run preview</button>
-              <button id="cat-apply-run" class="button cat-apply-button" type="button" disabled>Apply to WordPress&hellip;</button>
+              <button id="cat-apply-run" class="button cat-apply-button" type="button" disabled {% if not categories_apply_allowed %}data-apply-locked="1" title="Your login is not on the apply allowlist"{% endif %}>Apply to WordPress&hellip;</button>
             </div>
           </div>
           <div class="card__body">
-            <p class="muted">Preview computes every blog's exact plan against the current snapshots. Apply is refused while blockers exist, while snapshots are stale, or for operators outside the apply allowlist.</p>
+            <p class="muted">Preview computes every blog's exact plan against the current snapshots. Apply is refused while blockers exist, while snapshots are stale, or for operators outside the apply allowlist.{% if not categories_apply_allowed %} <strong>Your login can edit and preview but not apply.</strong>{% endif %}</p>
             <div id="cat-preview-result"></div>
+            <div id="cat-ack-panel" class="cat-gap-top" hidden>
+              <h3>Products that would end with no category</h3>
+              <p class="muted">Rescue them in Products (add them to a category) or acknowledge them here as intentionally uncategorized; acknowledged SKUs no longer block the plan.</p>
+              <div id="cat-ack-list" class="cat-table-wrap"></div>
+              <div class="form-row">
+                <label class="field"><span>Note</span><input id="cat-ack-note" type="text" maxlength="500" placeholder="why these stay uncategorized"></label>
+                <button id="cat-ack-selected" class="button button--ghost" type="button">Acknowledge selected</button>
+                <button id="cat-ack-all" class="button button--ghost" type="button">Acknowledge all listed</button>
+              </div>
+              <div id="cat-acked-list" class="cat-gap-top"></div>
+            </div>
           </div>
         </section>
 
@@ -821,8 +852,8 @@
           <div class="card__header card__header--compact">
             <div><p class="eyebrow">Execution</p><h3>Apply runs</h3></div>
             <div class="cat-header-actions">
-              <button id="cat-freeze-toggle" class="button button--ghost" type="button">Freeze WP category edits</button>
-              <button id="cat-drift-run" class="button button--ghost" type="button">Drift audit</button>
+              <button id="cat-freeze-toggle" class="button button--ghost" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Freeze WP category edits</button>
+              <button id="cat-drift-run" class="button button--ghost" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Drift audit</button>
             </div>
           </div>
           <div class="card__body">

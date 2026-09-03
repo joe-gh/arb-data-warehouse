@@ -81,6 +81,14 @@ def _broker(env: str, path: str, *, method: str = "GET",
         raise BrokerError(str(exc), getattr(exc, "status", 502)) from exc
 
 
+def set_freeze(env: str, on: bool) -> Dict[str, Any]:
+    """Switch the WordPress-side product_cat edit freeze (network option)."""
+    result = _broker(env, "/freeze", method="POST", payload={"on": bool(on)})
+    if not isinstance(result, dict):
+        raise BrokerError("WordPress returned an unexpected /freeze response")
+    return result
+
+
 def fetch_blogs(env: str) -> List[Dict[str, Any]]:
     result = _broker(env, "/blogs")
     blogs = result.get("blogs")
@@ -96,8 +104,10 @@ def fetch_wp_status(env: str) -> Dict[str, Any]:
     return result
 
 
-_EXPORT_PAGE_LIMIT = 20000
-_EXPORT_MAX_PAGES = 50
+# 5,000 membership rows is ~300 KB of JSON: comfortably inside the broker
+# client's response cap and the WP request budget even for blog 1.
+_EXPORT_PAGE_LIMIT = 5000
+_EXPORT_MAX_PAGES = 200
 
 
 def fetch_export(env: str, blog_id: int) -> Dict[str, Any]:

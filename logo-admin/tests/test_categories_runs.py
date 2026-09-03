@@ -182,12 +182,12 @@ def test_restore_uses_job_snapshot(broker):
     done = categories_runs.process_run(run["run_id"], actor="tester")
     job = done["jobs"][0]
     result = categories_runs.restore_blog(run["run_id"], job["job_id"],
-                                          actor="tester")
-    assert result["ok"] is True
-    restore_call = broker.calls[-1]
-    assert restore_call[1] == "/restore"
-    assert restore_call[2]["blog_id"] == 1
-    assert restore_call[2]["snapshot"]["terms"][0]["slug"] == "live"
+                                          actor="tester", background=False)
+    assert result["accepted"] is True and result["restore"]["status"] == "done"
+    restore_calls = [c for c in broker.calls if c[1] == "/restore"]
+    assert [c[2]["phase"] for c in restore_calls] == ["terms", "finalize"]   # no products -> no membership pages
+    assert restore_calls[0][2]["blog_id"] == 1
+    assert restore_calls[0][2]["snapshot"]["terms"][0]["slug"] == "live"
 
 
 def test_apply_routes_gated_by_allowlist(client_as, monkeypatch, ready_scenario):

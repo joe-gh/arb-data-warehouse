@@ -802,7 +802,8 @@ def cat_mapping_bulk(rows: List[Dict[str, Any]]) -> Any:
 @mcp.tool()
 def cat_mapping_clear(old_slug: str) -> Any:
     """Remove a slug's disposition (back to unmapped)."""
-    return _call("DELETE", f"/api/categories/mapping/{old_slug}")
+    from urllib.parse import quote
+    return _call("DELETE", f"/api/categories/mapping/{quote(old_slug, safe='')}")
 
 
 @mcp.tool()
@@ -855,6 +856,13 @@ def cat_assign(node_id: int, skus: List[str], mode: str = "add",
         "note": note,
     })
 
+
+
+@mcp.tool()
+def cat_assignment_delete(assignment_id: int) -> Any:
+    """Delete one explicit product assignment row (add or remove) by id, as
+    listed by cat_assignments_list - the way to undo a mistaken cat_assign."""
+    return _call("DELETE", f"/api/categories/assignments/{int(assignment_id)}")
 
 @mcp.tool()
 def cat_membership(env: str, node_id: int) -> Any:

@@ -441,7 +441,9 @@ def save_mapping(
                 )
         except (DraftError, DraftConflict) as exc:
             raise _draft_errors(exc) from exc
-        return {"mapping": saved}
+        # One envelope for one row and many: ``results`` always, ``mapping``
+        # kept for the single-row callers that read it.
+        return {"mapping": saved, "results": [{"old_slug": row.old_slug, "ok": True, "mapping": saved}]}
     with database.cursor(write=True, actor=actor) as cursor:
         results = categories_mapping.bulk_set(
             cursor, [row.model_dump() for row in body.rows], actor=actor,
@@ -497,6 +499,7 @@ def evaluate_rule(
     _configured_env(body.env)
     try:
         with database.cursor() as cursor:
+            cursor.execute("SET LOCAL statement_timeout = '120s'")
             return categories_mapping.evaluate_rule(
                 cursor, body.env, body.spec, limit=body.limit,
             )
@@ -616,6 +619,7 @@ def get_membership(
     _configured_env(env)
     try:
         with database.cursor() as cursor:
+            cursor.execute("SET LOCAL statement_timeout = '120s'")
             return categories_mapping.effective_membership(cursor, env, node_id)
     except (DraftError, DraftConflict) as exc:
         raise _draft_errors(exc) from exc
@@ -939,6 +943,8 @@ def skip_job(
             )
     except (DraftError, DraftConflict) as exc:
         raise _draft_errors(exc) from exc
+    if run["status"] == "queued":
+        categories_runs.start_run(run_id, actor=user["user_login"])
     return {"run": run}
 
 
@@ -973,9 +979,7 @@ def set_freeze(
 ):
     _configured_env(body.env)
     try:
-        result = categories_service._broker(
-            body.env, "/freeze", method="POST", payload={"on": body.on},
-        )
+        result = categories_service.set_freeze(body.env, body.on)
     except categories_service.BrokerError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
@@ -996,11 +1000,14 @@ class DriftAuditRequest(BaseModel):
 @router.post("/drift-audit")
 def run_drift_audit(
     body: DriftAuditRequest,
-    user: Dict[str, str] = Depends(require_csrf),
-    _: None = Depends(require_catmgr),
+    user: Dict[str, str] = Depends(require_apply_user),
 ):
+    """Re-imports every snapshot (bumping versions), so it is apply-tier and
+    refused while a run is active."""
     _configured_env(body.env)
     try:
         return categories_runs.drift_audit(body.env, actor=user["user_login"])
+    except (DraftError, DraftConflict) as exc:
+        raise _draft_errors(exc) from exc
     except categories_service.BrokerError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc

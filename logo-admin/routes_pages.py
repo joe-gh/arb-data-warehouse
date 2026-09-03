@@ -19,6 +19,7 @@ from auth import (
 )
 from authorization import agent_access_allowed
 from categories_api import catmgr_visible
+from categories_runs import apply_allowed as categories_apply_allowed
 from config import get_settings
 
 
@@ -136,5 +137,12 @@ def dashboard(request: Request):
             # Category editor ships dark until CATMGR_ENABLED is set; the nav
             # entry, dashboard card, and view section are absent while off.
             "categories_enabled": catmgr_visible(user["user_login"]),
+            # Apply-tier controls (apply, freeze, run/job controls, drift
+            # audit) render disabled for operators outside CATMGR_APPLY_USERS;
+            # the API enforces the same allowlist independently.
+            "categories_apply_allowed": (
+                catmgr_visible(user["user_login"])
+                and categories_apply_allowed(user["user_login"])
+            ),
         },
     )

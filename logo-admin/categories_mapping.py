@@ -72,8 +72,11 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
           LEFT JOIN catmgr.node implicit
             ON m.old_slug IS NULL AND implicit.slug = live.slug
           LEFT JOIN LATERAL (
+              -- an extra's live term may still carry the slug it had before a
+              -- draft re-slug (previous_slug): that is the same store custom.
               SELECT o.override_id FROM catmgr.node_store_override o
-               WHERE o.kind = 'extra_node' AND o.slug = live.slug
+               WHERE o.kind = 'extra_node'
+                 AND (o.slug = live.slug OR o.previous_slug = live.slug)
                LIMIT 1
           ) implicit_extra ON m.old_slug IS NULL AND implicit.node_id IS NULL
          ORDER BY (m.action IS NULL AND implicit.node_id IS NULL

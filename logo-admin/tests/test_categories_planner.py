@@ -22,7 +22,7 @@ import categories_draft
 import categories_mapping
 import categories_planner
 import categories_service
-from categories_draft import DraftError
+from categories_draft import DraftConflict, DraftError
 from db import database
 from tests.conftest import TEST_ADMIN_DSN
 
@@ -258,15 +258,16 @@ def test_preview_unmapped_blocks_everything():
 
 def test_slug_collision_blocker():
     _build_scenario()
-    # A blog-7 extra node colliding with a global slug: rename the extra to
-    # "Footwear" -> slug footwear collides with the created global footwear.
+    # A blog-7 extra node colliding with a global slug is refused at the draft
+    # (slugs are unique across nodes AND store extras), so it can never reach
+    # the planner as a collision.
     overrides = _read(categories_draft.list_overrides, 7)
     extra = next(o for o in overrides if o["kind"] == "extra_node")
-    _write(categories_draft.set_override, blog_id=7, kind="extra_node",
-           override_id=extra["override_id"], name="Footwear", slug="footwear",
-           parent_node_id=None)
+    with pytest.raises(DraftConflict):
+        _write(categories_draft.set_override, blog_id=7, kind="extra_node",
+               override_id=extra["override_id"], name="Footwear", slug="footwear",
+               parent_node_id=None)
+    # The remaining collision source is live data: a store-custom live term
+    # that owns a global node's slug (tested in test_categories_hardening).
     preview = _read(categories_planner.preview, "prod", [7])
-    kinds = {b["kind"]: b for b in preview["blockers"]}
-    assert "slug_collisions" in kinds
-    assert kinds["slug_collisions"]["blogs"][0]["blog_id"] == 7
-    assert "footwear" in kinds["slug_collisions"]["blogs"][0]["slugs"]
+    assert "slug_collisions" not in {b["kind"] for b in preview["blockers"]}

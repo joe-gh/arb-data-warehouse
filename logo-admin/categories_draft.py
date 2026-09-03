@@ -14,6 +14,8 @@ import html
 import re
 from typing import Any, Dict, List, Optional
 
+from psycopg2 import errors as pg_errors
+
 from categories_service import record_audit
 
 
@@ -79,6 +81,31 @@ def slugify(value: str) -> str:
     value = re.sub(r"['’]", "", value)          # apostrophes vanish: men's -> mens
     value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
     return value or "category"
+
+
+def _slug_owner(cursor, slug: str, *, exclude_node_id: Optional[int] = None,
+                exclude_override_id: Optional[int] = None) -> Optional[str]:
+    """Who already owns a slug in the draft: a global node or a store extra.
+    A slug must be unique across BOTH so an apply can never converge a store's
+    extra term into a global node (or vice versa)."""
+    cursor.execute(
+        "SELECT node_id, name FROM catmgr.node WHERE slug = %s AND node_id IS DISTINCT FROM %s",
+        (slug, exclude_node_id),
+    )
+    row = cursor.fetchone()
+    if row:
+        return f"category {row['name']!r}"
+    cursor.execute(
+        """
+        SELECT override_id, blog_id, name FROM catmgr.node_store_override
+         WHERE kind = 'extra_node' AND slug = %s AND override_id IS DISTINCT FROM %s
+        """,
+        (slug, exclude_override_id),
+    )
+    row = cursor.fetchone()
+    if row:
+        return f"store extra {row['name']!r} on blog {row['blog_id']}"
+    return None
 
 
 def _validate_slug(slug: str) -> str:
@@ -185,17 +212,14 @@ def create_node(cursor, *, parent_id: Optional[int], name: str,
         _node(cursor, parent_id)  # must exist
     if slug:
         slug = _validate_slug(slug)
-        cursor.execute("SELECT 1 FROM catmgr.node WHERE slug = %s", (slug,))
-        if cursor.fetchone():
-            raise DraftConflict(f"slug already in use: {slug}")
+        owner = _slug_owner(cursor, slug)
+        if owner:
+            raise DraftConflict(f"slug already in use by {owner}: {slug}")
     else:
         base = slugify(name)
         slug = base
         suffix = 2
-        while True:
-            cursor.execute("SELECT 1 FROM catmgr.node WHERE slug = %s", (slug,))
-            if not cursor.fetchone():
-                break
+        while _slug_owner(cursor, slug):
             slug = f"{base}-{suffix}"
             suffix += 1
     cursor.execute(
@@ -229,12 +253,9 @@ def update_node(cursor, node_id: int, *, name: Optional[str] = None,
     if slug is not None:
         slug = _validate_slug(slug)
         if slug != node["slug"]:
-            cursor.execute(
-                "SELECT 1 FROM catmgr.node WHERE slug = %s AND node_id <> %s",
-                (slug, node_id),
-            )
-            if cursor.fetchone():
-                raise DraftConflict(f"slug already in use: {slug}")
+            owner = _slug_owner(cursor, slug, exclude_node_id=node_id)
+            if owner:
+                raise DraftConflict(f"slug already in use by {owner}: {slug}")
             changes["slug"] = {"from": node["slug"], "to": slug}
     if description is not None and description != node["description"]:
         changes["description"] = True
@@ -269,6 +290,9 @@ def move_node(cursor, node_id: int, *, parent_id: Optional[int],
         (parent_id, actor[:100], node_id),
     )
     _resequence_siblings(cursor, parent_id, node_id, position)
+    if node["parent_id"] != parent_id:
+        # Close the gap the node left behind in its old sibling group.
+        _resequence_siblings(cursor, node["parent_id"], -1, None)
     record_audit(cursor, actor=actor, action="node_moved", entity="node",
                  entity_key=str(node_id),
                  detail={"from_parent": node["parent_id"], "to_parent": parent_id,
@@ -426,39 +450,71 @@ def set_override(cursor, *, blog_id: int, kind: str,
         else:
             name = None
     if not blog_path:
+        # Paths match across environments; prefer prod's spelling when both exist.
         cursor.execute(
-            "SELECT blog_path FROM catmgr.snapshot WHERE blog_id = %s LIMIT 1",
+            "SELECT blog_path FROM catmgr.snapshot WHERE blog_id = %s"
+            " ORDER BY (env = 'prod') DESC, env LIMIT 1",
             (blog_id,),
         )
         row = cursor.fetchone()
         blog_path = row["blog_path"] if row else ""
+    if kind == "extra_node":
+        owner = _slug_owner(cursor, slug, exclude_override_id=override_id)
+        if owner:
+            raise DraftConflict(f"slug already in use by {owner}: {slug}")
+    previous_slug = None
     if override_id is None:
-        cursor.execute(
-            """
-            INSERT INTO catmgr.node_store_override
+        try:
+            cursor.execute(
+                """
+                INSERT INTO catmgr.node_store_override
+                    (blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
+                     include_descendants, sort_order, updated_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING override_id
+                """,
                 (blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
-                 include_descendants, sort_order, updated_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING override_id
-            """,
-            (blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
-             include_descendants, sort_order, actor[:100]),
-        )
+                 include_descendants, sort_order, actor[:100]),
+            )
+        except pg_errors.UniqueViolation as exc:
+            raise DraftConflict(
+                f"blog {blog_id} already has a {kind.replace('_', ' ')} override"
+                + (f" for slug {slug}" if slug else " for that category")
+            ) from exc
         override_id = cursor.fetchone()["override_id"]
     else:
         cursor.execute(
-            """
-            UPDATE catmgr.node_store_override
-               SET name = %s, slug = %s, parent_node_id = %s,
-                   include_descendants = %s, sort_order = %s,
-                   updated_by = %s, updated_at = now()
-             WHERE override_id = %s AND blog_id = %s AND kind = %s
-            """,
-            (name, slug, parent_node_id, include_descendants, sort_order,
-             actor[:100], override_id, blog_id, kind),
+            "SELECT slug, previous_slug FROM catmgr.node_store_override"
+            " WHERE override_id = %s AND blog_id = %s AND kind = %s",
+            (override_id, blog_id, kind),
         )
-        if cursor.rowcount == 0:
+        current = cursor.fetchone()
+        if current is None:
             raise DraftError(f"unknown override: {override_id}")
+        # A store extra whose slug changes keeps its ORIGINAL live slug so the
+        # planner converges the existing term in place (term_id kept, redirect
+        # on blog 1). Changing back clears it.
+        previous_slug = current["previous_slug"]
+        if kind == "extra_node" and slug != current["slug"]:
+            if previous_slug is None:
+                previous_slug = current["slug"]
+            elif previous_slug == slug:
+                previous_slug = None
+        try:
+            cursor.execute(
+                """
+                UPDATE catmgr.node_store_override
+                   SET name = %s, slug = %s, parent_node_id = %s,
+                       include_descendants = %s, sort_order = %s,
+                       previous_slug = %s,
+                       updated_by = %s, updated_at = now()
+                 WHERE override_id = %s AND blog_id = %s AND kind = %s
+                """,
+                (name, slug, parent_node_id, include_descendants, sort_order,
+                 previous_slug, actor[:100], override_id, blog_id, kind),
+            )
+        except pg_errors.UniqueViolation as exc:
+            raise DraftConflict(f"blog {blog_id} already has an override for slug {slug}") from exc
     record_audit(cursor, actor=actor, action="override_saved", entity="override",
                  entity_key=str(override_id),
                  detail={"blog_id": blog_id, "kind": kind, "node_id": node_id,
@@ -538,6 +594,7 @@ def effective_tree(cursor, blog_id: int) -> List[Dict[str, Any]]:
             "parent_id": graft,
             "name": override["name"],
             "slug": override["slug"],
+            "previous_slug": override.get("previous_slug"),
             "sort_order": override["sort_order"],
             "description": "",
             "extra": True,

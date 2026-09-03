@@ -1,3 +1,4 @@
+import logging
 """FastAPI entry point for the standalone Warehouse Logo Admin."""
 
 from pathlib import Path
@@ -116,6 +117,18 @@ def startup() -> None:
             raise RuntimeError("AGENT_UPLOAD_DIR must not be a symbolic link")
         settings.agent_upload_dir.chmod(0o700)
     database.open()
+    if settings.catmgr_enabled:
+        # Wake runs the previous process left queued/running (a restart
+        # mid-job otherwise wedges the run: stale running jobs are reclaimed
+        # by the worker and resume from their progress cursors).
+        try:
+            import categories_runs
+            recovered = categories_runs.recover_runs()
+            if recovered:
+                logging.getLogger("catmgr").warning(
+                    "category runs recovered at startup: %s", recovered)
+        except Exception:  # noqa: BLE001 - recovery must never block startup
+            logging.getLogger("catmgr").exception("category run recovery failed")
     if settings.agent_writes_enabled:
         try:
             with database.cursor() as cursor:
