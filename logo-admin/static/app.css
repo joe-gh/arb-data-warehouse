@@ -893,3 +893,18 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 /* Logo editor: copy one style to many (Task C5) */
 .copy-many-options { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .copy-many-options fieldset { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .6rem .8rem; }
+
+/* Review card: readable change summary; raw payload lives under <details>. */
+.assistant-change-summary { display: grid; gap: .4rem; margin: 0; padding-left: 1.2rem; font-size: .8rem; line-height: 1.4; }
+.assistant-change-table-wrap { overflow-x: auto; }
+.assistant-change-table { width: 100%; border-collapse: collapse; font-size: .74rem; }
+.assistant-change-table th, .assistant-change-table td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.assistant-change-table th { color: var(--ink-soft); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; }
+.assistant-change-details { display: grid; gap: .15rem; }
+.assistant-change-badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.assistant-change-badge--add { color: var(--forest-900); background: rgb(52 120 82 / 16%); }
+.assistant-change-badge--update { color: #5a4300; background: rgb(214 160 24 / 22%); }
+.assistant-change-badge--remove { color: #7a1f1f; background: rgb(196 48 48 / 16%); }
+.assistant-review__technical { font-size: .72rem; }
+.assistant-review__technical > summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; }
+.assistant-review__technical[open] > summary { margin-bottom: .5rem; }

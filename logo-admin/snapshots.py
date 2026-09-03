@@ -54,7 +54,11 @@ STORE_PRICING_COLUMNS = (
     "note",
     "updated_at",
 )
-VOLATILE_PREVIEW_COLUMNS = frozenset({"updated_by", "updated_at"})
+# Columns that legitimately differ between the rolled-back preview and the
+# real apply: audit stamps, and the trigger-managed row_version (a sequence
+# value, so every preview of an INSERT would otherwise hash differently and
+# the apply would always report "the warehouse changed").
+VOLATILE_PREVIEW_COLUMNS = frozenset({"updated_by", "updated_at"}) | TRIGGER_MANAGED_COLUMNS
 RESTORE_COLUMNS = {
     ("logo", "assignment"): frozenset(ASSIGNMENT_COLUMNS),
     ("logo", "store_settings"): frozenset(STORE_SETTINGS_COLUMNS),

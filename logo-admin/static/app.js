@@ -2308,6 +2308,107 @@
     container.append(navigation);
   }
 
+
+  // ----- Review card: plain-language rendering of a staged change set -----
+  const REVIEW_VERBS = {
+    save_assignment: "Add or update a logo",
+    deactivate_assignment: "Hide a logo",
+    hard_delete_assignment: "Permanently delete a logo",
+    deactivate_color: "Hide every logo on a color",
+    hard_delete_color: "Permanently delete every logo on a color",
+    set_style_active: "Show or hide every logo on a style",
+    apply_to_colors: "Copy a logo to every color of a style",
+    copy_style: "Copy logos from one style to another",
+    update_store_settings: "Change store logo settings",
+    set_store_pricing_tier: "Set a store's pricing level",
+    delete_store_pricing_tier: "Remove a store's pricing level",
+  };
+  const REVIEW_FIELD_LABELS = {
+    design_id: "design", logo_code: "logo code", color_scheme_id: "color scheme", location: "placement",
+    name_override: "name", cost_override: "cost override", sort_order: "sort order", optional: "optional",
+    active: "active", image_url: "image", background: "background tag", enabled: "logos enabled",
+    allows_none: "allow no logo", tier_name: "pricing level", note: "note",
+  };
+  function reviewStyleLabel(code) {
+    const match = (state.styles || []).find((s) => text(s.style_code ?? s.style).trim() === text(code).trim());
+    const name = match ? text(match.name ?? match.product_name).trim() : "";
+    return name ? `${name} (${code})` : text(code);
+  }
+  function reviewColorLabel(style, code) {
+    const colors = state.style === style && state.detail?.colors ? state.detail.colors : [];
+    const match = colors.find((c) => colorCode(c) === text(code).trim());
+    const name = match ? colorName(match) : "";
+    return name && name !== text(code) ? `${name} (${code})` : text(code);
+  }
+  function reviewCost(value) {
+    if (value === null || value === undefined || value === "") return "automatic cost";
+    const n = Number(value);
+    return Number.isFinite(n) ? (n === 0 ? "free" : `$${n.toFixed(2)} override`) : `cost ${value}`;
+  }
+  function describeReviewCommand(item, diff) {
+    const tool = text(item?.tool_name ?? item?.name).trim();
+    const a = item?.arguments ?? item?.args ?? {};
+    const store = text(a.fdm4_store ?? a.store).trim();
+    const style = text(a.product_style ?? a.style).trim();
+    const color = text(a.garment_color_code).trim();
+    const slot = a.option_row || a.position ? ` (row ${a.option_row ?? 1}, position ${a.position ?? 1})` : "";
+    const where = [style ? reviewStyleLabel(style) : "", color ? `color ${reviewColorLabel(style, color)}` : ""].filter(Boolean).join(", ");
+    const changesFor = Array.isArray(diff?.changes) ? diff.changes : [];
+    switch (tool) {
+      case "save_assignment": {
+        const isNew = changesFor.some((c) => c.before === null && c.after && text(c.after.garment_color_code) === color && text(c.after.product_style) === style);
+        const logo = [a.name_override, a.logo_code && `${a.logo_code} · ${a.color_scheme_id || ""}`.trim(), a.design_id && `design ${a.design_id}`].filter(Boolean).join(" — ");
+        return `${isNew ? "Add" : "Update"} logo ${logo || ""} at ${a.location || "unspecified placement"} on ${where}${slot}: ${a.active === false ? "hidden" : "active"}, ${a.optional ? "optional" : "required"}, ${reviewCost(a.cost_override)}.`;
+      }
+      case "deactivate_assignment": return `Hide the logo on ${where}${slot}. It stays in the warehouse and can be shown again.`;
+      case "hard_delete_assignment": return `Permanently delete the logo on ${where}${slot}. Position 1 also removes its companion positions. This cannot be undone once applied and later undone-from-undo.`;
+      case "deactivate_color": return `Hide every logo on ${where}.`;
+      case "hard_delete_color": return `Permanently delete every logo on ${where}.`;
+      case "set_style_active": return `${a.active ? "Show" : "Hide"} every logo on ${reviewStyleLabel(style)}.`;
+      case "apply_to_colors": return `Copy the logo at ${reviewColorLabel(style, color)}${slot} to every color of ${reviewStyleLabel(style)}${a.overwrite ? ", replacing occupied slots" : ", keeping colors that already have a logo there"}.`;
+      case "copy_style": return `Copy all logos from ${reviewStyleLabel(text(a.source_style))} to ${reviewStyleLabel(text(a.target_style))} (matching color codes only${a.overwrite ? ", replacing existing rows" : ", keeping existing rows"}).`;
+      case "update_store_settings": return `Store ${store}: logos ${a.enabled ? "enabled" : "disabled"}, "No logo" choice ${a.allows_none ? "allowed" : "not allowed"}.`;
+      case "set_store_pricing_tier": return `Set store ${store} to pricing level ${a.tier_name}${a.note ? ` (${a.note})` : ""}. Only fills prices FDM4 leaves blank.`;
+      case "delete_store_pricing_tier": return `Remove the pricing level from store ${store}; blank prices fall back to retail.`;
+      default: return `${REVIEW_VERBS[tool] || tool || "Command"}${where ? ` on ${where}` : ""}.`;
+    }
+  }
+  function buildReviewChangeTable(rows) {
+    const table = agentNode("table", "assistant-change-table");
+    const head = agentNode("thead"); const hr = agentNode("tr");
+    ["Where", "Change", "Details"].forEach((h) => hr.append(agentNode("th", "", h)));
+    head.append(hr); table.append(head);
+    const body = agentNode("tbody");
+    rows.forEach((change) => {
+      const before = change.before || null; const after = change.after || null;
+      const row = agentNode("tr");
+      const key = Array.isArray(change.key) ? change.key : [];
+      const isAssignment = text(change.table).endsWith("assignment");
+      let where = key.map(String).join(" · ");
+      if (isAssignment && key.length >= 5) {
+        where = `${reviewStyleLabel(key[1])} · ${reviewColorLabel(text(key[1]), key[2])} · row ${key[3]} pos ${key[4]}`;
+      }
+      const kind = !before ? "Add" : !after ? "Remove" : "Update";
+      const badge = agentNode("span", `assistant-change-badge assistant-change-badge--${kind.toLowerCase()}`, kind);
+      const details = agentNode("div", "assistant-change-details");
+      if (kind === "Add" && after) {
+        details.append(agentNode("div", "", [after.name_override, after.logo_code && `${after.logo_code} · ${after.color_scheme_id || ""}`.trim(), after.design_id && `design ${after.design_id}`, after.location].filter(Boolean).join(" — ")));
+        details.append(agentNode("div", "muted", `${after.active === false ? "hidden" : "active"}, ${after.optional ? "optional" : "required"}, ${reviewCost(after.cost_override)}`));
+      } else if (kind === "Remove" && before) {
+        details.append(agentNode("div", "", [before.name_override, before.logo_code && `${before.logo_code} · ${before.color_scheme_id || ""}`.trim(), before.location].filter(Boolean).join(" — ")));
+      } else if (before && after) {
+        const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+        keys.forEach((k) => details.append(agentNode("div", "", `${REVIEW_FIELD_LABELS[k] || k}: ${agentValue(before[k])} → ${agentValue(after[k])}`)));
+        if (!keys.length) details.append(agentNode("div", "muted", "no visible field changed"));
+      }
+      const whereCell = agentNode("td", "", where); const kindCell = agentNode("td"); kindCell.append(badge); const detailCell = agentNode("td"); detailCell.append(details);
+      row.append(whereCell, kindCell, detailCell); body.append(row);
+    });
+    table.append(body);
+    const wrap = agentNode("div", "assistant-change-table-wrap"); wrap.append(table);
+    return wrap;
+  }
+
   function renderChangeSet(elements, payload, warning = "") {
     const changeSet = normalizeChangeSet(payload);
     if (!changeSet) {
@@ -2348,12 +2449,37 @@
       elements.review.append(alert);
     }
 
+    // Plain-language summary first; the raw payload stays available under
+    // "Technical details" for auditing. Everything is rendered as text nodes.
+    const summary = agentNode("div", "assistant-review__section");
+    summary.append(agentNode("h4", "", changeSet.items.length === 1 ? "What this does" : `What this does (${changeSet.items.length} steps)`));
+    if (changeSet.items.length) {
+      const list = agentNode("ol", "assistant-change-summary");
+      changeSet.items.forEach((item) => list.append(agentNode("li", "", describeReviewCommand(item, changeSet.diff))));
+      summary.append(list);
+    } else {
+      summary.append(agentNode("p", "muted", "No command details were returned."));
+    }
+    elements.review.append(summary);
+
+    const changeRows = Array.isArray(changeSet.diff?.changes) ? changeSet.diff.changes : [];
+    const changes = agentNode("div", "assistant-review__section");
+    changes.append(agentNode("h4", "", changeRows.length === 1 ? "1 row will change" : `${changeRows.length} rows will change`));
+    if (changeRows.length) {
+      changes.append(buildReviewChangeTable(changeRows));
+    } else {
+      changes.append(agentNode("p", "muted", "No net change: the warehouse already matches this request."));
+    }
+    elements.review.append(changes);
+
+    const technical = document.createElement("details");
+    technical.className = "assistant-review__technical";
+    technical.append(agentNode("summary", "", "Technical details"));
     const metadata = agentNode("dl", "assistant-review-fields");
     appendReviewField(metadata, "Revision", changeSet.revision);
     appendReviewField(metadata, "Preview hash", changeSet.previewHash || "Unavailable");
     appendReviewField(metadata, "Affected scopes", changeSet.scopes);
-    elements.review.append(metadata);
-
+    technical.append(metadata);
     const commands = agentNode("div", "assistant-review__section");
     commands.append(agentNode("h4", "", "Ordered commands"));
     if (changeSet.items.length) {
@@ -2367,16 +2493,16 @@
         list.append(entry);
       });
       commands.append(list);
-    } else {
-      commands.append(agentNode("p", "muted", "No command details were returned."));
     }
-    elements.review.append(commands);
-
-    const changes = agentNode("div", "assistant-review__section");
-    changes.append(
+    technical.append(commands);
+    const rawDiff = agentNode("div", "assistant-review__section");
+    rawDiff.append(
       agentNode("h4", "", "Net before / after"),
       agentNode("pre", "assistant-code assistant-code--diff", agentValue(changeSet.diff)),
     );
+    technical.append(rawDiff);
+    elements.review.append(technical);
+
     elements.review.append(changes);
 
     const actions = agentNode("div", "assistant-review__actions");
