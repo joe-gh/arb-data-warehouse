@@ -2338,6 +2338,7 @@
     remove_sync_block: "Unfreeze the hourly update",
     set_logo_cost: "Change a logo's price across styles",
     set_store_extra_customers: "Change which customers' designs a store may use",
+    bulk_apply: "Put a logo on many colors across the store",
   };
   const REVIEW_TABLE_LABELS = {
     "logo.display_name": (key) => `logo name · design ${key[0]} · ${key[1]} · ${key[2] ? `store ${key[2]}` : "shared default"}`,
@@ -2435,7 +2436,12 @@
         const what = styles.length ? `${styles.length} style${styles.length === 1 ? "" : "s"} in store ${a.store}: ${styles.slice(0, 12).join(", ")}${styles.length > 12 ? ` and ${styles.length - 12} more` : ""}` : `the whole store ${a.store}${a.scope === "pricing" ? " (prices only; creates, stock and status still run)" : " (the hourly update skips it entirely)"}`;
         return `Freeze the hourly product update for ${what}${a.active === false ? " (saved switched off)" : ""}${a.note ? ` — note: ${a.note}` : ""}.`;
       }
-      case "set_logo_cost": return `${a.cost_override === null || a.cost_override === undefined ? "Remove the store's price override for" : `Charge ${reviewCost(a.cost_override)} for`} logo design ${a.design_id}${a.color_scheme_id ? ` (scheme ${a.color_scheme_id})` : " (every scheme)"} on ${reviewStyleList(a.styles)} in store ${store}. Only the price changes.`;
+      case "set_logo_cost": return `${a.cost_override === null || a.cost_override === undefined ? "Remove the store's price override for" : Number(a.cost_override) === 0 ? "Make free:" : `Charge ${reviewCost(a.cost_override)} for`} logo design ${a.design_id}${a.color_scheme_id ? ` (scheme ${a.color_scheme_id})` : " (every scheme)"} on ${reviewStyleList(a.styles)} in store ${store}. Only the price changes.`;
+      case "bulk_apply": {
+        const where = a.target === "colors" ? `colors ${(Array.isArray(a.color_codes) ? a.color_codes : []).join(", ")}` : `every ${a.color_class || ""} garment color`;
+        const scope = Array.isArray(a.styles) && a.styles.length ? reviewStyleList(a.styles) : `every style in store ${store}`;
+        return `Put logo ${a.logo_code} · ${a.color_scheme_id} at ${a.location} on ${where} of ${scope} (choice ${a.option_row ?? 1}, ${reviewCost(a.cost_override)})${a.overwrite ? ", replacing logos already in that slot" : ", skipping colors that already have a logo there"}.`;
+      }
       case "set_store_extra_customers": { const list = Array.isArray(a.customers) ? a.customers.filter(Boolean) : []; return `Store ${store} may use designs from ${list.length ? `these FDM4 customers: ${list.join(", ")}` : "no other FDM4 customer"} besides its own.`; }
       case "remove_sync_block": {
         const styles = Array.isArray(a.styles) ? a.styles.filter(Boolean) : [];

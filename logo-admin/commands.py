@@ -225,6 +225,20 @@ class SetStoreExtraCustomersCommand(Command):
     customers: List[str] = Field(default=[], max_length=20, description="FDM4 customer numbers (e.g. 002165) whose designs this store may also use, replacing the current list; empty list = none besides the store's own customer.")
 
 
+class BulkApplyCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    logo_code: str = Field(min_length=1, max_length=100, description="Logo code of the variant to place, e.g. A9H (get_design / list_logo_names show codes).")
+    color_scheme_id: str = Field(min_length=1, max_length=100, description="Color scheme of the variant, e.g. GD.")
+    location: str = Field(min_length=1, max_length=200, description="Placement name from get_assignment_vocab, e.g. Left Chest.")
+    target: Literal["light_dark", "colors"] = Field(description="light_dark = every garment color of the chosen class across the store; colors = only the listed color codes.")
+    color_class: Optional[Literal["light", "dark"]] = Field(default=None, description="Required when target is light_dark: which class of garment colors receives the logo (colors classed 'both' match either).")
+    color_codes: List[str] = Field(default=[], max_length=50, description="Required when target is colors: garment color codes to place the logo on.")
+    styles: List[str] = Field(default=[], max_length=50, description="Optional: limit to these styles (1-50). Empty = every live style in the store.")
+    option_row: int = Field(default=1, ge=1, le=999, description="Which choice slot to write (1 = primary; 2/3 add the variant alongside an existing primary). Position is always 1.")
+    cost_override: Optional[Decimal] = Field(default=None, description="Shopper charge in dollars for the placed rows; null keeps the automatic default cost.")
+    overwrite: bool = Field(default=False, description="False skips colors that already have a logo in that slot; True replaces them.")
+
+
 MutationCommand = Union[
     SaveAssignmentCommand,
     DeactivateAssignmentCommand,
@@ -253,6 +267,7 @@ MutationCommand = Union[
     RemoveSyncBlockCommand,
     SetLogoCostCommand,
     SetStoreExtraCustomersCommand,
+    BulkApplyCommand,
 ]
 
 
@@ -284,6 +299,7 @@ COMMAND_MODELS: Dict[str, Type[Command]] = {
     "remove_sync_block": RemoveSyncBlockCommand,
     "set_logo_cost": SetLogoCostCommand,
     "set_store_extra_customers": SetStoreExtraCustomersCommand,
+    "bulk_apply": BulkApplyCommand,
 }
 
 HARD_DELETE_TOOLS = frozenset({

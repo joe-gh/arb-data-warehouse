@@ -14,6 +14,7 @@ from commands import (
     COMMAND_MODELS,
     ApplyToColorsCommand,
     AssignmentTarget,
+    BulkApplyCommand,
     ClearLogoNameCommand,
     ColorTarget,
     CopyStyleCommand,
@@ -55,6 +56,7 @@ ScopeKind = Literal[
     "assignment_option_row",
     "assignment_color",
     "assignment_style",
+    "assignment_store",
     "store_settings_row",
     "store_pricing_tier_row",
     "display_name_row",
@@ -105,6 +107,7 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "remove_sync_block": frozenset({"sync_exclusion_row"}),
     "set_logo_cost": frozenset({"assignment_style"}),
     "set_store_extra_customers": frozenset({"store_settings_row"}),
+    "bulk_apply": frozenset({"assignment_store"}),
 }
 
 
@@ -496,6 +499,10 @@ def _clean_styles(values, field: str) -> list:
     return cleaned
 
 
+def assignment_store_scope(store: str) -> MutationScope:
+    return MutationScope("assignment_store", {"fdm4_store": store.strip()})
+
+
 def _style_scopes(store: str, styles) -> tuple:
     return tuple(
         assignment_style_scope(store, style)
@@ -563,6 +570,8 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = _style_scopes(command.store, command.styles)
     elif isinstance(command, SetStoreExtraCustomersCommand):
         scopes = (MutationScope("store_settings_row", {"fdm4_store": command.store.strip()}),)
+    elif isinstance(command, BulkApplyCommand):
+        scopes = (assignment_store_scope(command.store),)
     elif isinstance(command, UpdateStoreSettingsCommand):
         scopes = (
             MutationScope(
@@ -1466,6 +1475,68 @@ def set_store_extra_customers(cursor, actor: str, command: SetStoreExtraCustomer
     return MutationResult({"ok": True, "settings": result}, affected_scopes(command))
 
 
+def bulk_apply(cursor, actor: str, command: BulkApplyCommand) -> MutationResult:
+    """Agent wrapper over the Bulk Apply page: one logo variant onto every
+    garment color of a class (or the listed colors) across a store, or the
+    named styles. Same preview rows as the page (queries.compute_bulk_preview),
+    same executor and editor journal (bulk_apply_execute). The whole store's
+    rows are the exact-undo scope, so it is bounded by the snapshot row cap."""
+    from queries import compute_bulk_preview  # local: queries imports this module's peers
+
+    store = _clean(command.store, "store")
+    if _catalog_for_store(cursor, store) is None:
+        raise NotFound("Store not found")
+    logo_code = _upper(command.logo_code, "logo_code")
+    scheme = _upper(command.color_scheme_id, "color_scheme_id")
+    placement = _clean(command.location, "location", 200)
+    if command.target == "light_dark":
+        if command.color_class not in ("light", "dark"):
+            raise InvalidCommand("color_class (light or dark) is required when target is light_dark")
+        target = {"mode": "light_dark", "class": command.color_class}
+    else:
+        codes = list(dict.fromkeys(_clean(c, "color_codes") for c in (command.color_codes or ())))
+        if not codes:
+            raise InvalidCommand("color_codes is required when target is colors")
+        target = {"mode": "colors", "color_codes": codes}
+    styles = _clean_styles(command.styles, "styles") if command.styles else None
+    try:
+        preview = compute_bulk_preview(
+            cursor, fdm4_store=store, logo_code=logo_code, color_scheme=scheme,
+            target=target, style_codes=styles, option_row=command.option_row,
+        )
+    except ValueError as exc:
+        raise InvalidCommand(str(exc)) from exc
+    if preview.get("unresolved_reason"):
+        raise InvalidCommand(f"Cannot resolve the logo variant: {preview['unresolved_reason']}")
+    candidates = preview["rows"]
+    if not candidates:
+        raise NotFound("No products in this store match that target")
+    rows = [r for r in candidates if command.overwrite or r.get("was") is None]
+    skipped = len(candidates) - len(rows)
+    if not rows:
+        raise InvalidCommand("Every matching color already has a logo in that slot; set overwrite to replace them")
+    if len(rows) > MAX_ASSIGNMENT_MUTATION_ROWS:
+        raise InvalidCommand(f"Bulk apply would touch more than the {MAX_ASSIGNMENT_MUTATION_ROWS}-row mutation limit; narrow it with styles")
+    try:
+        outcome = bulk_apply_execute(
+            cursor, fdm4_store=store, logo_code=logo_code, color_scheme=scheme,
+            placement=placement,
+            rows=[{"style_code": r["style_code"], "color_code": r["color_code"]} for r in rows],
+            actor=actor, option_row=command.option_row,
+            cost_override=_decimal(command.cost_override), image_url=None,
+        )
+    except ValueError as exc:
+        raise InvalidCommand(str(exc)) from exc
+    return MutationResult(
+        {"ok": True, "applied": outcome["applied"], "skipped_existing": skipped,
+         "image_url_missing": outcome["image_url_missing"],
+         "styles": sorted({r["style_code"] for r in rows}),
+         "unclassified_colors": int(preview["counts"].get("unclassified", 0) or 0),
+         "design_id": preview["design_id"], "target": target},
+        affected_scopes(command),
+    )
+
+
 MUTATION_HANDLERS: Dict[str, Callable] = {
     "save_assignment": save_assignment,
     "deactivate_assignment": deactivate_assignment,
@@ -1494,6 +1565,7 @@ MUTATION_HANDLERS: Dict[str, Callable] = {
     "remove_sync_block": remove_sync_block,
     "set_logo_cost": set_logo_cost,
     "set_store_extra_customers": set_store_extra_customers,
+    "bulk_apply": bulk_apply,
 }
 
 

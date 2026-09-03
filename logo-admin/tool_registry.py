@@ -16,6 +16,7 @@ from authorization import (
 from commands import (
     COMMAND_MODELS,
     ApplyToColorsCommand,
+    BulkApplyCommand,
     ClearLogoNameCommand,
     CopyStyleCommand,
     CopyStyleToManyCommand,
@@ -141,6 +142,7 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
     "remove_sync_block",
     "set_logo_cost",
     "set_store_extra_customers",
+    "bulk_apply",
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
@@ -475,6 +477,9 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
         ),
         "set_store_extra_customers": _canonical_write_contract(
             SetStoreExtraCustomersCommand, mutations.set_store_extra_customers, "store_settings_row",
+        ),
+        "bulk_apply": _canonical_write_contract(
+            BulkApplyCommand, mutations.bulk_apply, "assignment_store",
         ),
     })
 )
@@ -814,6 +819,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Replace the list of other FDM4 customer numbers whose designs a store may use (why a save can be refused as 'belongs to a different customer'). Empty list = only the store's own customer. Stages a proposal; the person confirms.",
         SetStoreExtraCustomersCommand,
         mutations.set_store_extra_customers,
+    ),
+    _write_spec(
+        "bulk_apply",
+        "The Bulk Apply page as one staged change: put one logo variant (logo code + scheme + placement) on every light or dark garment color across a store, or on the listed color codes, optionally limited to named styles. Skips colors that already have a logo in that slot unless overwrite is true. Whole-store scope: the review shows every row; very large stores may exceed the exact-undo row cap, then use styles or paste_logo_set. Stages a proposal; the person confirms.",
+        BulkApplyCommand,
+        mutations.bulk_apply,
     ),
 )
 

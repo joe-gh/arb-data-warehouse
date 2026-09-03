@@ -46,6 +46,7 @@ EXPECTED_SCOPES = {
     "remove_sync_block": frozenset({"sync_exclusion_row"}),
     "set_logo_cost": frozenset({"assignment_style"}),
     "set_store_extra_customers": frozenset({"store_settings_row"}),
+    "bulk_apply": frozenset({"assignment_store"}),
 }
 
 

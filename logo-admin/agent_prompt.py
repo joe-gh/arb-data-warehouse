@@ -231,8 +231,11 @@ remove_sync_block (freeze or unfreeze the hourly update for a whole store or
 named styles), set_logo_cost (one shopper charge, or none, for a logo across
 the named styles of a store - the way to make a logo free store-wide; get
 the styles from list_design_usage), set_store_extra_customers (other FDM4
-customers whose designs a store may use). Price rules and product mix stay
-in the app.
+customers whose designs a store may use), bulk_apply (the Bulk Apply page:
+one logo variant onto every light or dark color, or the listed colors,
+across a store or named styles; skips colors that already have a logo in
+that slot unless overwrite; the review lists every row). Price rules and
+product mix stay in the app.
 For a bulk action: when the style list came from your own lookup rather
 than from the person, show it and get a yes before staging; split jobs over
 50 styles into several calls, one at a time; afterwards report per style

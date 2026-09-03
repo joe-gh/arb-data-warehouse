@@ -144,6 +144,7 @@ _BASE_SCOPE_KINDS = frozenset({
     "assignment_option_row",
     "assignment_color",
     "assignment_style",
+    "assignment_store",
     "store_settings_row",
     "store_pricing_tier_row",
 })
@@ -153,6 +154,7 @@ SCOPE_TABLE_BY_KIND = {
     "assignment_option_row": "logo.assignment",
     "assignment_color": "logo.assignment",
     "assignment_style": "logo.assignment",
+    "assignment_store": "logo.assignment",
     "store_settings_row": "logo.store_settings",
     "store_pricing_tier_row": "woo.store_pricing_tier",
     **{kind: spec["table"] for kind, spec in SIMPLE_ROW_SCOPES.items()},
@@ -167,6 +169,7 @@ MAX_SEMANTIC_DIFF_BYTES = 12 * 1024 * 1024
 MAX_SNAPSHOT_SCOPE_ENTRIES = 500
 
 SCOPE_KEY_COLUMNS = {
+    "assignment_store": ("fdm4_store",),
     "assignment_style": ("fdm4_store", "product_style"),
     "assignment_color": (
         "fdm4_store", "product_style", "garment_color_code",
@@ -236,6 +239,13 @@ def compact_scopes(scopes: Iterable[MutationScope]) -> tuple[MutationScope, ...]
 
     unique = {_scope_token(scope): scope for scope in scopes}
     values = list(unique.values())
+    # A whole-store scope contains every narrower assignment scope of that store.
+    stores = {str(s.key["fdm4_store"]) for s in values if s.kind == "assignment_store"}
+    values = [
+        s for s in values
+        if not (s.kind in {"assignment_style", "assignment_color", "assignment_option_row"}
+                and str(s.key["fdm4_store"]) in stores)
+    ]
     styles = {
         (str(s.key["fdm4_store"]), str(s.key["product_style"]))
         for s in values
@@ -289,6 +299,12 @@ def lock_scopes(cursor, scopes: Iterable[MutationScope]) -> tuple[MutationScope,
     # advisory keys even though their row sets overlap.
     for scope in compacted:
         if scope.kind.startswith("assignment_"):
+            # ...and its store ancestor, so a whole-store write (bulk apply)
+            # and any narrower write in that store serialize on one key.
+            store_scope = MutationScope("assignment_store", {"fdm4_store": scope.key["fdm4_store"]})
+            lock_set[_scope_token(store_scope)] = store_scope
+            if scope.kind == "assignment_store":
+                continue
             ancestor = MutationScope(
                 "assignment_style",
                 {
@@ -328,6 +344,8 @@ def lock_scope_tables(cursor, scopes: Iterable[MutationScope]) -> tuple[str, ...
 
 def _assignment_where(scope: MutationScope) -> tuple[str, tuple]:
     key = scope.key
+    if scope.kind == "assignment_store":
+        return ("fdm4_store = %s", (key["fdm4_store"],))
     if scope.kind == "assignment_style":
         return (
             "fdm4_store = %s AND product_style = %s",
@@ -677,7 +695,7 @@ def _row_is_within_scope(
         )
     if str(row.get("fdm4_store")) != str(scope.key["fdm4_store"]):
         return False
-    if table != "logo.assignment":
+    if table != "logo.assignment" or scope.kind == "assignment_store":
         return True
     if str(row.get("product_style")) != str(scope.key["product_style"]):
         return False
