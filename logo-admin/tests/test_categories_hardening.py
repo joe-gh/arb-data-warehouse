@@ -436,3 +436,24 @@ def test_mapping_into_a_node_with_a_live_identity_term_defaults_to_merge():
     plan = _read(categories_planner.build_blog_plan, "prod", 9)
     assert [d["expected_slug"] for d in plan["terms"]["delete"] if d["reason"] == "merge"] == ["safety-gear"]
     assert not any(u["expected_slug"] == "safety-gear" for u in plan["terms"]["update"])
+
+
+def test_reslugging_a_node_carries_its_live_identity_mapping():
+    _build_scenario()
+    _write(categories_planner.set_acks, skus=["RESCUE-2", "ORPHAN-1"], note="test")
+    # 'saws' is live and explicitly mapped as delete in the scenario; use a node
+    # whose slug is live only implicitly: seed one.
+    with database.cursor(write=True, actor="seed") as cursor:
+        categories_service.import_blog_snapshot(
+            cursor, env="prod", blog_id=9, blog_path="/nelson/",
+            terms=[{"term_id": 90, "slug": "ppe", "name": "PPE", "parent": 0}],
+            products=[{"term_id": 90, "product_id": 900, "sku": "SAFE-1"}], actor="seed")
+    ppe = next(n for n in _read(categories_draft.list_nodes) if n["slug"] == "ppe")
+    _write(categories_draft.update_node, ppe["node_id"], slug="safety-ppe")
+    status = _read(categories_mapping.mapping_status, "prod")
+    row = next(s for s in status["slugs"] if s["old_slug"] == "ppe")
+    assert row["action"] == "map" and row["is_primary"] is True and row["implicit"] is False
+    plan = _read(categories_planner.build_blog_plan, "prod", 9)
+    update = next(u for u in plan["terms"]["update"] if u["expected_slug"] == "ppe")
+    assert update["term_id"] == 90 and update["set"]["slug"] == "safety-ppe"
+    assert plan["stats"]["deletes"] == 0 and plan["stats"]["creates"] == 0

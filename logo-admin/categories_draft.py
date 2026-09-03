@@ -273,9 +273,46 @@ def update_node(cursor, node_id: int, *, name: Optional[str] = None,
         """,
         (name, slug, description, actor[:100], node_id),
     )
+    if "slug" in changes:
+        _carry_identity_mapping(cursor, node_id, changes["slug"]["from"], actor=actor)
     record_audit(cursor, actor=actor, action="node_updated", entity="node",
                  entity_key=str(node_id), detail={"changes": changes})
     return _node(cursor, node_id)
+
+
+def _carry_identity_mapping(cursor, node_id: int, old_slug: str, *, actor: str) -> None:
+    """Re-slugging a node must stay an in-place rename of its live term.
+
+    Live slugs equal to a node's slug are mapped implicitly; the moment the
+    node's slug changes that identity is gone and the old live slug would
+    surface as "unmapped", inviting a delete+create. So when the old slug is
+    live somewhere and has no explicit disposition yet, record the explicit
+    map (primary unless the node already has one) that the identity implied.
+    """
+    cursor.execute(
+        "SELECT 1 FROM catmgr.wp_term WHERE slug = %s LIMIT 1", (old_slug,),
+    )
+    if cursor.fetchone() is None:
+        return
+    cursor.execute("SELECT 1 FROM catmgr.slug_map WHERE old_slug = %s", (old_slug,))
+    if cursor.fetchone() is not None:
+        return
+    cursor.execute(
+        "SELECT 1 FROM catmgr.slug_map WHERE target_node_id = %s AND is_primary",
+        (node_id,),
+    )
+    is_primary = cursor.fetchone() is None
+    cursor.execute(
+        """
+        INSERT INTO catmgr.slug_map
+            (old_slug, action, target_node_id, is_primary, note, updated_by)
+        VALUES (%s, 'map', %s, %s, 'carried from the category''s previous slug', %s)
+        """,
+        (old_slug, node_id, is_primary, actor[:100]),
+    )
+    record_audit(cursor, actor=actor, action="mapping_carried", entity="slug_map",
+                 entity_key=old_slug,
+                 detail={"node_id": node_id, "is_primary": is_primary})
 
 
 def move_node(cursor, node_id: int, *, parent_id: Optional[int],
