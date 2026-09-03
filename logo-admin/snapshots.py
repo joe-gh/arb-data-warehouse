@@ -58,32 +58,104 @@ STORE_PRICING_COLUMNS = (
 # real apply: audit stamps, and the trigger-managed row_version (a sequence
 # value, so every preview of an INSERT would otherwise hash differently and
 # the apply would always report "the warehouse changed").
-VOLATILE_PREVIEW_COLUMNS = frozenset({"updated_by", "updated_at"}) | TRIGGER_MANAGED_COLUMNS
+# created_at is stamped by the INSERT default, so a previewed insert and the
+# real apply legitimately differ there too.
+VOLATILE_PREVIEW_COLUMNS = (
+    frozenset({"updated_by", "updated_at", "created_at"}) | TRIGGER_MANAGED_COLUMNS
+)
+
+# Single-row tables the agent may edit through the same exact snapshot/restore
+# path: one scope = one primary-key row. Column order matches the live table
+# (database_contract pins it); ``types`` drives journal validation.
+#   text / text? = str (nullable), bool, int, num? = number or null, ts = str
+SIMPLE_ROW_SCOPES = {
+    "display_name_row": {
+        "table": "logo.display_name",
+        "key": ("design_id", "color_scheme_id", "fdm4_store"),
+        "columns": (
+            "design_id", "color_scheme_id", "name", "source", "locked", "uses",
+            "fdm4_description", "updated_at", "updated_by", "fdm4_store",
+        ),
+        "types": {
+            "design_id": "text", "color_scheme_id": "text", "name": "text",
+            "source": "text", "locked": "bool", "uses": "int",
+            "fdm4_description": "text?", "updated_at": "ts", "updated_by": "text?",
+            "fdm4_store": "text",
+        },
+    },
+    "color_class_row": {
+        "table": "logo.color_class",
+        "key": ("color_code",),
+        "columns": (
+            "color_code", "color_name", "light_dark", "source", "confidence",
+            "updated_at", "updated_by",
+        ),
+        "types": {
+            "color_code": "text", "color_name": "text", "light_dark": "text",
+            "source": "text", "confidence": "num?", "updated_at": "ts",
+            "updated_by": "text",
+        },
+    },
+    "stock_override_row": {
+        "table": "woo.stock_override",
+        "key": ("style_code",),
+        "columns": ("style_code", "mode", "note", "active", "updated_by", "updated_at"),
+        "types": {
+            "style_code": "text", "mode": "text", "note": "text", "active": "bool",
+            "updated_by": "text", "updated_at": "ts",
+        },
+    },
+    "brand_stock_rule_row": {
+        "table": "woo.brand_stock_rule",
+        "key": ("mill_code",),
+        "columns": (
+            "mill_code", "brand_name", "mode", "note", "active", "updated_by", "updated_at",
+        ),
+        "types": {
+            "mill_code": "text", "brand_name": "text", "mode": "text", "note": "text",
+            "active": "bool", "updated_by": "text", "updated_at": "ts",
+        },
+    },
+    "sync_exclusion_row": {
+        "table": "woo.sync_exclusion",
+        "key": ("fdm4_store", "style_code"),
+        "columns": (
+            "fdm4_store", "style_code", "note", "active", "created_at", "updated_at",
+            "updated_by", "scope",
+        ),
+        "types": {
+            "fdm4_store": "text", "style_code": "text", "note": "text", "active": "bool",
+            "created_at": "ts", "updated_at": "ts", "updated_by": "text", "scope": "text",
+        },
+    },
+}
+SIMPLE_TABLE_SPECS = {spec["table"]: spec for spec in SIMPLE_ROW_SCOPES.values()}
+
 RESTORE_COLUMNS = {
     ("logo", "assignment"): frozenset(ASSIGNMENT_COLUMNS),
     ("logo", "store_settings"): frozenset(STORE_SETTINGS_COLUMNS),
     ("woo", "store_pricing_tier"): frozenset(STORE_PRICING_COLUMNS),
+    **{
+        tuple(spec["table"].split(".", 1)): frozenset(spec["columns"])
+        for spec in SIMPLE_ROW_SCOPES.values()
+    },
 }
-SNAPSHOT_SCOPE_KINDS = frozenset({
+_BASE_SCOPE_KINDS = frozenset({
     "assignment_option_row",
     "assignment_color",
     "assignment_style",
     "store_settings_row",
     "store_pricing_tier_row",
 })
-RESTORE_SCOPE_KINDS = frozenset({
-    "assignment_option_row",
-    "assignment_color",
-    "assignment_style",
-    "store_settings_row",
-    "store_pricing_tier_row",
-})
+SNAPSHOT_SCOPE_KINDS = _BASE_SCOPE_KINDS | frozenset(SIMPLE_ROW_SCOPES)
+RESTORE_SCOPE_KINDS = _BASE_SCOPE_KINDS | frozenset(SIMPLE_ROW_SCOPES)
 SCOPE_TABLE_BY_KIND = {
     "assignment_option_row": "logo.assignment",
     "assignment_color": "logo.assignment",
     "assignment_style": "logo.assignment",
     "store_settings_row": "logo.store_settings",
     "store_pricing_tier_row": "woo.store_pricing_tier",
+    **{kind: spec["table"] for kind, spec in SIMPLE_ROW_SCOPES.items()},
 }
 MAX_SNAPSHOT_ROWS_PER_SCOPE = 2_000
 MAX_SNAPSHOT_ROWS_TOTAL = 5_000
@@ -104,6 +176,7 @@ SCOPE_KEY_COLUMNS = {
     ),
     "store_settings_row": ("fdm4_store",),
     "store_pricing_tier_row": ("fdm4_store",),
+    **{kind: spec["key"] for kind, spec in SIMPLE_ROW_SCOPES.items()},
 }
 
 
@@ -394,6 +467,21 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
             (scope.key["fdm4_store"],),
         )
         table = "woo.store_pricing_tier"
+    elif scope.kind in SIMPLE_ROW_SCOPES:
+        spec = SIMPLE_ROW_SCOPES[scope.kind]
+        where = " AND ".join(f"{column} = %s" for column in spec["key"])
+        rows, snapshot_bytes = _bounded_snapshot_rows(
+            cursor,
+            f"""
+            SELECT 1 AS ordinal, to_jsonb(snapshot_row) AS row
+              FROM (
+                  SELECT * FROM {spec["table"]}
+                   WHERE {where}{lock}
+              ) AS snapshot_row
+            """,
+            tuple(scope.key[column] for column in spec["key"]),
+        )
+        table = spec["table"]
     else:
         raise InvalidCommand("unsupported snapshot scope")
     return {
@@ -447,6 +535,8 @@ def _row_key(table: str, row: Mapping[str, Any]) -> str:
             row.get("option_row"),
             row.get("position"),
         ]
+    elif table in SIMPLE_TABLE_SPECS:
+        values = [row.get(column) for column in SIMPLE_TABLE_SPECS[table]["key"]]
     else:
         values = [row.get("fdm4_store")]
     return json.dumps(values, separators=(",", ":"), default=str)
@@ -558,6 +648,19 @@ def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
             for column in ("fdm4_store", "tier_name", "note")
         ):
             raise InvalidCommand("Journal pricing text value is invalid")
+    elif table in SIMPLE_TABLE_SPECS:
+        for column, kind in SIMPLE_TABLE_SPECS[table]["types"].items():
+            value = row[column]
+            ok = (
+                isinstance(value, str) if kind in {"text", "ts"}
+                else value is None or isinstance(value, str) if kind == "text?"
+                else type(value) is bool if kind == "bool"
+                else type(value) is int if kind == "int"
+                else value is None or (isinstance(value, Number) and not isinstance(value, bool))
+                if kind == "num?" else False
+            )
+            if not ok:
+                raise InvalidCommand(f"Journal {table} value for {column} is invalid")
     if not isinstance(row["updated_at"], str):
         raise InvalidCommand("Journal timestamp value is invalid")
 
@@ -567,6 +670,11 @@ def _row_is_within_scope(
     row: Mapping[str, Any],
     scope: MutationScope,
 ) -> bool:
+    if table in SIMPLE_TABLE_SPECS:
+        return all(
+            str(row.get(column)) == str(scope.key[column])
+            for column in SIMPLE_TABLE_SPECS[table]["key"]
+        )
     if str(row.get("fdm4_store")) != str(scope.key["fdm4_store"]):
         return False
     if table != "logo.assignment":
@@ -692,8 +800,26 @@ def _delete_scope(cursor, scope: MutationScope) -> None:
             "DELETE FROM woo.store_pricing_tier WHERE fdm4_store = %s",
             (scope.key["fdm4_store"],),
         )
+    elif scope.kind in SIMPLE_ROW_SCOPES:
+        spec = SIMPLE_ROW_SCOPES[scope.kind]
+        where = " AND ".join(f"{column} = %s" for column in spec["key"])
+        cursor.execute(
+            f"DELETE FROM {spec['table']} WHERE {where}",
+            tuple(scope.key[column] for column in spec["key"]),
+        )
     else:
         raise InvalidCommand("unsupported restore scope")
+
+
+def _insert_simple(cursor, table: str, row: Mapping[str, Any]) -> None:
+    columns = SIMPLE_TABLE_SPECS[table]["columns"]
+    cursor.execute(
+        f"""
+        INSERT INTO {table} ({', '.join(columns)})
+        VALUES ({', '.join(['%s'] * len(columns))})
+        """,
+        tuple(row[column] for column in columns),
+    )
 
 
 def _insert_assignment(cursor, row: Mapping[str, Any]) -> None:
@@ -742,6 +868,7 @@ def restore_state(
     assignments: list[Mapping[str, Any]] = []
     settings: list[Mapping[str, Any]] = []
     pricing: list[Mapping[str, Any]] = []
+    simple: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for entry in entries:
         table = entry.get("table")
         if table == "logo.assignment":
@@ -750,6 +877,9 @@ def restore_state(
             settings.extend(entry.get("rows", []))
         elif table == "woo.store_pricing_tier":
             pricing.extend(entry.get("rows", []))
+        elif table in SIMPLE_TABLE_SPECS:
+            for row in entry.get("rows", []):
+                simple[str(table)][_row_key(str(table), row)] = row
         else:
             raise InvalidCommand("unsupported table in journal snapshot")
 
@@ -771,3 +901,6 @@ def restore_state(
         _insert_settings(cursor, row)
     for row in {str(r["fdm4_store"]): r for r in pricing}.values():
         _insert_pricing(cursor, row)
+    for table in sorted(simple):
+        for key in sorted(simple[table]):
+            _insert_simple(cursor, table, simple[table][key])

@@ -35,6 +35,15 @@ EXPECTED_SCOPES = {
     "replace_design": frozenset({"assignment_style"}),
     "reorder_logo_rows": frozenset({"assignment_style"}),
     "set_styles_active": frozenset({"assignment_style"}),
+    "set_logo_name": frozenset({"display_name_row"}),
+    "clear_logo_name": frozenset({"display_name_row"}),
+    "set_color_class": frozenset({"color_class_row"}),
+    "set_stock_override": frozenset({"stock_override_row"}),
+    "remove_stock_override": frozenset({"stock_override_row"}),
+    "set_brand_stock_rule": frozenset({"brand_stock_rule_row"}),
+    "remove_brand_stock_rule": frozenset({"brand_stock_rule_row"}),
+    "set_sync_block": frozenset({"sync_exclusion_row"}),
+    "remove_sync_block": frozenset({"sync_exclusion_row"}),
 }
 
 

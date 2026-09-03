@@ -593,3 +593,15 @@ functions (`copy_style_batch`, `paste_batch`, `design_swap`,
 bulk history; the editor's own batch undo and the assistant's undo each
 refuse rows the other already restored. The read tool `list_design_usage`
 feeds `replace_design` its style list.
+
+Names, colours and rules (also 2026-09-03): `set_logo_name` / `clear_logo_name`
+(`logo.display_name`), `set_color_class` (`logo.color_class`),
+`set_stock_override` / `remove_stock_override` (`woo.stock_override`),
+`set_brand_stock_rule` / `remove_brand_stock_rule` (`woo.brand_stock_rule`) and
+`set_sync_block` / `remove_sync_block` (`woo.sync_exclusion`). Each of those
+tables is a single-row exact-undo scope (`snapshots.SIMPLE_ROW_SCOPES`), so the
+write-enabled startup contract now pins their columns, primary keys and CHECK
+constraints too (`database_contract.RESTORE_COLUMN_CONTRACTS`,
+`EXPECTED_PRIMARY_KEYS`, `EXPECTED_CHECKS`); a schema change to any of them
+must be mirrored there or the service refuses to start with writes on. Price
+rules and product mix remain app-only.

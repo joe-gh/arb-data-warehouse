@@ -75,7 +75,7 @@ def test_build_instructions_appends_context_last():
 
 def test_prompt_size_is_reasonable_for_every_turn():
     words = len(agent_prompt.build_instructions(writes_enabled=True).split())
-    assert 900 < words < 2_500
+    assert 900 < words < 3_200
 
 
 def test_screen_context_renders_only_validated_identifiers():

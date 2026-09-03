@@ -76,6 +76,55 @@ RESTORE_COLUMN_CONTRACTS = {
         "note": ("text", False, "''"),
         "updated_at": ("timestamp with time zone", False, "now"),
     },
+    # Single-row tables the assistant edits through the same exact undo path.
+    "logo.display_name": {
+        "design_id": ("text", False, None),
+        "color_scheme_id": ("text", False, None),
+        "name": ("text", False, None),
+        "source": ("text", False, "'manual'"),
+        "locked": ("boolean", False, "false"),
+        "uses": ("integer", False, "0"),
+        "fdm4_description": ("text", True, None),
+        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_by": ("text", True, None),
+        "fdm4_store": ("text", False, "''"),
+    },
+    "logo.color_class": {
+        "color_code": ("text", False, None),
+        "color_name": ("text", False, None),
+        "light_dark": ("text", False, None),
+        "source": ("text", False, "'ai'"),
+        "confidence": ("numeric", True, None),
+        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_by": ("text", False, "''"),
+    },
+    "woo.stock_override": {
+        "style_code": ("text", False, None),
+        "mode": ("text", False, None),
+        "note": ("text", False, "''"),
+        "active": ("boolean", False, "true"),
+        "updated_by": ("text", False, "''"),
+        "updated_at": ("timestamp with time zone", False, "now"),
+    },
+    "woo.brand_stock_rule": {
+        "mill_code": ("text", False, None),
+        "brand_name": ("text", False, "''"),
+        "mode": ("text", False, None),
+        "note": ("text", False, "''"),
+        "active": ("boolean", False, "true"),
+        "updated_by": ("text", False, "''"),
+        "updated_at": ("timestamp with time zone", False, "now"),
+    },
+    "woo.sync_exclusion": {
+        "fdm4_store": ("text", False, None),
+        "style_code": ("text", False, "''"),
+        "note": ("text", False, "''"),
+        "active": ("boolean", False, "true"),
+        "created_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_by": ("text", False, "''"),
+        "scope": ("text", False, "'full'"),
+    },
 }
 AGENT_COLUMN_CONTRACTS = {
     "logo.agent_chat_session": {
@@ -256,6 +305,17 @@ EXPECTED_PRIMARY_KEYS = {
         "store_pricing_tier_pkey",
         ("fdm4_store",),
     ),
+    "logo.display_name": (
+        "display_name_pkey",
+        ("design_id", "color_scheme_id", "fdm4_store"),
+    ),
+    "logo.color_class": ("color_class_pkey", ("color_code",)),
+    "woo.stock_override": ("stock_override_pkey", ("style_code",)),
+    "woo.brand_stock_rule": ("brand_stock_rule_pkey", ("mill_code",)),
+    "woo.sync_exclusion": (
+        "sync_exclusion_pkey",
+        ("fdm4_store", "style_code"),
+    ),
 }
 EXPECTED_CHECKS = {
     (
@@ -273,6 +333,31 @@ EXPECTED_CHECKS = {
         "assignment_option_row_check",
         ("option_row",),
     ): "option_row>=1",
+    (
+        "logo.color_class",
+        "color_class_light_dark_check",
+        ("light_dark",),
+    ): "light_dark=anyarray['light','dark','both']",
+    (
+        "logo.color_class",
+        "color_class_source_check",
+        ("source",),
+    ): "source=anyarray['ai','manual']",
+    (
+        "woo.stock_override",
+        "stock_override_mode_check",
+        ("mode",),
+    ): "mode=anyarray['fake','real']",
+    (
+        "woo.brand_stock_rule",
+        "brand_stock_rule_mode_check",
+        ("mode",),
+    ): "mode=anyarray['real','fake']",
+    (
+        "woo.sync_exclusion",
+        "sync_exclusion_scope_check",
+        ("scope",),
+    ): "scope=anyarray['full','pricing']",
 }
 EXPECTED_FOREIGN_KEYS = {
     (

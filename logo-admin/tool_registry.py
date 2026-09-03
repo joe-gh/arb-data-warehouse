@@ -16,6 +16,7 @@ from authorization import (
 from commands import (
     COMMAND_MODELS,
     ApplyToColorsCommand,
+    ClearLogoNameCommand,
     CopyStyleCommand,
     CopyStyleToManyCommand,
     DeactivateAssignmentCommand,
@@ -24,12 +25,20 @@ from commands import (
     HardDeleteAssignmentCommand,
     HardDeleteColorCommand,
     PasteLogoSetCommand,
+    RemoveBrandStockRuleCommand,
+    RemoveStockOverrideCommand,
+    RemoveSyncBlockCommand,
     ReorderLogoRowsCommand,
     ReplaceDesignCommand,
     SaveAssignmentCommand,
+    SetBrandStockRuleCommand,
+    SetColorClassCommand,
+    SetLogoNameCommand,
+    SetStockOverrideCommand,
     SetStorePricingTierCommand,
     SetStyleActiveCommand,
     SetStylesActiveCommand,
+    SetSyncBlockCommand,
     UpdateStoreSettingsCommand,
 )
 from config import Settings
@@ -116,6 +125,15 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
     "replace_design",
     "reorder_logo_rows",
     "set_styles_active",
+    "set_logo_name",
+    "clear_logo_name",
+    "set_color_class",
+    "set_stock_override",
+    "remove_stock_override",
+    "set_brand_stock_rule",
+    "remove_brand_stock_rule",
+    "set_sync_block",
+    "remove_sync_block",
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
@@ -397,6 +415,33 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
             mutations.set_styles_active,
             "assignment_style",
         ),
+        "set_logo_name": _canonical_write_contract(
+            SetLogoNameCommand, mutations.set_logo_name, "display_name_row",
+        ),
+        "clear_logo_name": _canonical_write_contract(
+            ClearLogoNameCommand, mutations.clear_logo_name, "display_name_row",
+        ),
+        "set_color_class": _canonical_write_contract(
+            SetColorClassCommand, mutations.set_garment_color_class, "color_class_row",
+        ),
+        "set_stock_override": _canonical_write_contract(
+            SetStockOverrideCommand, mutations.set_stock_override, "stock_override_row",
+        ),
+        "remove_stock_override": _canonical_write_contract(
+            RemoveStockOverrideCommand, mutations.remove_stock_override, "stock_override_row",
+        ),
+        "set_brand_stock_rule": _canonical_write_contract(
+            SetBrandStockRuleCommand, mutations.set_brand_stock_rule, "brand_stock_rule_row",
+        ),
+        "remove_brand_stock_rule": _canonical_write_contract(
+            RemoveBrandStockRuleCommand, mutations.remove_brand_stock_rule, "brand_stock_rule_row",
+        ),
+        "set_sync_block": _canonical_write_contract(
+            SetSyncBlockCommand, mutations.set_sync_block, "sync_exclusion_row",
+        ),
+        "remove_sync_block": _canonical_write_contract(
+            RemoveSyncBlockCommand, mutations.remove_sync_block, "sync_exclusion_row",
+        ),
     })
 )
 
@@ -657,6 +702,60 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Show or hide every logo row on up to 50 styles of a store in one change (rows are kept, never deleted). Styles without rows are reported, not fatal. Stages a proposal; the person confirms.",
         SetStylesActiveCommand,
         mutations.set_styles_active,
+    ),
+    _write_spec(
+        "set_logo_name",
+        "Set the name shoppers see for one logo (design + color scheme): the shared default every store falls back to (store null) or a name only one store sees. Hand-set names are locked so FDM4 re-pulls never overwrite them. Stages a proposal; the person confirms.",
+        SetLogoNameCommand,
+        mutations.set_logo_name,
+    ),
+    _write_spec(
+        "clear_logo_name",
+        "Remove one store's own name for a logo so that store shows the shared default again. The shared default cannot be removed. Stages a proposal; the person confirms.",
+        ClearLogoNameCommand,
+        mutations.clear_logo_name,
+    ),
+    _write_spec(
+        "set_color_class",
+        "Set a garment color's light/dark class (light, dark or both), which drives Bulk Apply and like-color copies, and marks it as confirmed by a person. Stages a proposal; the person confirms.",
+        SetColorClassCommand,
+        mutations.set_garment_color_class,
+    ),
+    _write_spec(
+        "set_stock_override",
+        "Add or update a Fake Inventory style exception: force one style (every store) to fake stock (always in stock at 99,999) or real FDM4 stock, overriding its brand rule; can be saved switched off. Stages a proposal; the person confirms.",
+        SetStockOverrideCommand,
+        mutations.set_stock_override,
+    ),
+    _write_spec(
+        "remove_stock_override",
+        "Remove a style's Fake Inventory exception so its brand rule (or the automatic default) applies again. Stages a proposal; the person confirms.",
+        RemoveStockOverrideCommand,
+        mutations.remove_stock_override,
+    ),
+    _write_spec(
+        "set_brand_stock_rule",
+        "Add or update a Fake Inventory brand rule by FDM4 mill code: every style of the brand shows real FDM4 stock or always in stock (style exceptions still win). Stages a proposal; the person confirms.",
+        SetBrandStockRuleCommand,
+        mutations.set_brand_stock_rule,
+    ),
+    _write_spec(
+        "remove_brand_stock_rule",
+        "Remove a brand's Fake Inventory rule so the automatic default applies again. Stages a proposal; the person confirms.",
+        RemoveBrandStockRuleCommand,
+        mutations.remove_brand_stock_rule,
+    ),
+    _write_spec(
+        "set_sync_block",
+        "Freeze the hourly product update for a whole store (full, or pricing-only) or for up to 50 named styles in a store, with a note; can be saved switched off. Reports how many products each style freezes (0 usually means a typo). Stages a proposal; the person confirms.",
+        SetSyncBlockCommand,
+        mutations.set_sync_block,
+    ),
+    _write_spec(
+        "remove_sync_block",
+        "Remove a store's whole-store freeze or the freezes on named styles so the hourly update runs for them again. Stages a proposal; the person confirms.",
+        RemoveSyncBlockCommand,
+        mutations.remove_sync_block,
     ),
 )
 

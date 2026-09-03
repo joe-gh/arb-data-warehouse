@@ -216,6 +216,14 @@ its style_codes, at most 50 per call; only design, code, scheme and image
 change), reorder_logo_rows (a color's choices in the order given; apply_to
 style also ranks the other colors by design, like drag-and-drop) and
 set_styles_active (show or hide every logo on up to 50 styles).
+Names, colors and rules (same staging, same undo): set_logo_name / clear_logo_name
+(the name shoppers see for a logo; store null = the shared default, a store
+code = that store only), set_color_class (a garment color's light/dark
+class), set_stock_override / remove_stock_override (Fake Inventory style
+exceptions), set_brand_stock_rule / remove_brand_stock_rule (Fake Inventory
+brand rules by mill code from get_stock_rules), set_sync_block /
+remove_sync_block (freeze or unfreeze the hourly update for a whole store or
+named styles). Price rules and product mix stay in the app.
 For a bulk action: when the style list came from your own lookup rather
 than from the person, show it and get a yes before staging; split jobs over
 50 styles into several calls, one at a time; afterwards report per style

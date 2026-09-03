@@ -14,6 +14,7 @@ from commands import (
     COMMAND_MODELS,
     ApplyToColorsCommand,
     AssignmentTarget,
+    ClearLogoNameCommand,
     ColorTarget,
     CopyStyleCommand,
     CopyStyleToManyCommand,
@@ -24,12 +25,20 @@ from commands import (
     HardDeleteColorCommand,
     MutationCommand,
     PasteLogoSetCommand,
+    RemoveBrandStockRuleCommand,
+    RemoveStockOverrideCommand,
+    RemoveSyncBlockCommand,
     ReorderLogoRowsCommand,
     ReplaceDesignCommand,
     SaveAssignmentCommand,
+    SetBrandStockRuleCommand,
+    SetColorClassCommand,
+    SetLogoNameCommand,
+    SetStockOverrideCommand,
     SetStorePricingTierCommand,
     SetStyleActiveCommand,
     SetStylesActiveCommand,
+    SetSyncBlockCommand,
     UpdateStoreSettingsCommand,
 )
 from design_resolver import (
@@ -46,6 +55,11 @@ ScopeKind = Literal[
     "assignment_style",
     "store_settings_row",
     "store_pricing_tier_row",
+    "display_name_row",
+    "color_class_row",
+    "stock_override_row",
+    "brand_stock_rule_row",
+    "sync_exclusion_row",
 ]
 
 # Exact preview/undo materializes every affected row. These hard service caps
@@ -78,6 +92,15 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "replace_design": frozenset({"assignment_style"}),
     "reorder_logo_rows": frozenset({"assignment_style"}),
     "set_styles_active": frozenset({"assignment_style"}),
+    "set_logo_name": frozenset({"display_name_row"}),
+    "clear_logo_name": frozenset({"display_name_row"}),
+    "set_color_class": frozenset({"color_class_row"}),
+    "set_stock_override": frozenset({"stock_override_row"}),
+    "remove_stock_override": frozenset({"stock_override_row"}),
+    "set_brand_stock_rule": frozenset({"brand_stock_rule_row"}),
+    "remove_brand_stock_rule": frozenset({"brand_stock_rule_row"}),
+    "set_sync_block": frozenset({"sync_exclusion_row"}),
+    "remove_sync_block": frozenset({"sync_exclusion_row"}),
 }
 
 
@@ -476,6 +499,31 @@ def _style_scopes(store: str, styles) -> tuple:
     )
 
 
+def _upper(value: Any, field: str, maximum: int = 100) -> str:
+    return " ".join(_clean(value, field, maximum).split()).upper()
+
+
+def _shared_or_store(value: Any) -> str:
+    """'' = the shared default row every store falls back to."""
+    return "" if value in (None, "") else _upper(value, "store")
+
+
+def _sync_block_keys(store: str, styles) -> list:
+    codes = [_upper(style, "styles") for style in (styles or ())]
+    codes = list(dict.fromkeys(codes))
+    if len(codes) > MAX_BULK_STYLES:
+        raise InvalidCommand(f"styles may name at most {MAX_BULK_STYLES} styles per call")
+    return codes or [""]
+
+
+def _sync_block_scopes(command) -> tuple:
+    store = _upper(command.store, "store")
+    return tuple(
+        MutationScope("sync_exclusion_row", {"fdm4_store": store, "style_code": style})
+        for style in sorted(_sync_block_keys(store, command.styles))
+    )
+
+
 def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
     if isinstance(command, AssignmentTarget):
         scopes = (assignment_option_scope(command),)
@@ -493,6 +541,20 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = _style_scopes(command.store, command.styles)
     elif isinstance(command, ReorderLogoRowsCommand):
         scopes = (assignment_style_scope(command.store, command.style),)
+    elif isinstance(command, (SetLogoNameCommand, ClearLogoNameCommand)):
+        scopes = (MutationScope("display_name_row", {
+            "design_id": _clean(command.design_id, "design_id"),
+            "color_scheme_id": _upper(command.color_scheme_id, "color_scheme_id"),
+            "fdm4_store": _shared_or_store(command.store),
+        }),)
+    elif isinstance(command, SetColorClassCommand):
+        scopes = (MutationScope("color_class_row", {"color_code": _clean(command.color_code, "color_code")}),)
+    elif isinstance(command, (SetStockOverrideCommand, RemoveStockOverrideCommand)):
+        scopes = (MutationScope("stock_override_row", {"style_code": _upper(command.style_code, "style_code")}),)
+    elif isinstance(command, (SetBrandStockRuleCommand, RemoveBrandStockRuleCommand)):
+        scopes = (MutationScope("brand_stock_rule_row", {"mill_code": _clean(command.mill_code, "mill_code", 32)}),)
+    elif isinstance(command, (SetSyncBlockCommand, RemoveSyncBlockCommand)):
+        scopes = _sync_block_scopes(command)
     elif isinstance(command, UpdateStoreSettingsCommand):
         scopes = (
             MutationScope(
@@ -1089,6 +1151,223 @@ def set_styles_active(cursor, actor: str, command: SetStylesActiveCommand) -> Mu
     )
 
 
+def _store_exists(cursor, store: str) -> bool:
+    cursor.execute("SELECT 1 FROM woo.store_catalog WHERE fdm4_store = %s LIMIT 1", (store,))
+    return cursor.fetchone() is not None
+
+
+def set_logo_name(cursor, actor: str, command: SetLogoNameCommand) -> MutationResult:
+    """Shopper-facing name of one logo (design + scheme): the shared default
+    (store null) or one store's own name. Hand-set names are locked so the
+    FDM4 re-pull never overwrites them."""
+    design = _clean(command.design_id, "design_id")
+    scheme = _upper(command.color_scheme_id, "color_scheme_id")
+    name = " ".join(_clean(command.name, "name", 200).split())
+    store = _shared_or_store(command.store)
+    cursor.execute(
+        """
+        SELECT 1 FROM logo.display_name WHERE design_id = %s AND color_scheme_id = %s
+        UNION ALL
+        SELECT 1 FROM logo.assignment
+         WHERE btrim(design_id) = %s AND upper(btrim(color_scheme_id)) = %s
+        LIMIT 1
+        """,
+        (design, scheme, design, scheme),
+    )
+    if cursor.fetchone() is None:
+        raise NotFound("No logo with that design and color scheme is on file")
+    if store and not _store_exists(cursor, store):
+        raise NotFound("Store not found")
+    cursor.execute(
+        """
+        INSERT INTO logo.display_name
+            (design_id, color_scheme_id, fdm4_store, name, source, locked,
+             uses, updated_at, updated_by)
+        VALUES (%s, %s, %s, %s, 'manual', true, 0, now(), %s)
+        ON CONFLICT (design_id, color_scheme_id, fdm4_store) DO UPDATE SET
+            name = EXCLUDED.name, source = 'manual', locked = true,
+            updated_at = now(), updated_by = EXCLUDED.updated_by
+        """,
+        (design, scheme, store, name, actor),
+    )
+    return MutationResult(
+        {"ok": True, "design_id": design, "color_scheme_id": scheme,
+         "store": store or None, "name": name},
+        affected_scopes(command),
+    )
+
+
+def clear_logo_name(cursor, actor: str, command: ClearLogoNameCommand) -> MutationResult:
+    del actor
+    design = _clean(command.design_id, "design_id")
+    scheme = _upper(command.color_scheme_id, "color_scheme_id")
+    store = _shared_or_store(command.store)
+    if not store:
+        raise InvalidCommand("store is required; the shared default name cannot be removed")
+    cursor.execute(
+        "DELETE FROM logo.display_name WHERE design_id = %s AND color_scheme_id = %s AND fdm4_store = %s",
+        (design, scheme, store),
+    )
+    if cursor.rowcount == 0:
+        raise NotFound("That store has no name of its own for this logo")
+    return MutationResult(
+        {"ok": True, "design_id": design, "color_scheme_id": scheme, "store": store, "removed": 1},
+        affected_scopes(command),
+    )
+
+
+def set_garment_color_class(cursor, actor: str, command: SetColorClassCommand) -> MutationResult:
+    code = _clean(command.color_code, "color_code")
+    try:
+        outcome = set_color_class(cursor, color_code=code, light_dark=command.light_dark, actor=actor)
+    except LookupError as exc:
+        raise NotFound(str(exc)) from exc
+    except ValueError as exc:
+        raise InvalidCommand(str(exc)) from exc
+    return MutationResult({"ok": True, **outcome}, affected_scopes(command))
+
+
+def set_stock_override(cursor, actor: str, command: SetStockOverrideCommand) -> MutationResult:
+    style = _upper(command.style_code, "style_code")
+    note = " ".join(_optional_text(command.note, "note", 1000).split())
+    cursor.execute(
+        """
+        SELECT max(brand) AS brand, max(name) AS product_name,
+               count(*) FILTER (WHERE kind = 'variation' AND is_active) AS variants
+          FROM woo.store_product_state
+         WHERE upper(btrim(style_code)) = %s
+        """,
+        (style,),
+    )
+    info = cursor.fetchone()
+    if not info or not info["variants"]:
+        raise NotFound(f"Style {style} has no active variations in the warehouse")
+    cursor.execute(
+        """
+        INSERT INTO woo.stock_override (style_code, mode, note, active, updated_by)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (style_code) DO UPDATE SET
+            mode = EXCLUDED.mode, note = EXCLUDED.note, active = EXCLUDED.active,
+            updated_at = now(), updated_by = EXCLUDED.updated_by
+        """,
+        (style, command.mode, note, command.active, actor),
+    )
+    return MutationResult(
+        {"ok": True, "style_code": style, "mode": command.mode, "active": command.active,
+         "brand": info["brand"] or "", "product_name": info["product_name"] or "",
+         "variants": int(info["variants"])},
+        affected_scopes(command),
+    )
+
+
+def remove_stock_override(cursor, actor: str, command: RemoveStockOverrideCommand) -> MutationResult:
+    del actor
+    style = _upper(command.style_code, "style_code")
+    cursor.execute("DELETE FROM woo.stock_override WHERE style_code = %s", (style,))
+    if cursor.rowcount == 0:
+        raise NotFound("That style has no stock exception")
+    return MutationResult({"ok": True, "style_code": style, "removed": 1}, affected_scopes(command))
+
+
+def set_brand_stock_rule(cursor, actor: str, command: SetBrandStockRuleCommand) -> MutationResult:
+    mill = _clean(command.mill_code, "mill_code", 32)
+    cursor.execute(
+        'SELECT btrim(COALESCE(description, \'\')) AS name FROM fdm4.mill WHERE btrim("mill-code") = %s LIMIT 1',
+        (mill,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise NotFound(f"No FDM4 brand with mill code {mill}")
+    cursor.execute(
+        """
+        INSERT INTO woo.brand_stock_rule (mill_code, brand_name, mode, active, updated_by, updated_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (mill_code) DO UPDATE SET
+            mode = EXCLUDED.mode, brand_name = EXCLUDED.brand_name,
+            active = EXCLUDED.active, updated_by = EXCLUDED.updated_by, updated_at = now()
+        """,
+        (mill, row["name"], command.mode, command.active, actor),
+    )
+    cursor.execute(
+        'SELECT count(DISTINCT btrim("style-code")) AS n FROM fdm4.style WHERE btrim("mill-code") = %s',
+        (mill,),
+    )
+    styles = int(cursor.fetchone()["n"])
+    return MutationResult(
+        {"ok": True, "mill_code": mill, "brand_name": row["name"], "mode": command.mode,
+         "active": command.active, "styles": styles},
+        affected_scopes(command),
+    )
+
+
+def remove_brand_stock_rule(cursor, actor: str, command: RemoveBrandStockRuleCommand) -> MutationResult:
+    del actor
+    mill = _clean(command.mill_code, "mill_code", 32)
+    cursor.execute("DELETE FROM woo.brand_stock_rule WHERE mill_code = %s", (mill,))
+    if cursor.rowcount == 0:
+        raise NotFound("That brand has no rule to remove")
+    return MutationResult({"ok": True, "mill_code": mill, "removed": 1}, affected_scopes(command))
+
+
+def set_sync_block(cursor, actor: str, command: SetSyncBlockCommand) -> MutationResult:
+    store = _upper(command.store, "store")
+    if not _store_exists(cursor, store):
+        raise NotFound(f"Unknown store code: {store}")
+    keys = _sync_block_keys(store, command.styles)
+    whole_store = keys == [""]
+    scope = command.scope if whole_store else "full"
+    note = " ".join(_optional_text(command.note, "note", 1000).split())
+    for style in keys:
+        cursor.execute(
+            """
+            INSERT INTO woo.sync_exclusion (fdm4_store, style_code, note, active, scope, updated_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fdm4_store, style_code) DO UPDATE SET
+                note = EXCLUDED.note, active = EXCLUDED.active, scope = EXCLUDED.scope,
+                updated_at = now(), updated_by = EXCLUDED.updated_by
+            """,
+            (store, style, note, command.active, scope, actor),
+        )
+    per_style = []
+    if not whole_store:
+        cursor.execute(
+            """
+            SELECT upper(btrim(style_code)) AS style, count(*) AS products
+              FROM woo.store_product_state
+             WHERE fdm4_store = %s AND is_active AND kind = 'variation'
+               AND upper(btrim(style_code)) = ANY(%s)
+             GROUP BY 1
+            """,
+            (store, keys),
+        )
+        counts = {r["style"]: int(r["products"]) for r in cursor.fetchall()}
+        per_style = [{"style": s, "products": counts.get(s, 0)} for s in keys]
+    return MutationResult(
+        {"ok": True, "store": store, "whole_store": whole_store, "scope": scope,
+         "active": command.active, "saved": len(keys), "per_style": per_style},
+        affected_scopes(command),
+    )
+
+
+def remove_sync_block(cursor, actor: str, command: RemoveSyncBlockCommand) -> MutationResult:
+    del actor
+    store = _upper(command.store, "store")
+    keys = _sync_block_keys(store, command.styles)
+    removed = 0
+    for style in keys:
+        cursor.execute(
+            "DELETE FROM woo.sync_exclusion WHERE fdm4_store = %s AND style_code = %s",
+            (store, style),
+        )
+        removed += cursor.rowcount
+    if removed == 0:
+        raise NotFound("No matching freeze to remove")
+    return MutationResult(
+        {"ok": True, "store": store, "whole_store": keys == [""], "removed": removed},
+        affected_scopes(command),
+    )
+
+
 MUTATION_HANDLERS: Dict[str, Callable] = {
     "save_assignment": save_assignment,
     "deactivate_assignment": deactivate_assignment,
@@ -1106,6 +1385,15 @@ MUTATION_HANDLERS: Dict[str, Callable] = {
     "replace_design": replace_design,
     "reorder_logo_rows": reorder_logo_rows,
     "set_styles_active": set_styles_active,
+    "set_logo_name": set_logo_name,
+    "clear_logo_name": clear_logo_name,
+    "set_color_class": set_garment_color_class,
+    "set_stock_override": set_stock_override,
+    "remove_stock_override": remove_stock_override,
+    "set_brand_stock_rule": set_brand_stock_rule,
+    "remove_brand_stock_rule": remove_brand_stock_rule,
+    "set_sync_block": set_sync_block,
+    "remove_sync_block": remove_sync_block,
 }
 
 

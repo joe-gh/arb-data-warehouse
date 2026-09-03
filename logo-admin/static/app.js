@@ -2327,6 +2327,24 @@
     replace_design: "Replace a design on many styles",
     reorder_logo_rows: "Reorder a color's logo choices",
     set_styles_active: "Show or hide logos on many styles",
+    set_logo_name: "Rename a logo for shoppers",
+    clear_logo_name: "Remove a store's own logo name",
+    set_color_class: "Set a garment color's light/dark class",
+    set_stock_override: "Set a style's stock exception",
+    remove_stock_override: "Remove a style's stock exception",
+    set_brand_stock_rule: "Set a brand's stock rule",
+    remove_brand_stock_rule: "Remove a brand's stock rule",
+    set_sync_block: "Freeze the hourly update",
+    remove_sync_block: "Unfreeze the hourly update",
+  };
+  const REVIEW_TABLE_LABELS = {
+    "logo.display_name": (key) => `logo name · design ${key[0]} · ${key[1]} · ${key[2] ? `store ${key[2]}` : "shared default"}`,
+    "logo.color_class": (key) => `garment color ${key[0]}`,
+    "woo.stock_override": (key) => `stock exception · style ${key[0]}`,
+    "woo.brand_stock_rule": (key) => `brand rule · mill ${key[0]}`,
+    "woo.sync_exclusion": (key) => `freeze · store ${key[0]} · ${key[1] ? `style ${key[1]}` : "whole store"}`,
+    "logo.store_settings": (key) => `store settings · ${key[0]}`,
+    "woo.store_pricing_tier": (key) => `pricing level · store ${key[0]}`,
   };
   function reviewStyleList(codes) {
     const list = Array.isArray(codes) ? codes.map((c) => text(c).trim()).filter(Boolean) : [];
@@ -2344,6 +2362,9 @@
     name_override: "name", cost_override: "cost override", sort_order: "sort order", optional: "optional",
     active: "active", image_url: "image", background: "background tag", enabled: "logos enabled",
     allows_none: "allow no logo", tier_name: "pricing level", note: "note",
+    name: "name", light_dark: "light/dark class", mode: "stock mode", scope: "freeze scope",
+    locked: "locked", source: "source", uses: "uses", brand_name: "brand", confidence: "confidence",
+    color_name: "color name", fdm4_description: "FDM4 description", style_code: "style", mill_code: "mill code",
   };
   function reviewStyleLabel(code) {
     const wanted = text(code).trim();
@@ -2399,6 +2420,22 @@
       case "replace_design": return `Replace design ${a.from_design_id}${a.from_color_scheme_id ? ` (scheme ${a.from_color_scheme_id})` : " (every scheme)"} with design ${a.to_design_id}, scheme ${a.to_color_scheme_id}${a.to_logo_code ? `, code ${a.to_logo_code}` : ""} on ${reviewStyleList(a.styles)}. Placement, cost, order, names and active flags stay as they are.`;
       case "reorder_logo_rows": return `Show the logo choices on ${reviewStyleLabel(style)}, color ${reviewColorLabel(style, color)} in this order: rows ${(Array.isArray(a.option_rows) ? a.option_rows : []).join(" → ")}${a.apply_to === "color" ? " (this color only)" : ", and rank every other color of the style the same way"}.`;
       case "set_styles_active": return `${a.active ? "Show" : "Hide"} every logo on ${reviewStyleList(a.styles)}. Rows are kept, not deleted.`;
+      case "set_logo_name": return `Shoppers will see the logo design ${a.design_id} (scheme ${a.color_scheme_id}) named "${a.name}" ${a.store ? `in store ${a.store} only` : "in every store that has no name of its own for it (shared default)"}. The name is locked against FDM4 re-pulls.`;
+      case "clear_logo_name": return `Remove store ${a.store}'s own name for logo design ${a.design_id} (scheme ${a.color_scheme_id}); that store shows the shared default name again.`;
+      case "set_color_class": return `Class garment color ${a.color_code} as ${a.light_dark}. This drives Bulk Apply and like-color copies and marks the color as confirmed by a person.`;
+      case "set_stock_override": return `Style ${a.style_code} (every store) will ${a.mode === "fake" ? "always show in stock at 99,999" : "use live FDM4 stock"} regardless of its brand rule${a.active === false ? " (saved switched off)" : ""}${a.note ? ` — note: ${a.note}` : ""}.`;
+      case "remove_stock_override": return `Remove the stock exception on style ${a.style_code}; its brand rule or the automatic default applies again.`;
+      case "set_brand_stock_rule": return `Every style of brand mill ${a.mill_code} will ${a.mode === "fake" ? "always show in stock" : "use live FDM4 stock"}${a.active === false ? " (rule saved switched off)" : ""}. Style exceptions still win.`;
+      case "remove_brand_stock_rule": return `Remove the stock rule for brand mill ${a.mill_code}; the automatic default applies again.`;
+      case "set_sync_block": {
+        const styles = Array.isArray(a.styles) ? a.styles.filter(Boolean) : [];
+        const what = styles.length ? `${styles.length} style${styles.length === 1 ? "" : "s"} in store ${a.store}: ${styles.slice(0, 12).join(", ")}${styles.length > 12 ? ` and ${styles.length - 12} more` : ""}` : `the whole store ${a.store}${a.scope === "pricing" ? " (prices only; creates, stock and status still run)" : " (the hourly update skips it entirely)"}`;
+        return `Freeze the hourly product update for ${what}${a.active === false ? " (saved switched off)" : ""}${a.note ? ` — note: ${a.note}` : ""}.`;
+      }
+      case "remove_sync_block": {
+        const styles = Array.isArray(a.styles) ? a.styles.filter(Boolean) : [];
+        return `Unfreeze ${styles.length ? `${styles.length} style${styles.length === 1 ? "" : "s"} in store ${a.store}: ${styles.slice(0, 12).join(", ")}` : `the whole store ${a.store}`}; the hourly update runs for ${styles.length ? "them" : "it"} again.`;
+      }
       default: return `${REVIEW_VERBS[tool] || tool || "Command"}${where ? ` on ${where}` : ""}.`;
     }
   }
@@ -2416,15 +2453,24 @@
       let where = key.map(String).join(" · ");
       if (isAssignment && key.length >= 5) {
         where = `${reviewStyleLabel(key[1])} · ${reviewColorLabel(text(key[1]), key[2])} · row ${key[3]} pos ${key[4]}`;
+      } else if (REVIEW_TABLE_LABELS[text(change.table)]) {
+        where = REVIEW_TABLE_LABELS[text(change.table)](key.map((k) => text(k)));
       }
       const kind = !before ? "Add" : !after ? "Remove" : "Update";
       const badge = agentNode("span", `assistant-change-badge assistant-change-badge--${kind.toLowerCase()}`, kind);
       const details = agentNode("div", "assistant-change-details");
-      if (kind === "Add" && after) {
+      const rowSummary = (row) => Object.entries(row)
+        .filter(([k, v]) => !["updated_at", "updated_by", "created_at", "row_version", "catalog_id", "uses", "confidence", "fdm4_description"].includes(k) && !(Array.isArray(key) && key.map(String).includes(String(v))) && v !== "" && v !== null)
+        .map(([k, v]) => `${REVIEW_FIELD_LABELS[k] || k}: ${agentValue(v)}`).join(", ");
+      if (kind === "Add" && after && isAssignment) {
         details.append(agentNode("div", "", [after.name_override, after.logo_code && `${after.logo_code} · ${after.color_scheme_id || ""}`.trim(), after.design_id && `design ${after.design_id}`, after.location].filter(Boolean).join(" — ")));
         details.append(agentNode("div", "muted", `${after.active === false ? "hidden" : "active"}, ${after.optional ? "optional" : "required"}, ${reviewCost(after.cost_override)}`));
-      } else if (kind === "Remove" && before) {
+      } else if (kind === "Add" && after) {
+        details.append(agentNode("div", "", rowSummary(after) || "new row"));
+      } else if (kind === "Remove" && before && isAssignment) {
         details.append(agentNode("div", "", [before.name_override, before.logo_code && `${before.logo_code} · ${before.color_scheme_id || ""}`.trim(), before.location].filter(Boolean).join(" — ")));
+      } else if (kind === "Remove" && before) {
+        details.append(agentNode("div", "", rowSummary(before) || "row removed"));
       } else if (before && after) {
         const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
         keys.forEach((k) => details.append(agentNode("div", "", `${REVIEW_FIELD_LABELS[k] || k}: ${agentValue(before[k])} → ${agentValue(after[k])}`)));

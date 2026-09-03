@@ -160,6 +160,58 @@ class SetStylesActiveCommand(Command):
     active: bool = Field(description="True = show every valid logo row of each style; False = hide them all (kept, not deleted).")
 
 
+class SetLogoNameCommand(Command):
+    design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id of the logo (list_logo_names / get_style show it).")
+    color_scheme_id: str = Field(min_length=1, max_length=100, description="Color scheme of the logo, e.g. BK or GD.")
+    name: str = Field(min_length=1, max_length=200, description="The name shoppers should see for this logo.")
+    store: Optional[str] = Field(default=None, max_length=100, description="Store code to set a name that only this store sees; null changes the shared default name every store falls back to.")
+
+
+class ClearLogoNameCommand(Command):
+    design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id of the logo.")
+    color_scheme_id: str = Field(min_length=1, max_length=100, description="Color scheme of the logo.")
+    store: str = Field(min_length=1, max_length=100, description="Store whose own name for this logo is removed so it shows the shared default again. The shared default itself cannot be removed.")
+
+
+class SetColorClassCommand(Command):
+    color_code: str = Field(min_length=1, max_length=100, description="FDM4 garment color code, e.g. 0082 (list_colors).")
+    light_dark: Literal["light", "dark", "both"] = Field(description="Class that drives Bulk Apply and like-color copies: light, dark, or both.")
+
+
+class SetStockOverrideCommand(Command):
+    style_code: str = Field(min_length=1, max_length=100, description="Product style code (any store) whose stock behaviour is forced.")
+    mode: Literal["fake", "real"] = Field(description="fake = always show in stock at 99,999 regardless of FDM4; real = use live FDM4 stock even if its brand rule says fake.")
+    note: str = Field(default="", max_length=1000, description="Optional reason shown on the Fake Inventory page.")
+    active: bool = Field(default=True, description="False keeps the exception on file but switched off.")
+
+
+class RemoveStockOverrideCommand(Command):
+    style_code: str = Field(min_length=1, max_length=100, description="Style whose stock exception is removed (the brand rule or default applies again).")
+
+
+class SetBrandStockRuleCommand(Command):
+    mill_code: str = Field(min_length=1, max_length=32, description="FDM4 mill (brand) code from get_stock_rules, e.g. 22 for Arborwear.")
+    mode: Literal["real", "fake"] = Field(description="real = every style of the brand uses live FDM4 stock; fake = always in stock.")
+    active: bool = Field(default=True, description="False keeps the rule on file but switched off (the automatic default applies).")
+
+
+class RemoveBrandStockRuleCommand(Command):
+    mill_code: str = Field(min_length=1, max_length=32, description="Brand whose rule is removed (the automatic default applies again).")
+
+
+class SetSyncBlockCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description="Store code the freeze applies to.")
+    styles: List[str] = Field(default=[], max_length=50, description="Style codes to freeze in this store (1-50). Empty list = freeze the whole store.")
+    scope: Literal["full", "pricing"] = Field(default="full", description="Whole-store freezes only: full = the hourly update skips the store entirely; pricing = it still runs but never rewrites an existing variation's price. Style freezes are always full.")
+    note: str = Field(default="", max_length=1000, description="Optional reason shown on the Sync Blocks page.")
+    active: bool = Field(default=True, description="False keeps the block on file but switched off.")
+
+
+class RemoveSyncBlockCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description="Store code of the freeze.")
+    styles: List[str] = Field(default=[], max_length=50, description="Style codes whose freezes are removed; empty list = remove the whole-store freeze.")
+
+
 MutationCommand = Union[
     SaveAssignmentCommand,
     DeactivateAssignmentCommand,
@@ -177,6 +229,15 @@ MutationCommand = Union[
     ReplaceDesignCommand,
     ReorderLogoRowsCommand,
     SetStylesActiveCommand,
+    SetLogoNameCommand,
+    ClearLogoNameCommand,
+    SetColorClassCommand,
+    SetStockOverrideCommand,
+    RemoveStockOverrideCommand,
+    SetBrandStockRuleCommand,
+    RemoveBrandStockRuleCommand,
+    SetSyncBlockCommand,
+    RemoveSyncBlockCommand,
 ]
 
 
@@ -197,6 +258,15 @@ COMMAND_MODELS: Dict[str, Type[Command]] = {
     "replace_design": ReplaceDesignCommand,
     "reorder_logo_rows": ReorderLogoRowsCommand,
     "set_styles_active": SetStylesActiveCommand,
+    "set_logo_name": SetLogoNameCommand,
+    "clear_logo_name": ClearLogoNameCommand,
+    "set_color_class": SetColorClassCommand,
+    "set_stock_override": SetStockOverrideCommand,
+    "remove_stock_override": RemoveStockOverrideCommand,
+    "set_brand_stock_rule": SetBrandStockRuleCommand,
+    "remove_brand_stock_rule": RemoveBrandStockRuleCommand,
+    "set_sync_block": SetSyncBlockCommand,
+    "remove_sync_block": RemoveSyncBlockCommand,
 }
 
 HARD_DELETE_TOOLS = frozenset({
