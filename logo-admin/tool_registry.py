@@ -32,17 +32,25 @@ import queries
 import mutations
 import snapshots
 from read_commands import (
+    FindSimilarStylesCommand,
     GetAssignmentVocabCommand,
     GetAuditLogCommand,
     GetDesignCommand,
     GetImportReportCommand,
+    GetProductMixCommand,
+    GetStockRulesCommand,
     GetStoreSettingsCommand,
     GetStyleCommand,
+    ListColorsCommand,
+    ListLogoNamesCommand,
+    ListPriceRulesCommand,
     ListPricingTiersCommand,
     ListStorePricingTiersCommand,
     ListStoresCommand,
     ListStylesCommand,
+    ListSyncBlocksCommand,
     SearchDesignsCommand,
+    StoreLogoCoverageCommand,
 )
 import staging
 
@@ -110,6 +118,14 @@ APPROVED_AGENT_READ_NAMES = frozenset({
     "get_audit_log",
     "list_pricing_tiers",
     "list_store_pricing_tiers",
+    "find_similar_styles",
+    "store_logo_coverage",
+    "list_colors",
+    "list_logo_names",
+    "get_stock_rules",
+    "list_price_rules",
+    "list_sync_blocks",
+    "get_product_mix",
 })
 
 EXCLUDED_AGENT_TOOLS = frozenset({
@@ -186,6 +202,50 @@ def _list_store_pricing_tiers(cursor, command, settings):
     return queries.list_store_pricing_tiers(cursor)
 
 
+def _find_similar_styles(cursor, command, settings):
+    del settings
+    return queries.find_similar_styles(
+        cursor, fdm4_store=command.store, product_style=command.style, mode=command.mode,
+    )
+
+
+def _store_logo_coverage(cursor, command, settings):
+    del settings
+    return queries.store_logo_coverage(
+        cursor, fdm4_store=command.store, unconfigured_only=command.unconfigured_only,
+    )
+
+
+def _list_colors(cursor, command, settings):
+    del settings
+    return queries.list_colors(cursor, **_model_arguments(command))
+
+
+def _list_logo_names(cursor, command, settings):
+    del settings
+    return queries.list_logo_names(cursor, **_model_arguments(command))
+
+
+def _get_stock_rules(cursor, command, settings):
+    del settings
+    return queries.get_stock_rules(cursor, **_model_arguments(command))
+
+
+def _list_price_rules(cursor, command, settings):
+    del settings
+    return queries.list_price_rules(cursor, **_model_arguments(command))
+
+
+def _list_sync_blocks(cursor, command, settings):
+    del settings
+    return queries.list_sync_blocks(cursor, **_model_arguments(command))
+
+
+def _get_product_mix(cursor, command, settings):
+    del settings
+    return queries.get_product_mix(cursor, **_model_arguments(command))
+
+
 CANONICAL_AGENT_READ_CONTRACTS = {
     "list_stores": (ListStoresCommand, _list_stores),
     "list_styles": (ListStylesCommand, _list_styles),
@@ -204,6 +264,14 @@ CANONICAL_AGENT_READ_CONTRACTS = {
         ListStorePricingTiersCommand,
         _list_store_pricing_tiers,
     ),
+    "find_similar_styles": (FindSimilarStylesCommand, _find_similar_styles),
+    "store_logo_coverage": (StoreLogoCoverageCommand, _store_logo_coverage),
+    "list_colors": (ListColorsCommand, _list_colors),
+    "list_logo_names": (ListLogoNamesCommand, _list_logo_names),
+    "get_stock_rules": (GetStockRulesCommand, _get_stock_rules),
+    "list_price_rules": (ListPriceRulesCommand, _list_price_rules),
+    "list_sync_blocks": (ListSyncBlocksCommand, _list_sync_blocks),
+    "get_product_mix": (GetProductMixCommand, _get_product_mix),
 }
 
 
@@ -332,133 +400,181 @@ def _write_spec(
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     _read_spec(
         "list_stores",
-        "List warehouse stores, display names, catalog counts, and logo settings.",
+        "List every store: FDM4 store code, display name, catalog, product counts and logo settings. Call this first to turn a store NAME into its code.",
         ListStoresCommand,
         _list_stores,
     ),
     _read_spec(
         "list_styles",
-        "Search at most 100 product styles in one store.",
+        "Find product styles in one store (max 100): style code, product name, brand and whether logos are configured. Use it to get a style code from a product name.",
         ListStylesCommand,
         _list_styles,
     ),
     _read_spec(
         "get_style",
-        "Get one style's colors, assignments, and store settings.",
+        "One product's full logo setup in one store: every garment color, every logo row (option row, position, design, scheme, logo code, placement, display name, name override, active, sort order) and its cost (cost_override, default_cost, effective_cost with its source), plus the store's logo settings.",
         GetStyleCommand,
         _get_style,
     ),
     _read_spec(
         "search_designs",
-        "Search at most 100 FDM4 logo designs.",
+        "Search FDM4 logo designs (max 100) by description, design id or logo code. With a store and no query it browses the designs used by that store and by the FDM4 customer that owns it; store_uses > 0 marks designs actually assigned in the store.",
         SearchDesignsCommand,
         _search_designs,
     ),
     _read_spec(
         "get_design",
-        "Get one design's colorways, assets, and placements.",
+        "One design's details: color schemes (colorways) with preview images and artwork files, logo codes on file, and the placements FDM4 defined for it.",
         GetDesignCommand,
         _get_design,
     ),
     _read_spec(
         "get_assignment_vocab",
-        "Get placement and background values used by logo assignments.",
+        "The placement names and background tags logo rows use, with usage counts. Use it to spell a placement the way the app does.",
         GetAssignmentVocabCommand,
         _get_assignment_vocab,
     ),
     _read_spec(
         "get_store_settings",
-        "Get one store's logo enablement and no-logo settings.",
+        "One store's two logo switches: whether its logos are enabled at all and whether shoppers may choose 'No logo'.",
         GetStoreSettingsCommand,
         _get_store_settings,
     ),
     _read_spec(
         "get_import_report",
-        "Read a bounded page of the logo import punch list.",
+        "The legacy-sheet import punch list: rows that could not be imported and why (no_color_code, no_design, no_art, orphaned_companion ...), paged.",
         GetImportReportCommand,
         _get_import_report,
     ),
     _read_spec(
         "get_audit_log",
-        "Read a bounded keyset page of logo audit history.",
+        "Change history for logo data, newest first: who changed what and when, with field-level diffs. Filter by store, style, actor or action; page with before_id.",
         GetAuditLogCommand,
         _get_audit_log,
     ),
     _read_spec(
         "list_pricing_tiers",
-        "List configured warehouse pricing-tier definitions.",
+        "The pricing levels a store can be assigned (tier name, price-list key, whether it is MSRP). A level only fills prices FDM4 leaves blank.",
         ListPricingTiersCommand,
         _list_pricing_tiers,
     ),
     _read_spec(
+        "find_similar_styles",
+        "Styles in a store that carry the same logo set as a given style (exact) or share at least one logo (overlap). Use it before suggesting where to copy a setup.",
+        FindSimilarStylesCommand,
+        _find_similar_styles,
+    ),
+    _read_spec(
+        "store_logo_coverage",
+        "Per live style of a store: how many garment colors have at least one active logo and which colors still have none. Answers 'what still needs logos?'.",
+        StoreLogoCoverageCommand,
+        _store_logo_coverage,
+    ),
+    _read_spec(
+        "list_colors",
+        "Garment colors with their light/dark class (dark garments get the white logo, light get the black one), who set it, and how many styles use each color.",
+        ListColorsCommand,
+        _list_colors,
+    ),
+    _read_spec(
+        "list_logo_names",
+        "The names shoppers see for logos. With a store: its logos with the effective name (store-specific or shared default) and whether it is store-specific. Without a store: search the shared names.",
+        ListLogoNamesCommand,
+        _list_logo_names,
+    ),
+    _read_spec(
+        "get_stock_rules",
+        "Fake Inventory configuration: brand rules (real, fake = always in stock, or automatic) and style exceptions, optionally limited to the brands and styles one store carries.",
+        GetStockRulesCommand,
+        _get_stock_rules,
+    ),
+    _read_spec(
+        "list_price_rules",
+        "Price rules in evaluation order with targets, exceptions, effect, rounding, floors/caps, active flag and last preview, plus the stores whose prices are frozen. Optionally only the rules that can touch one store.",
+        ListPriceRulesCommand,
+        _list_price_rules,
+    ),
+    _read_spec(
+        "list_sync_blocks",
+        "Sync Blocks (freezes): whole-store, price-only or single-style rows the hourly update skips, with notes and on/off state.",
+        ListSyncBlocksCommand,
+        _list_sync_blocks,
+    ),
+    _read_spec(
+        "get_product_mix",
+        "A store's Product Mix state: not enrolled (follows FDM4), all (follows FDM4 completely) or a curated list with its styles, color and size trims, and how many new FDM4 products are waiting.",
+        GetProductMixCommand,
+        _get_product_mix,
+    ),
+    _read_spec(
         "list_store_pricing_tiers",
-        "List current store-to-pricing-tier assignments.",
+        "Which stores are assigned which pricing level, with notes.",
         ListStorePricingTiersCommand,
         _list_store_pricing_tiers,
     ),
     _write_spec(
         "save_assignment",
-        "Stage saving one validated logo assignment.",
+        "Stage adding or updating one logo row (store, style, color, option row, position). Validated against FDM4 designs; the person confirms the review card before anything changes.",
         SaveAssignmentCommand,
         mutations.save_assignment,
     ),
     _write_spec(
         "deactivate_assignment",
-        "Stage deactivating one assignment (position 1 includes companions).",
+        "Stage hiding one logo row from the website (kept, reversible). Position 1 also hides its companion positions 2-3.",
         DeactivateAssignmentCommand,
         mutations.deactivate_assignment,
     ),
     _write_spec(
         "hard_delete_assignment",
-        "Stage permanently deleting one assignment (position 1 includes companions).",
+        "Stage permanently deleting one logo row (irreversible; position 1 takes its companions). Prefer deactivate unless deletion is explicitly wanted.",
         HardDeleteAssignmentCommand,
         mutations.hard_delete_assignment,
     ),
     _write_spec(
         "deactivate_color",
-        "Stage deactivating all assignments for one store/style/color.",
+        "Stage hiding every logo row on one garment color of a style (all option rows), reversibly.",
         DeactivateColorCommand,
         mutations.deactivate_color,
     ),
     _write_spec(
         "hard_delete_color",
-        "Stage permanently deleting all assignments for one store/style/color.",
+        "Stage permanently deleting every logo row on one garment color of a style (irreversible).",
         HardDeleteColorCommand,
         mutations.hard_delete_color,
     ),
     _write_spec(
         "set_style_active",
-        "Stage activating or deactivating all valid assignments on a style.",
+        "Stage showing or hiding every valid logo row of a style at once.",
         SetStyleActiveCommand,
         mutations.set_style_active,
     ),
     _write_spec(
         "apply_to_colors",
-        "Stage copying one assignment slot across active colors on a style.",
+        "Stage copying one logo row to every live garment color of the same style (same option row and position); occupied slots are kept unless overwrite.",
         ApplyToColorsCommand,
         mutations.apply_to_colors,
     ),
     _write_spec(
         "copy_style",
-        "Stage copying assignments from one style to another in the same store.",
+        "Stage copying a style's whole logo setup onto another style in the same store, matching by identical color codes.",
         CopyStyleCommand,
         mutations.copy_style,
     ),
     _write_spec(
         "update_store_settings",
-        "Stage changing one store's logo enablement settings.",
+        "Stage changing a store's logo switches: logos enabled, and whether shoppers may choose 'No logo'.",
         UpdateStoreSettingsCommand,
         mutations.update_store_settings,
     ),
     _write_spec(
         "set_store_pricing_tier",
-        "Stage setting one store's fallback pricing tier.",
+        "Stage assigning a store a pricing level (from list_pricing_tiers); it only fills prices FDM4 leaves blank.",
         SetStorePricingTierCommand,
         mutations.set_store_pricing_tier,
     ),
     _write_spec(
         "delete_store_pricing_tier",
-        "Stage deleting one store's fallback pricing-tier assignment.",
+        "Stage removing a store's pricing level so blank prices fall back to retail.",
         DeleteStorePricingTierCommand,
         mutations.delete_store_pricing_tier,
     ),

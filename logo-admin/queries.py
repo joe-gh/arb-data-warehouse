@@ -389,6 +389,7 @@ def get_style(cursor, *, store: str, style: str) -> dict:
                    a.optional,
                    left(a.background, {READ_TEXT_CHAR_LIMIT}) AS background,
                    a.cost_override, a.sort_order,
+                   dc.cost AS default_cost,
                    left(a.image_url, {READ_URL_CHAR_LIMIT}) AS image_url,
                    left(COALESCE(a.name_override, ''), {READ_TEXT_CHAR_LIMIT})
                        AS name_override,
@@ -396,6 +397,9 @@ def get_style(cursor, *, store: str, style: str) -> dict:
                    left(a.updated_by, 256) AS updated_by, a.updated_at,
                    bool_and(a.active) OVER () AS _style_active
               FROM logo.assignment a
+              LEFT JOIN logo.default_cost dc
+                     ON upper(btrim(dc.logo_code)) = upper(btrim(a.logo_code))
+                    AND upper(btrim(dc.color_scheme_id)) = upper(btrim(a.color_scheme_id))
               LEFT JOIN LATERAL (
                   SELECT candidate.name
                     FROM logo.display_name candidate
@@ -418,6 +422,18 @@ def get_style(cursor, *, store: str, style: str) -> dict:
         if assignment_rows
         else True
     )
+    # What the shopper actually pays for the row: the explicit override wins,
+    # then the automatic default for (logo code, scheme); None = only the
+    # FDM4 design upcharge (not visible here) or free.
+    for _row in assignment_rows:
+        _override = _row.get("cost_override")
+        _default = _row.get("default_cost")
+        if _override is not None:
+            _row["effective_cost"], _row["effective_cost_source"] = _override, "override"
+        elif _default is not None:
+            _row["effective_cost"], _row["effective_cost_source"] = _default, "default"
+        else:
+            _row["effective_cost"], _row["effective_cost_source"] = None, "none"
     assignments = []
     for row in assignment_rows:
         row.pop("_style_active", None)
@@ -1501,4 +1517,313 @@ def compute_bulk_preview(
         "rows": rows,
         "counts": {"total": len(rows), "unclassified": unclassified},
         "design_id": str(design_id),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Extended bounded reads for the in-app assistant (2026-09-03). Every function
+# returns {..., "truncated", "truncation"} like the reads above and never
+# exceeds the DB-computed byte bounds of _bounded_query.
+# ---------------------------------------------------------------------------
+
+LOGO_NAME_RESULT_LIMIT = 200
+STOCK_RULE_RESULT_LIMIT = 500
+PRICE_RULE_RESULT_LIMIT = 500
+SYNC_BLOCK_RESULT_LIMIT = 500
+PRODUCT_MIX_ITEM_RESULT_LIMIT = 500
+
+
+def list_logo_names(cursor, *, store: Optional[str] = None, q: str = "",
+                    limit: int = 100) -> dict:
+    """Shopper-facing logo names. With a store: one row per (design, scheme)
+    that store's ACTIVE assignments use, with the name its shoppers see
+    (store-specific row, else the shared default, else '') and whether it is
+    store-specific. Without a store: search the shared/global names."""
+    term = _clean(q, "q") if q else ""
+    like = f"%{term}%"
+    safe_limit = max(1, min(int(limit), LOGO_NAME_RESULT_LIMIT))
+    if store:
+        store = _clean(store, "store")
+        rows, truncated, byte_truncated = _bounded_query(
+            cursor,
+            f"""
+            WITH used AS (
+                SELECT btrim(a.design_id) AS design_id,
+                       upper(btrim(a.color_scheme_id)) AS color_scheme_id,
+                       min(btrim(a.logo_code)) AS logo_code,
+                       count(*) AS assignments
+                  FROM logo.assignment a
+                 WHERE a.fdm4_store = %(store)s AND a.active
+                   AND NULLIF(btrim(a.design_id), '') IS NOT NULL
+                 GROUP BY 1, 2
+            )
+            SELECT u.design_id, u.color_scheme_id,
+                   left(u.logo_code, 256) AS logo_code,
+                   u.assignments,
+                   left(COALESCE(s.name, g.name, ''), {READ_TEXT_CHAR_LIMIT}) AS name,
+                   (s.design_id IS NOT NULL) AS store_specific,
+                   COALESCE(s.locked, g.locked, false) AS locked,
+                   left(COALESCE(s.fdm4_description, g.fdm4_description, ''),
+                        {READ_TEXT_CHAR_LIMIT}) AS fdm4_description
+              FROM used u
+              LEFT JOIN logo.display_name s
+                     ON s.design_id = u.design_id
+                    AND upper(btrim(s.color_scheme_id)) = u.color_scheme_id
+                    AND s.fdm4_store = %(store)s
+              LEFT JOIN logo.display_name g
+                     ON g.design_id = u.design_id
+                    AND upper(btrim(g.color_scheme_id)) = u.color_scheme_id
+                    AND g.fdm4_store = ''
+             WHERE %(term)s = ''
+                OR COALESCE(s.name, g.name, '') ILIKE %(like)s
+                OR u.design_id ILIKE %(like)s
+                OR u.color_scheme_id ILIKE %(like)s
+                OR u.logo_code ILIKE %(like)s
+                OR COALESCE(s.fdm4_description, g.fdm4_description, '') ILIKE %(like)s
+             ORDER BY u.assignments DESC, u.design_id, u.color_scheme_id
+             LIMIT %(limit)s
+            """,
+            {"store": store, "term": term, "like": like, "limit": safe_limit + 1},
+            safe_limit,
+        )
+    else:
+        rows, truncated, byte_truncated = _bounded_query(
+            cursor,
+            f"""
+            SELECT dn.design_id, upper(btrim(dn.color_scheme_id)) AS color_scheme_id,
+                   NULL::text AS logo_code, NULL::bigint AS assignments,
+                   left(dn.name, {READ_TEXT_CHAR_LIMIT}) AS name,
+                   (dn.fdm4_store <> '') AS store_specific,
+                   left(dn.fdm4_store, 256) AS fdm4_store,
+                   dn.locked,
+                   left(COALESCE(dn.fdm4_description, ''), {READ_TEXT_CHAR_LIMIT}) AS fdm4_description
+              FROM logo.display_name dn
+             WHERE %(term)s = ''
+                OR dn.name ILIKE %(like)s
+                OR dn.design_id ILIKE %(like)s
+                OR dn.color_scheme_id ILIKE %(like)s
+                OR COALESCE(dn.fdm4_description, '') ILIKE %(like)s
+             ORDER BY dn.uses DESC, dn.design_id, dn.color_scheme_id
+             LIMIT %(limit)s
+            """,
+            {"term": term, "like": like, "limit": safe_limit + 1},
+            safe_limit,
+        )
+    return {
+        "store": store or None,
+        "names": rows,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }
+
+
+def get_stock_rules(cursor, *, store: Optional[str] = None, q: str = "",
+                    limit: int = 200) -> dict:
+    """Fake Inventory configuration: brand rules (mode real/fake or null =
+    automatic) and style exceptions. With a store, brands are limited to the
+    ones the store carries and exceptions to its styles."""
+    term = _clean(q, "q") if q else ""
+    like = f"%{term}%"
+    safe_limit = max(1, min(int(limit), STOCK_RULE_RESULT_LIMIT))
+    store = _clean(store, "store") if store else None
+    store_brand_sql = (
+        "AND btrim(m.\"mill-code\") IN (SELECT DISTINCT mill_code FROM woo.store_product_state "
+        "WHERE fdm4_store = %(store)s AND mill_code IS NOT NULL)"
+        if store else ""
+    )
+    brands, b_trunc, b_bytes = _bounded_query(
+        cursor,
+        f"""
+        SELECT btrim(m."mill-code") AS mill_code,
+               left(btrim(COALESCE(m.description, '')), {READ_TEXT_CHAR_LIMIT}) AS brand_name,
+               r.mode,
+               COALESCE(sc.styles, 0) AS styles,
+               left(r.updated_by, 256) AS updated_by, r.updated_at
+          FROM fdm4.mill m
+          LEFT JOIN woo.brand_stock_rule r
+                 ON r.mill_code = btrim(m."mill-code") AND r.active
+          LEFT JOIN (
+                SELECT btrim("mill-code") AS mc, count(DISTINCT btrim("style-code")) AS styles
+                  FROM fdm4.style GROUP BY 1
+               ) sc ON sc.mc = btrim(m."mill-code")
+         WHERE NULLIF(btrim(m."mill-code"), '') IS NOT NULL
+           AND COALESCE(sc.styles, 0) > 0
+           {store_brand_sql}
+           AND ( %(term)s = ''
+              OR btrim(COALESCE(m.description, '')) ILIKE %(like)s
+              OR btrim(m."mill-code") ILIKE %(like)s )
+         ORDER BY (r.mode IS NULL), lower(btrim(COALESCE(m.description, ''))), btrim(m."mill-code")
+         LIMIT %(limit)s
+        """,
+        {"store": store, "term": term, "like": like, "limit": safe_limit + 1},
+        safe_limit,
+    )
+    store_style_sql = (
+        "AND upper(btrim(o.style_code)) IN (SELECT upper(btrim(style_code)) FROM woo.store_product_state "
+        "WHERE fdm4_store = %(store)s)"
+        if store else ""
+    )
+    overrides, o_trunc, o_bytes = _bounded_query(
+        cursor,
+        f"""
+        SELECT left(o.style_code, 256) AS style_code, o.mode, o.active,
+               left(COALESCE(o.note, ''), {READ_TEXT_CHAR_LIMIT}) AS note,
+               left(o.updated_by, 256) AS updated_by, o.updated_at
+          FROM woo.stock_override o
+         WHERE o.active
+           {store_style_sql}
+           AND ( %(term)s = '' OR o.style_code ILIKE %(like)s OR COALESCE(o.note, '') ILIKE %(like)s )
+         ORDER BY o.style_code
+         LIMIT %(limit)s
+        """,
+        {"store": store, "term": term, "like": like, "limit": safe_limit + 1},
+        safe_limit,
+    )
+    return {
+        "store": store,
+        "brand_rules": brands,
+        "style_exceptions": overrides,
+        "automatic_rule": (
+            "Brands with mode null follow the automatic rule: Arborwear and the "
+            "stocked premium brands show real stock; other brands show always in "
+            "stock; footwear, arborist gear and tools show real stock."
+        ),
+        "truncated": b_trunc or b_bytes or o_trunc or o_bytes,
+        "truncation": {
+            "rows": b_trunc or o_trunc,
+            "bytes": b_bytes or o_bytes,
+            "brands": b_trunc,
+            "style_exceptions": o_trunc,
+        },
+    }
+
+
+def list_price_rules(cursor, *, store: Optional[str] = None) -> dict:
+    """Price rules Arborwear controls directly, in evaluation order. With a
+    store: only rules that can touch it (aimed at all stores or naming it,
+    and not excluding it). Also lists stores whose prices are frozen."""
+    store = _clean(store, "store") if store else None
+    store_sql = (
+        "WHERE (COALESCE(cardinality(stores), 0) = 0 OR %(store)s = ANY(stores)) "
+        "AND NOT (%(store)s = ANY(COALESCE(excl_stores, '{}')))"
+        if store else ""
+    )
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        SELECT rule_id, left(name, {READ_TEXT_CHAR_LIMIT}) AS name, active, priority, stackable,
+               COALESCE(stores, '{{}}') AS stores, COALESCE(store_tiers, '{{}}') AS store_tiers,
+               COALESCE(styles, '{{}}') AS styles, COALESCE(brands, '{{}}') AS brands,
+               COALESCE(categories, '{{}}') AS categories,
+               COALESCE(excl_stores, '{{}}') AS excl_stores, COALESCE(excl_styles, '{{}}') AS excl_styles,
+               COALESCE(excl_brands, '{{}}') AS excl_brands, COALESCE(excl_categories, '{{}}') AS excl_categories,
+               effect_type, effect_value, price_level_key, basis, rounding,
+               floor_price, ceiling_price, cap_at_msrp,
+               effective_from, effective_until,
+               left(COALESCE(note, ''), {READ_TEXT_CHAR_LIMIT}) AS note,
+               last_previewed_at, updated_at, left(updated_by, 256) AS updated_by
+          FROM woo.price_rule
+          {store_sql}
+         ORDER BY priority, rule_id
+         LIMIT %(limit)s
+        """,
+        {"store": store, "limit": PRICE_RULE_RESULT_LIMIT + 1},
+        PRICE_RULE_RESULT_LIMIT,
+    )
+    frozen, f_trunc, f_bytes = _bounded_query(
+        cursor,
+        "SELECT DISTINCT left(fdm4_store, 256) AS fdm4_store, scope "
+        "FROM woo.sync_exclusion WHERE active AND style_code = '' "
+        "ORDER BY fdm4_store LIMIT %(limit)s",
+        {"limit": SYNC_BLOCK_RESULT_LIMIT + 1},
+        SYNC_BLOCK_RESULT_LIMIT,
+    )
+    return {
+        "store": store,
+        "rules": rows,
+        "frozen_stores": frozen,
+        "truncated": truncated or byte_truncated or f_trunc or f_bytes,
+        "truncation": {"rows": truncated or f_trunc, "bytes": byte_truncated or f_bytes},
+    }
+
+
+def list_sync_blocks(cursor, *, store: Optional[str] = None) -> dict:
+    """Sync Blocks (freezes): whole-store, price-only (scope='pricing') or
+    single-style rows the hourly update leaves alone."""
+    store = _clean(store, "store") if store else None
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        SELECT left(fdm4_store, 256) AS fdm4_store,
+               left(style_code, 256) AS style_code,
+               (style_code = '') AS whole_store,
+               scope, active,
+               left(COALESCE(note, ''), {READ_TEXT_CHAR_LIMIT}) AS note,
+               updated_at, left(updated_by, 256) AS updated_by
+          FROM woo.sync_exclusion
+         WHERE (%(store)s IS NULL OR fdm4_store = %(store)s)
+         ORDER BY fdm4_store, style_code
+         LIMIT %(limit)s
+        """,
+        {"store": store, "limit": SYNC_BLOCK_RESULT_LIMIT + 1},
+        SYNC_BLOCK_RESULT_LIMIT,
+    )
+    return {
+        "store": store,
+        "blocks": rows,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }
+
+
+def get_product_mix(cursor, *, store: str, limit: int = 200) -> dict:
+    """Product Mix state of one store: not enrolled (follows FDM4), mode
+    'all' (follows FDM4 completely) or 'list' (curated) with its styles."""
+    store = _clean(store, "store")
+    safe_limit = max(1, min(int(limit), PRODUCT_MIX_ITEM_RESULT_LIMIT))
+    cursor.execute(
+        """
+        SELECT m.fdm4_store, m.mode, m.active, m.note, m.imported_at,
+               m.created_by, m.created_at,
+               (v.fdm4_store IS NOT NULL) AS external,
+               v.catalog_id AS external_catalog
+          FROM woo.store_mix_store m
+          LEFT JOIN woo.virtual_catalog_store v USING (fdm4_store)
+         WHERE m.fdm4_store = %s
+        """,
+        (store,),
+    )
+    registry = cursor.fetchone()
+    registry = dict(registry) if registry else None
+    items, truncated, byte_truncated = ([], False, False)
+    if registry and registry.get("mode") == "list":
+        items, truncated, byte_truncated = _bounded_query(
+            cursor,
+            f"""
+            SELECT left(i.style_code, 256) AS style_code,
+                   i.colors, i.size_excludes,
+                   left(COALESCE(i.note, ''), {READ_TEXT_CHAR_LIMIT}) AS note,
+                   i.updated_at
+              FROM woo.store_mix_item i
+             WHERE i.fdm4_store = %(store)s
+             ORDER BY i.style_code
+             LIMIT %(limit)s
+            """,
+            {"store": store, "limit": safe_limit + 1},
+            safe_limit,
+        )
+    cursor.execute(
+        "SELECT count(*) AS n FROM woo.store_mix_candidate WHERE fdm4_store = %s",
+        (store,),
+    )
+    candidates = int((cursor.fetchone() or {"n": 0})["n"])
+    return {
+        "store": store,
+        "enrolled": registry is not None,
+        "mode": (registry or {}).get("mode"),
+        "registry": registry,
+        "curated_styles": items,
+        "new_in_fdm4_candidates": candidates,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
     }
