@@ -3235,6 +3235,10 @@
     elements.backdrop.hidden = !open;
     elements.panel.setAttribute("aria-hidden", String(!open));
     elements.toggle.setAttribute("aria-expanded", String(open));
+    if (elements.fab) {
+      elements.fab.setAttribute("aria-expanded", String(open));
+      elements.fab.hidden = open;
+    }
     document.body.classList.toggle("assistant-open", open);
     if (open) {
       loadAssistantSessions(elements);
@@ -3250,6 +3254,7 @@
     if (!panel || !toggle) return;
     if (!assistantAsyncGuard || !assistantRequestGuard) {
       $("#assistant-backdrop")?.remove();
+      $("#assistant-fab")?.remove();
       panel.remove();
       toggle.remove();
       return;
@@ -3258,6 +3263,7 @@
     const elements = {
       panel,
       toggle,
+      fab: $("#assistant-fab"),
       backdrop: $("#assistant-backdrop"),
       close: $("#assistant-close"),
       newChat: $("#assistant-new"),
@@ -3277,6 +3283,12 @@
     };
 
     toggle.addEventListener("click", () => setAssistantOpen(elements, panel.hidden));
+    if (elements.fab) {
+      // Floating launcher (lower right). Same open path as the header button; the
+      // toast stack moves up while the launcher is present so they never overlap.
+      document.body.classList.add("has-assistant-fab");
+      elements.fab.addEventListener("click", () => setAssistantOpen(elements, panel.hidden));
+    }
     elements.close.addEventListener("click", () => setAssistantOpen(elements, false));
     elements.backdrop.addEventListener("click", () => setAssistantOpen(elements, false));
     elements.newChat.addEventListener("click", () => resetAssistant(elements));

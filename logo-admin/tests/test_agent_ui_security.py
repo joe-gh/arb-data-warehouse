@@ -47,6 +47,7 @@ def _assistant_javascript() -> str:
 def test_server_render_omits_every_assistant_entry_point_when_disallowed():
     rendered = _render_dashboard(False)
     assert 'id="assistant-toggle"' not in rendered
+    assert 'id="assistant-fab"' not in rendered
     assert 'id="assistant-panel"' not in rendered
     assert 'id="assistant-backdrop"' not in rendered
     assert 'id="assistant-file"' not in rendered
@@ -55,6 +56,7 @@ def test_server_render_omits_every_assistant_entry_point_when_disallowed():
 def test_server_render_includes_assistant_for_allowlisted_operator():
     rendered = _render_dashboard(True)
     assert 'id="assistant-toggle"' in rendered
+    assert 'id="assistant-fab"' in rendered
     assert 'id="assistant-panel"' in rendered
     assert 'id="assistant-review"' in rendered
     assert 'id="assistant-mapping"' in rendered

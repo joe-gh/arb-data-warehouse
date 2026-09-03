@@ -1057,6 +1057,10 @@
   </main>
 
   {% if agent_access_allowed %}
+  <button id="assistant-fab" class="assistant-fab" type="button" aria-controls="assistant-panel" aria-expanded="false" title="Open the warehouse assistant">
+    <span class="assistant-fab__icon" aria-hidden="true">&#10022;</span>
+    <span class="assistant-fab__label">Assistant</span>
+  </button>
   <div id="assistant-backdrop" class="assistant-backdrop" hidden></div>
   <aside id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" aria-hidden="true" data-writes-enabled="{{ 'true' if agent_writes_enabled else 'false' }}" hidden>
     <div class="assistant-panel__header">

@@ -430,6 +430,14 @@ select:focus-visible { border-color: var(--forest-700); box-shadow: 0 0 0 3px rg
    operators who are not explicitly enabled; these styles never act as an
    authorization boundary. */
 body.assistant-open { overflow: hidden; }
+/* Floating launcher, locked to the lower right. Sits under the panel/backdrop
+   (z 75/80) and under toasts (z 300); the toast stack shifts up while it exists. */
+.assistant-fab { position: fixed; z-index: 70; right: 1.25rem; bottom: 1.25rem; display: inline-flex; align-items: center; gap: .55rem; padding: .85rem 1.2rem .85rem 1rem; border: 0; border-radius: 999px; color: var(--white); background: var(--forest-800); font: inherit; font-size: .9rem; font-weight: 800; letter-spacing: .02em; box-shadow: 0 12px 30px rgb(8 24 17 / 30%); cursor: pointer; transition: transform .15s ease, box-shadow .15s ease, background .15s ease; }
+.assistant-fab:hover { background: var(--forest-900); transform: translateY(-1px); box-shadow: 0 16px 34px rgb(8 24 17 / 34%); }
+.assistant-fab:focus-visible { outline: 3px solid var(--white); outline-offset: 2px; box-shadow: 0 0 0 6px var(--forest-800); }
+.assistant-fab__icon { font-size: 1.1rem; line-height: 1; }
+@media (max-width: 40rem) { .assistant-fab__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; } .assistant-fab { padding: .9rem; } }
+body.has-assistant-fab .toast-region { bottom: 5rem; }
 .assistant-backdrop { position: fixed; z-index: 75; inset: 0; background: rgb(8 22 16 / 42%); backdrop-filter: blur(1px); }
 .assistant-panel { position: fixed; z-index: 80; top: 0; right: 0; display: flex; width: min(38rem, 100vw); height: 100dvh; flex-direction: column; border-left: 1px solid var(--line-strong); background: var(--canvas); box-shadow: -20px 0 55px rgb(8 24 17 / 23%); }
 .assistant-panel[hidden], .assistant-backdrop[hidden] { display: none; }
