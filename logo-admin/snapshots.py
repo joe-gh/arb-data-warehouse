@@ -518,13 +518,13 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
             cursor,
             f"""
             SELECT row_number() OVER (
-                       ORDER BY garment_color_code, option_row, position
+                       ORDER BY product_style, garment_color_code, option_row, position
                    ) AS ordinal,
                    to_jsonb(locked) AS row
               FROM (
                   SELECT * FROM logo.assignment
                    WHERE {where}
-                   ORDER BY garment_color_code, option_row, position
+                   ORDER BY product_style, garment_color_code, option_row, position
                    LIMIT %s{lock}
               ) AS locked
             """,
@@ -868,9 +868,26 @@ def _strip_trigger_managed(value: Any) -> Any:
     return value
 
 
+def _ordered_state(value: Any) -> Any:
+    """Row order inside a scope is not business state: a whole-store scope can
+    return the same rows in a different order between two reads. Compare each
+    scope's rows keyed by their business identity."""
+    if not isinstance(value, list):
+        return value
+    ordered = []
+    for entry in value:
+        if isinstance(entry, Mapping) and isinstance(entry.get("rows"), list):
+            table = str(entry.get("table") or "")
+            rows = sorted(entry["rows"], key=lambda row: _row_key(table, row) if isinstance(row, Mapping) else "")
+            ordered.append({**entry, "rows": rows})
+        else:
+            ordered.append(entry)
+    return ordered
+
+
 def states_equal(left: Any, right: Any) -> bool:
-    return canonical_json(_strip_trigger_managed(left)) == canonical_json(
-        _strip_trigger_managed(right)
+    return canonical_json(_ordered_state(_strip_trigger_managed(left))) == canonical_json(
+        _ordered_state(_strip_trigger_managed(right))
     )
 
 

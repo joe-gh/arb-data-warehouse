@@ -1525,6 +1525,14 @@ def bulk_apply(cursor, actor: str, command: BulkApplyCommand) -> MutationResult:
     logo_code = _upper(command.logo_code, "logo_code")
     scheme = _upper(command.color_scheme_id, "color_scheme_id")
     placement = _clean(command.location, "location", 200)
+    # Use the vocabulary's spelling so "LEFT CHEST" lands as "Left Chest".
+    cursor.execute(
+        "SELECT name FROM logo.placement_vocab WHERE lower(btrim(name)) = lower(%s) ORDER BY active DESC LIMIT 1",
+        (placement,),
+    )
+    known = cursor.fetchone()
+    if known:
+        placement = str(known["name"])
     if command.target == "light_dark":
         if command.color_class not in ("light", "dark"):
             raise InvalidCommand("color_class (light or dark) is required when target is light_dark")

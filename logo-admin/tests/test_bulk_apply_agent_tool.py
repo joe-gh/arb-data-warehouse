@@ -98,3 +98,15 @@ def test_bulk_apply_overwrite_and_style_limit_and_errors():
         cs = new_change_set(_session(), USER)
         with pytest.raises(exc):
             stage_write(cs["id"], "bulk_apply", base, "bulk-bad", USER, max_items=50)
+
+
+def test_states_equal_ignores_row_order_within_a_scope():
+    from snapshots import states_equal
+    a = {"fdm4_store": "S", "product_style": "A", "garment_color_code": "RED", "option_row": 1, "position": 1, "x": 1}
+    b = {"fdm4_store": "S", "product_style": "B", "garment_color_code": "RED", "option_row": 1, "position": 1, "x": 2}
+    scope = {"kind": "assignment_store", "key": {"fdm4_store": "S"}}
+    left = [{"scope": scope, "table": "logo.assignment", "rows": [a, b]}]
+    right = [{"scope": scope, "table": "logo.assignment", "rows": [b, a]}]
+    assert states_equal(left, right)
+    changed = [{"scope": scope, "table": "logo.assignment", "rows": [b, {**a, "x": 9}]}]
+    assert not states_equal(left, changed)
