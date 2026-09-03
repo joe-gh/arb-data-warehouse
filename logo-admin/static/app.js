@@ -2330,8 +2330,12 @@
     allows_none: "allow no logo", tier_name: "pricing level", note: "note",
   };
   function reviewStyleLabel(code) {
-    const match = (state.styles || []).find((s) => text(s.style_code ?? s.style).trim() === text(code).trim());
-    const name = match ? text(match.name ?? match.product_name).trim() : "";
+    const wanted = text(code).trim();
+    let name = state.style === wanted && state.styleRecord ? text(styleName(state.styleRecord)).trim() : "";
+    if (!name) {
+      const match = (state.styles || []).find((s) => text(s.style_code ?? s.style).trim() === wanted);
+      name = match ? text(match.name ?? match.product_name ?? match.style_name).trim() : "";
+    }
     return name ? `${name} (${code})` : text(code);
   }
   function reviewColorLabel(style, code) {
@@ -2502,8 +2506,6 @@
     );
     technical.append(rawDiff);
     elements.review.append(technical);
-
-    elements.review.append(changes);
 
     const actions = agentNode("div", "assistant-review__actions");
     if (changeSet.reviewBlocked) {
