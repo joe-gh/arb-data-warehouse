@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from datetime import datetime
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import (
     APIRouter,
@@ -19,7 +19,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent import AgentError, run_turn
 from agent_logging import log_event
@@ -62,6 +62,77 @@ class CreateSessionRequest(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+_UI_STORE_CODE = re.compile(r"^S_[A-Za-z0-9_]{1,30}$")
+_CODE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+_VIEW = re.compile(r"^[a-z]{1,24}$")
+_DIALOG = re.compile(r"^[a-z\-]{1,32}$")
+
+
+def _clean_code(value: Any, pattern: re.Pattern = _CODE) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if pattern.match(value) else None
+
+
+class ScreenContext(BaseModel):
+    """What the operator has on screen. Identifiers only; each field is
+    sanitized to None rather than rejecting the turn, so a stale client can
+    never break chat. Names are resolved server-side."""
+
+    model_config = ConfigDict(extra="ignore")
+    view: Optional[str] = None
+    store: Optional[str] = None
+    style: Optional[str] = None
+    color: Optional[str] = None
+    option_row: Optional[int] = None
+    position: Optional[int] = None
+    dialog: Optional[str] = None
+    batch_styles: Optional[list[str]] = None
+
+    @field_validator("view", mode="before")
+    @classmethod
+    def _view(cls, value):
+        return _clean_code(value, _VIEW)
+
+    @field_validator("store", mode="before")
+    @classmethod
+    def _store(cls, value):
+        return _clean_code(value, _UI_STORE_CODE)
+
+    @field_validator("style", "color", mode="before")
+    @classmethod
+    def _code(cls, value):
+        return _clean_code(value)
+
+    @field_validator("dialog", mode="before")
+    @classmethod
+    def _dialog(cls, value):
+        return _clean_code(value, _DIALOG)
+
+    @field_validator("option_row", mode="before")
+    @classmethod
+    def _row(cls, value):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 1 <= value <= 999 else None
+
+    @field_validator("position", mode="before")
+    @classmethod
+    def _position(cls, value):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 1 <= value <= 3 else None
+
+    @field_validator("batch_styles", mode="before")
+    @classmethod
+    def _batch(cls, value):
+        if not isinstance(value, list):
+            return None
+        codes = [c for c in (_clean_code(v) for v in value[:50]) if c]
+        return codes or None
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     # strict=False on this field only: a session_id arrives as a JSON string,
@@ -73,6 +144,9 @@ class ChatRequest(BaseModel):
     # validated against a strict pattern and resolved to a display name
     # server-side, never echoed as free text into the prompt.
     store: Optional[str] = Field(default=None, max_length=40)
+    # The current screen (view, selections, open dialog). Sanitized field by
+    # field; see ScreenContext.
+    context: Optional[ScreenContext] = None
 
 
 class ApplyChangeSetRequest(BaseModel):
@@ -919,7 +993,46 @@ async def confirm_spreadsheet_mapping_route(
     return jsonable_encoder(_public_spreadsheet_result(result))
 
 
-_UI_STORE_CODE = re.compile(r"^S_[A-Za-z0-9_]{1,30}$")
+def _resolve_screen(body: "ChatRequest") -> Optional[dict]:
+    """Merge the legacy store field with the screen context and resolve names.
+    Returns None when nothing usable was sent."""
+    context = body.context or ScreenContext()
+    store = context.store or _clean_code(body.store, _UI_STORE_CODE)
+    screen: dict = {
+        "view": context.view,
+        "store": store,
+        "style": context.style,
+        "color": context.color,
+        "option_row": context.option_row,
+        "position": context.position,
+        "dialog": context.dialog,
+        "batch_styles": context.batch_styles,
+    }
+    if not any(v for v in screen.values()):
+        return None
+    if store:
+        _, screen["store_name"] = _resolve_ui_store(store)
+        if context.style:
+            try:
+                with database.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT max(name) AS name FROM woo.store_product_state "
+                        "WHERE fdm4_store = %s AND style_code = %s AND kind = 'parent'",
+                        (store, context.style),
+                    )
+                    row = cursor.fetchone()
+                    screen["style_name"] = (row or {}).get("name") or None
+                    if context.color:
+                        cursor.execute(
+                            "SELECT max(color) AS color FROM woo.store_product_state "
+                            "WHERE fdm4_store = %s AND style_code = %s AND color_code = %s",
+                            (store, context.style, context.color),
+                        )
+                        row = cursor.fetchone()
+                        screen["color_name"] = (row or {}).get("color") or None
+            except Exception:
+                logger.warning("agent: could not resolve screen names for %s/%s", store, context.style)
+    return screen
 
 
 def _resolve_ui_store(store: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -995,7 +1108,7 @@ async def chat_route(
         raise
 
     session_id = session["id"]
-    ui_store, ui_store_name = await _joinable_to_thread(_resolve_ui_store, body.store)
+    screen = await _joinable_to_thread(_resolve_screen, body)
     cleanup = _TurnCleanup(
         session_id,
         context.user_login,
@@ -1032,8 +1145,7 @@ async def chat_route(
                 replay,
                 settings,
                 session_id=session_id,
-                ui_store=ui_store,
-                ui_store_name=ui_store_name,
+                screen=screen,
             ).__aiter__()
             next_event = asyncio.create_task(iterator.__anext__())
             while True:

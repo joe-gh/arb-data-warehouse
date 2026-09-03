@@ -216,8 +216,7 @@ async def run_turn(
     session_id=None,
     dispatch: Optional[Callable] = None,
     client_factory: Callable[[Settings], Any] = _client_factory,
-    ui_store: Optional[str] = None,
-    ui_store_name: Optional[str] = None,
+    screen: Optional[dict] = None,
 ) -> AsyncIterator[dict]:
     """Stream one turn and return replay material only in the terminal event."""
 
@@ -238,8 +237,7 @@ async def run_turn(
     # operator has selected in the UI (validated; never free text).
     instructions = build_instructions(
         writes_enabled=writes_enabled,
-        store=ui_store,
-        store_name=ui_store_name,
+        screen=screen,
     )
     tools = agent_tool_schemas(writes_enabled=writes_enabled)
 

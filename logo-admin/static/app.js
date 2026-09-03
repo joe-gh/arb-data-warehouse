@@ -2693,9 +2693,11 @@
     try {
       const body = { message };
       if (assistantState.sessionId) body.session_id = assistantState.sessionId;
-      // The store selected in the header, so the assistant can answer "their
-      // sweatshirt" without asking which store. Validated server-side.
+      // What is on screen right now (identifiers only), so the assistant can
+      // answer "this store" / "this product" / "the row I have open" without
+      // asking. The server validates every field and resolves names itself.
       if (state.store) body.store = state.store;
+      body.context = assistantScreenContext();
       const response = await fetch("/api/agent/chat", {
         method: "POST",
         credentials: "same-origin",
@@ -3251,6 +3253,30 @@
     }
   }
 
+
+  // Identifiers describing the current screen for the assistant. Never free
+  // text: the server rejects anything that is not a known view, a store or
+  // style code, a colour code, a row/position number or a known dialog id.
+  function assistantScreenContext() {
+    const context = { view: document.body.dataset.view || "" };
+    let store = state.store || "";
+    if (context.view === "mix" && typeof mixState !== "undefined" && mixState.store) store = mixState.store;
+    if (store) context.store = store;
+    if (context.view === "logo") {
+      if (state.style) context.style = String(state.style);
+      if (state.editing) {
+        context.color = colorCode(state.editing.color);
+        context.option_row = Number(state.editing.optionRow ?? 1) || 1;
+        context.position = Number(state.editing.position) || 1;
+      }
+      if (typeof batchState !== "undefined" && batchState.selected && batchState.selected.size) {
+        context.batch_styles = [...batchState.selected].slice(0, 50).map(String);
+      }
+    }
+    const dialog = document.querySelector("dialog[open]");
+    if (dialog && dialog.id) context.dialog = dialog.id.replace(/-(dialog|panel)$/, "");
+    return context;
+  }
   function initAssistant() {
     const panel = $("#assistant-panel");
     const toggle = $("#assistant-toggle");

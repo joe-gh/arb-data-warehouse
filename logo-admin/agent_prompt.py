@@ -209,7 +209,84 @@ staged proposal has been applied.
 """
 
 _STORE_CODE = re.compile(r"^S_[A-Za-z0-9_]{1,30}$")
-_NAME_CLEAN = re.compile(r"[^A-Za-z0-9 &'.,/()-]")
+_CODE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+_NAME_CLEAN = re.compile(r"[^A-Za-z0-9 &'.,/()\-]")
+
+VIEW_LABELS = {
+    "dashboard": "Dashboard", "logo": "Logo Configuration", "names": "Logo Names",
+    "colors": "Logo Colors", "pricing": "Store Pricing Levels", "prices": "Price Rules",
+    "blocks": "Sync Blocks", "mix": "Product Mix", "stock": "Fake Inventory",
+    "categories": "Categories", "health": "Health", "help": "Help",
+}
+DIALOG_LABELS = {
+    "assignment": "the Add/edit logo form", "store-settings": "Store logo settings",
+    "bulk-apply": "Bulk apply a logo", "design-swap": "Replace a design",
+    "copy": "Copy style configuration", "copy-many": "Copy this style's logos to many styles",
+    "batch": "Select styles (batch)", "ownership": "Logo sync stores", "sync": "Sync results",
+    "audit": "Activity log", "reports": "Import punch list", "legacy": "Import legacy sheets",
+    "import": "Import results", "pr": "Edit price rule", "mix-style": "Edit product-mix style",
+    "confirm": "a confirmation prompt",
+}
+
+
+def _name(value) -> str:
+    return _NAME_CLEAN.sub("", str(value or "").strip())[:80]
+
+
+def _code(value, pattern: "re.Pattern" = _CODE) -> str:
+    value = str(value or "").strip()
+    return value if pattern.match(value) else ""
+
+
+def _labelled(name: str, code: str) -> str:
+    return f"{name} ({code})" if name else code
+
+
+def screen_context_block(screen: Optional[dict]) -> str:
+    """Render the operator's current screen as one trusted block.
+
+    Every identifier is re-validated here and names are stripped to plain
+    characters, so nothing the browser sends can carry instructions.
+    """
+    if not screen:
+        return ""
+    lines = []
+    view = _code(screen.get("view"), re.compile(r"^[a-z]{1,24}$"))
+    if view in VIEW_LABELS:
+        lines.append(f"Page: {VIEW_LABELS[view]}")
+    store = _code(screen.get("store"), _STORE_CODE)
+    if store:
+        lines.append(f"Store: {_labelled(_name(screen.get('store_name')), store)}")
+    style = _code(screen.get("style"))
+    if store and style:
+        lines.append(f"Product style: {_labelled(_name(screen.get('style_name')), style)}")
+        color = _code(screen.get("color"))
+        if color:
+            cell = f"Open logo cell: color {_labelled(_name(screen.get('color_name')), color)}"
+            try:
+                row = int(screen.get("option_row") or 0)
+                pos = int(screen.get("position") or 0)
+            except (TypeError, ValueError):
+                row = pos = 0
+            if 1 <= row <= 999 and 1 <= pos <= 3:
+                cell += f", row {row}, position {pos}"
+            lines.append(cell)
+        batch = [c for c in (_code(v) for v in (screen.get("batch_styles") or [])[:50]) if c]
+        if batch:
+            shown = ", ".join(batch[:12]) + (" ..." if len(batch) > 12 else "")
+            lines.append(f"Batch-selected styles ({len(batch)}): {shown}")
+    dialog = _code(screen.get("dialog"), re.compile(r"^[a-z\-]{1,32}$"))
+    if dialog in DIALOG_LABELS:
+        lines.append(f"Open dialog: {DIALOG_LABELS[dialog]}")
+    if not lines:
+        return ""
+    return (
+        "# Current screen\n"
+        + "\n".join(lines)
+        + "\nAssume the question is about what is on screen unless the person "
+          "names another store, product or page. Do not mention this screen "
+          "information unless it is relevant to the answer.\n"
+    )
 
 
 def ui_context_line(store: Optional[str], store_name: Optional[str] = None) -> str:
@@ -233,11 +310,14 @@ def ui_context_line(store: Optional[str], store_name: Optional[str] = None) -> s
 
 
 def build_instructions(
-    *, writes_enabled: bool, store: Optional[str] = None, store_name: Optional[str] = None
+    *, writes_enabled: bool, store: Optional[str] = None, store_name: Optional[str] = None,
+    screen: Optional[dict] = None,
 ) -> str:
     mode = WRITE_STAGING_MODE if writes_enabled else READ_ONLY_MODE
     parts = [KNOWLEDGE.strip(), mode.strip()]
-    context = ui_context_line(store, store_name)
+    if screen is None and store:
+        screen = {"store": store, "store_name": store_name}
+    context = screen_context_block(screen)
     if context:
         parts.append(context.strip())
     return "\n\n".join(parts) + "\n"
