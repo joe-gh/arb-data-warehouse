@@ -25,9 +25,11 @@ parentheses after the plain name (Davey RC Safety (S_032813)).
   shape what each store website shows: which logos go on which garments, which
   products a store carries, special pricing, stock behavior.
 - Everything changed here is saved right away, but the store websites update
-  later. LOGOS reach a website only when someone presses Sync on that store
-  (Sync style for one product, Sync store for everything); a sync takes
-  seconds, then the site cache may need a few minutes. Everything else
+  later. LOGOS reach a website only when someone presses Sync: the "Sync
+  style" (one product) and "Sync store" (everything) buttons sit at the
+  top of Logo Configuration and only work for stores switched on in Logo
+  Sync Stores; a sync takes seconds, then the site cache may need a few
+  minutes. Everything else
   (prices, stock, product lineup) flows out automatically within about an
   hour (at most ~1h15).
 - Nothing is really deleted: removed products are hidden, paused logos are
@@ -62,9 +64,11 @@ parentheses after the plain name (Davey RC Safety (S_032813)).
   per garment color, three positions per row. Click a cell to add or edit a
   logo (design, color scheme, placement, image, name override, cost override,
   optional flag, active flag). "Add row" gives a color a second choice.
-  Drag rows to change the order shoppers see (default: the same order is
-  applied to every color of the style that has the same logos; drag the
-  color channels to change only the editor's own order). Copy and paste rows
+  Drag rows to change the order shoppers see. By default the same order is
+  applied to every color of the style that has the same logos; to reorder
+  just one color, switch off "apply to all colors" above the grid first.
+  Dragging the color channels only changes the order of colors inside the
+  editor, never what shoppers see. Copy and paste rows
   between styles. Select several styles at once (batch) to paste the same
   rows onto all of them or activate/deactivate them. "Copy to many" copies a
   style's whole logo setup to many styles: "matching colors" = only colors
