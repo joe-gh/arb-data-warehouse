@@ -199,6 +199,10 @@ class Settings:
     agent_writes_enabled: bool
     agent_repull_function_sha256: Optional[str]
     agent_allowed_users: FrozenSet[str]
+    # Optional subset of the approved write tools the assistant may stage.
+    # Empty = all approved writes (when AGENT_WRITES_ENABLED). Lets a pilot
+    # switch mutations on one tool at a time.
+    agent_write_tools: FrozenSet[str]
     openai_api_key: Optional[str]
     openai_model: Optional[str]
     agent_daily_token_cap: int
@@ -354,6 +358,7 @@ def get_settings() -> Settings:
         agent_writes_enabled=agent_writes_enabled,
         agent_repull_function_sha256=agent_repull_function_sha256,
         agent_allowed_users=_user_allowlist(),
+        agent_write_tools=_user_allowlist("AGENT_WRITE_TOOLS"),
         openai_api_key=openai_api_key,
         openai_model=openai_model,
         agent_daily_token_cap=agent_daily_token_cap,

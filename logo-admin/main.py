@@ -19,7 +19,7 @@ from routes_agent import router as agent_router
 from routes_api import router as api_router
 from routes_feed import router as feed_router
 from routes_pages import router as pages_router
-from tool_registry import validate_registry
+from tool_registry import validate_registry, validate_write_tool_allowlist
 
 
 settings = get_settings()
@@ -103,6 +103,8 @@ def startup() -> None:
     validate_registry(
         writes_enabled=settings.agent_writes_enabled,
     )
+    # AGENT_WRITE_TOOLS may only name approved writes (fail closed at startup).
+    validate_write_tool_allowlist(getattr(settings, "agent_write_tools", None))
     settings.upload_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
     if settings.agent_writes_enabled:
         settings.agent_upload_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

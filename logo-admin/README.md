@@ -563,3 +563,12 @@ in the app header (`ChatRequest.store`, validated as an `S_…` code and resolve
 to its display name server-side) so follow-up questions keep their subject.
 Turn failures are logged at WARNING with their kind and detail; quota
 exhaustion surfaces to the user as a budget message instead of a generic error.
+
+### Enabling mutations one tool at a time
+
+`AGENT_WRITE_TOOLS` (comma-separated, optional) limits which approved write
+tools the assistant may stage while `AGENT_WRITES_ENABLED=true`. Empty means
+every approved write. Names must come from the approved write set (the service
+refuses to start otherwise). Reads are never affected. Pilot sequence: start
+with `AGENT_WRITE_TOOLS=save_assignment`, stage → review → apply → undo on a
+sandbox store, then widen the list one tool at a time.

@@ -763,20 +763,42 @@ def openai_schema(spec: ToolSpec) -> dict:
     }
 
 
-def agent_tool_schemas(writes_enabled: bool = False) -> list[dict]:
+def validate_write_tool_allowlist(write_tools) -> frozenset:
+    """AGENT_WRITE_TOOLS may only name approved writes; fail closed otherwise."""
+    names = frozenset(str(n).strip().lower() for n in (write_tools or ()) if str(n).strip())
+    unknown = names - APPROVED_AGENT_WRITE_NAMES
+    if unknown:
+        raise ToolRegistryError(
+            "AGENT_WRITE_TOOLS names tools that are not approved writes: "
+            + ", ".join(sorted(unknown))
+        )
+    return names
+
+
+def _write_allowed(spec: ToolSpec, write_tools) -> bool:
+    if spec.kind != "write":
+        return True
+    allowed = validate_write_tool_allowlist(write_tools)
+    return not allowed or spec.name in allowed
+
+
+def agent_tool_schemas(writes_enabled: bool = False, write_tools=None) -> list[dict]:
     validate_registry(TOOL_SPECS, writes_enabled=writes_enabled)
     return [
         openai_schema(spec)
         for spec in TOOL_SPECS
         if spec.agent_enabled
         and (spec.kind == "read" or writes_enabled)
+        and _write_allowed(spec, write_tools)
     ]
 
 
-def get_agent_tool(name: str, writes_enabled: bool = False) -> ToolSpec:
+def get_agent_tool(name: str, writes_enabled: bool = False, write_tools=None) -> ToolSpec:
     for spec in TOOL_SPECS:
         if spec.name == name and spec.agent_enabled:
             if spec.kind == "write" and not writes_enabled:
+                break
+            if not _write_allowed(spec, write_tools):
                 break
             return spec
     raise UnknownTool("Unknown or unavailable tool")
@@ -819,6 +841,7 @@ def execute_agent_tool(
     spec = get_agent_tool(
         name,
         writes_enabled=settings.agent_writes_enabled,
+        write_tools=getattr(settings, "agent_write_tools", None),
     )
     required_tier(name)
     command = spec.command_model.model_validate(arguments)

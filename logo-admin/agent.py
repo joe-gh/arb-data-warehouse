@@ -239,7 +239,10 @@ async def run_turn(
         writes_enabled=writes_enabled,
         screen=screen,
     )
-    tools = agent_tool_schemas(writes_enabled=writes_enabled)
+    tools = agent_tool_schemas(
+        writes_enabled=writes_enabled,
+        write_tools=getattr(settings, "agent_write_tools", None),
+    )
 
     async with (
         AsyncExitStack() as provider_resources,
