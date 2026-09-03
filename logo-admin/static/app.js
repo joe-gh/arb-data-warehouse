@@ -2565,6 +2565,8 @@
       });
       if (!assistantContextMatches(generation, expectedSessionId)) return;
       toast("The staged changes were applied.");
+      // The grid may be showing the very rows that just changed.
+      if (state.style) refreshStyle().catch(() => {});
       await loadChangeSet(elements, displayedChangeSet.id, "", generation, expectedSessionId);
     } catch (error) {
       if (error?.name === "AbortError" || !assistantContextMatches(generation, expectedSessionId)) return;
@@ -2612,6 +2614,7 @@
       });
       if (!assistantContextMatches(generation, expectedSessionId)) return;
       toast("The applied changes were undone.");
+      if (state.style) refreshStyle().catch(() => {});
       await loadChangeSet(elements, displayedChangeSet.id, "", generation, expectedSessionId);
     } catch (error) {
       if (error?.name === "AbortError" || !assistantContextMatches(generation, expectedSessionId)) return;
