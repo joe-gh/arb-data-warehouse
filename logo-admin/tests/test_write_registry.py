@@ -44,6 +44,8 @@ EXPECTED_SCOPES = {
     "remove_brand_stock_rule": frozenset({"brand_stock_rule_row"}),
     "set_sync_block": frozenset({"sync_exclusion_row"}),
     "remove_sync_block": frozenset({"sync_exclusion_row"}),
+    "set_logo_cost": frozenset({"assignment_style"}),
+    "set_store_extra_customers": frozenset({"store_settings_row"}),
 }
 
 

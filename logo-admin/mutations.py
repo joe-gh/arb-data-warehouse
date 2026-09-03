@@ -33,8 +33,10 @@ from commands import (
     SaveAssignmentCommand,
     SetBrandStockRuleCommand,
     SetColorClassCommand,
+    SetLogoCostCommand,
     SetLogoNameCommand,
     SetStockOverrideCommand,
+    SetStoreExtraCustomersCommand,
     SetStorePricingTierCommand,
     SetStyleActiveCommand,
     SetStylesActiveCommand,
@@ -101,6 +103,8 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "remove_brand_stock_rule": frozenset({"brand_stock_rule_row"}),
     "set_sync_block": frozenset({"sync_exclusion_row"}),
     "remove_sync_block": frozenset({"sync_exclusion_row"}),
+    "set_logo_cost": frozenset({"assignment_style"}),
+    "set_store_extra_customers": frozenset({"store_settings_row"}),
 }
 
 
@@ -555,6 +559,10 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = (MutationScope("brand_stock_rule_row", {"mill_code": _clean(command.mill_code, "mill_code", 32)}),)
     elif isinstance(command, (SetSyncBlockCommand, RemoveSyncBlockCommand)):
         scopes = _sync_block_scopes(command)
+    elif isinstance(command, SetLogoCostCommand):
+        scopes = _style_scopes(command.store, command.styles)
+    elif isinstance(command, SetStoreExtraCustomersCommand):
+        scopes = (MutationScope("store_settings_row", {"fdm4_store": command.store.strip()}),)
     elif isinstance(command, UpdateStoreSettingsCommand):
         scopes = (
             MutationScope(
@@ -1368,6 +1376,96 @@ def remove_sync_block(cursor, actor: str, command: RemoveSyncBlockCommand) -> Mu
     )
 
 
+MAX_EXTRA_CUSTOMERS = 20
+
+
+def set_logo_cost(cursor, actor: str, command: SetLogoCostCommand) -> MutationResult:
+    """One shopper charge for every row of a logo (design, optionally one
+    scheme) on the named styles of a store; null clears the override so the
+    logo's default cost applies. Rows are updated in place - nothing else on
+    them changes."""
+    store = _clean(command.store, "store")
+    design = _clean(command.design_id, "design_id")
+    scheme = (
+        _upper(command.color_scheme_id, "color_scheme_id")
+        if command.color_scheme_id not in (None, "") else None
+    )
+    styles = _clean_styles(command.styles, "styles")
+    cost = _decimal(command.cost_override)
+    if cost is not None and cost < 0:
+        raise InvalidCommand("cost_override must be zero or positive")
+    _bounded_assignment_count(
+        cursor,
+        "fdm4_store = %s AND product_style = ANY(%s)",
+        (store, styles),
+        label="Logo cost change",
+    )
+    cursor.execute(
+        """
+        UPDATE logo.assignment
+           SET cost_override = %s, updated_by = %s, updated_at = now()
+         WHERE fdm4_store = %s AND product_style = ANY(%s)
+           AND btrim(design_id) = %s
+           AND (%s::text IS NULL OR upper(btrim(color_scheme_id)) = %s)
+           AND cost_override IS DISTINCT FROM %s
+        """,
+        (cost, actor, store, styles, design, scheme, scheme, cost),
+    )
+    changed = cursor.rowcount
+    cursor.execute(
+        """
+        SELECT count(*) AS n FROM logo.assignment
+         WHERE fdm4_store = %s AND product_style = ANY(%s) AND btrim(design_id) = %s
+           AND (%s::text IS NULL OR upper(btrim(color_scheme_id)) = %s)
+        """,
+        (store, styles, design, scheme, scheme),
+    )
+    matching = int(cursor.fetchone()["n"])
+    if matching == 0:
+        raise NotFound("None of those styles carry that logo in this store")
+    return MutationResult(
+        {"ok": True, "store": store, "design_id": design, "color_scheme_id": scheme,
+         "cost_override": None if cost is None else str(cost),
+         "matching_rows": matching, "updated": changed, "already_set": matching - changed},
+        affected_scopes(command),
+    )
+
+
+def set_store_extra_customers(cursor, actor: str, command: SetStoreExtraCustomersCommand) -> MutationResult:
+    """Which other FDM4 customers' designs a store may use (logo.store_settings
+    .extra_customers). Replaces the list; the row is created with default
+    switches when the store has none yet."""
+    store = _clean(command.store, "store")
+    if _catalog_for_store(cursor, store) is None:
+        raise NotFound("Store not found")
+    customers: list = []
+    for value in command.customers or ():
+        code = _clean(value, "customers", 32)
+        if code not in customers:
+            customers.append(code)
+    if len(customers) > MAX_EXTRA_CUSTOMERS:
+        raise InvalidCommand(f"at most {MAX_EXTRA_CUSTOMERS} extra customers")
+    for code in customers:
+        cursor.execute(
+            "SELECT 1 FROM fdm4.dec_design WHERE btrim(cust_number) = %s LIMIT 1", (code,),
+        )
+        if cursor.fetchone() is None:
+            raise NotFound(f"No FDM4 designs are on file for customer {code}")
+    cursor.execute(
+        """
+        INSERT INTO logo.store_settings (fdm4_store, enabled, allows_none, extra_customers, updated_by, updated_at)
+        VALUES (%s, true, false, %s, %s, now())
+        ON CONFLICT (fdm4_store) DO UPDATE SET
+            extra_customers = EXCLUDED.extra_customers,
+            updated_by = EXCLUDED.updated_by, updated_at = now()
+        RETURNING fdm4_store, enabled, allows_none, extra_customers
+        """,
+        (store, customers, actor),
+    )
+    result = dict(cursor.fetchone())
+    return MutationResult({"ok": True, "settings": result}, affected_scopes(command))
+
+
 MUTATION_HANDLERS: Dict[str, Callable] = {
     "save_assignment": save_assignment,
     "deactivate_assignment": deactivate_assignment,
@@ -1394,6 +1492,8 @@ MUTATION_HANDLERS: Dict[str, Callable] = {
     "remove_brand_stock_rule": remove_brand_stock_rule,
     "set_sync_block": set_sync_block,
     "remove_sync_block": remove_sync_block,
+    "set_logo_cost": set_logo_cost,
+    "set_store_extra_customers": set_store_extra_customers,
 }
 
 

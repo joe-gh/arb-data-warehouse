@@ -2336,6 +2336,8 @@
     remove_brand_stock_rule: "Remove a brand's stock rule",
     set_sync_block: "Freeze the hourly update",
     remove_sync_block: "Unfreeze the hourly update",
+    set_logo_cost: "Change a logo's price across styles",
+    set_store_extra_customers: "Change which customers' designs a store may use",
   };
   const REVIEW_TABLE_LABELS = {
     "logo.display_name": (key) => `logo name · design ${key[0]} · ${key[1]} · ${key[2] ? `store ${key[2]}` : "shared default"}`,
@@ -2365,6 +2367,7 @@
     name: "name", light_dark: "light/dark class", mode: "stock mode", scope: "freeze scope",
     locked: "locked", source: "source", uses: "uses", brand_name: "brand", confidence: "confidence",
     color_name: "color name", fdm4_description: "FDM4 description", style_code: "style", mill_code: "mill code",
+    extra_customers: "extra customers", enabled: "logos enabled",
   };
   function reviewStyleLabel(code) {
     const wanted = text(code).trim();
@@ -2432,6 +2435,8 @@
         const what = styles.length ? `${styles.length} style${styles.length === 1 ? "" : "s"} in store ${a.store}: ${styles.slice(0, 12).join(", ")}${styles.length > 12 ? ` and ${styles.length - 12} more` : ""}` : `the whole store ${a.store}${a.scope === "pricing" ? " (prices only; creates, stock and status still run)" : " (the hourly update skips it entirely)"}`;
         return `Freeze the hourly product update for ${what}${a.active === false ? " (saved switched off)" : ""}${a.note ? ` — note: ${a.note}` : ""}.`;
       }
+      case "set_logo_cost": return `${a.cost_override === null || a.cost_override === undefined ? "Remove the store's price override for" : `Charge ${reviewCost(a.cost_override)} for`} logo design ${a.design_id}${a.color_scheme_id ? ` (scheme ${a.color_scheme_id})` : " (every scheme)"} on ${reviewStyleList(a.styles)} in store ${store}. Only the price changes.`;
+      case "set_store_extra_customers": { const list = Array.isArray(a.customers) ? a.customers.filter(Boolean) : []; return `Store ${store} may use designs from ${list.length ? `these FDM4 customers: ${list.join(", ")}` : "no other FDM4 customer"} besides its own.`; }
       case "remove_sync_block": {
         const styles = Array.isArray(a.styles) ? a.styles.filter(Boolean) : [];
         return `Unfreeze ${styles.length ? `${styles.length} style${styles.length === 1 ? "" : "s"} in store ${a.store}: ${styles.slice(0, 12).join(", ")}` : `the whole store ${a.store}`}; the hourly update runs for ${styles.length ? "them" : "it"} again.`;

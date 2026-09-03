@@ -59,6 +59,7 @@ from domain import Conflict, InvalidCommand, NotFound
 import legacy_import as legacy
 import mutations
 import queries as read_queries
+import wp_bridge
 from snapshots import lock_scopes
 
 
@@ -1405,27 +1406,10 @@ def product_link(
     user: Dict[str, str] = Depends(require_user),
 ):
     """The WordPress front-end/admin URLs for a style's product, looked up on
-    the configured sync target (dev now, prod after cutover). Soft-fails so a
-    WordPress hiccup never breaks the editor."""
+    the configured sync target. Soft-fails so a WordPress hiccup never breaks
+    the editor. Shared with MCP and the assistant via wp_bridge."""
     del user
-    settings = get_settings()
-    base = settings.wp_sync_url.rsplit("/sync", 1)[0]
-    query = urlencode({"fdm4_store": _clean(store, "store"), "style": _clean(style, "style")})
-    try:
-        result = wordpress_json_request(
-            f"{base}/product-link?{query}",
-            settings.wp_sync_user,
-            settings.wp_sync_app_password,
-            method="GET",
-            timeout=min(settings.wp_http_timeout, 10),
-        )
-    except WordPressRequestError:
-        return {"ok": False, "view_url": "", "edit_url": ""}
-    return {
-        "ok": bool(result.get("ok")),
-        "view_url": str(result.get("view_url") or ""),
-        "edit_url": str(result.get("edit_url") or ""),
-    }
+    return wp_bridge.product_link(_clean(store, "store"), _clean(style, "style"))
 
 
 # ---- Logo sync ownership -------------------------------------------------
@@ -1445,17 +1429,7 @@ class OwnershipBody(BaseModel):
     acknowledge_missing: int = Field(0, ge=0, le=100000)
 
 
-def _wp_admin_call(path: str, *, method: str = "GET", payload: Optional[dict] = None, timeout: Optional[int] = None) -> dict:
-    settings = get_settings()
-    base = settings.wp_sync_url.rsplit("/sync", 1)[0]
-    return wordpress_json_request(
-        f"{base}{path}",
-        settings.wp_sync_user,
-        settings.wp_sync_app_password,
-        method=method,
-        timeout=timeout or settings.wp_http_timeout,
-        payload=payload,
-    )
+_wp_admin_call = wp_bridge.wp_admin_call
 
 
 def _warehouse_logo_styles(store: str) -> set:

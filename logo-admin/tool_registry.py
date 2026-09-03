@@ -33,8 +33,10 @@ from commands import (
     SaveAssignmentCommand,
     SetBrandStockRuleCommand,
     SetColorClassCommand,
+    SetLogoCostCommand,
     SetLogoNameCommand,
     SetStockOverrideCommand,
+    SetStoreExtraCustomersCommand,
     SetStorePricingTierCommand,
     SetStyleActiveCommand,
     SetStylesActiveCommand,
@@ -52,8 +54,10 @@ from read_commands import (
     GetAuditLogCommand,
     GetDesignCommand,
     GetImportReportCommand,
+    GetProductLinkCommand,
     GetProductMixCommand,
     GetStockRulesCommand,
+    GetSyncStatusCommand,
     GetStoreSettingsCommand,
     GetStyleCommand,
     ListColorsCommand,
@@ -69,6 +73,7 @@ from read_commands import (
     StoreLogoCoverageCommand,
 )
 import staging
+import wp_bridge
 
 
 ToolKind = Literal["read", "write"]
@@ -134,6 +139,8 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
     "remove_brand_stock_rule",
     "set_sync_block",
     "remove_sync_block",
+    "set_logo_cost",
+    "set_store_extra_customers",
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
@@ -157,12 +164,16 @@ APPROVED_AGENT_READ_NAMES = frozenset({
     "list_sync_blocks",
     "get_product_mix",
     "list_design_usage",
+    "get_product_link",
+    "get_sync_status",
 })
 
+# Never model-callable: file exports/imports, uploads, and anything that
+# writes across the WordPress boundary. (get_product_link is a read-only,
+# soft-failing WordPress GET shared through wp_bridge, so it is allowed.)
 EXCLUDED_AGENT_TOOLS = frozenset({
     "export_assignments_csv",
     "export_audit_log_csv",
-    "get_product_link",
     "sync_to_wordpress",
     "upload_image",
     "import_assignments_csv",
@@ -282,6 +293,21 @@ def _list_design_usage(cursor, command, settings):
     return queries.list_design_usage(cursor, **_model_arguments(command))
 
 
+def _get_product_link(cursor, command, settings):
+    del cursor, settings
+    args = _model_arguments(command)
+    return wp_bridge.product_link(str(args["store"]).strip(), str(args["style"]).strip())
+
+
+def _get_sync_status(cursor, command, settings):
+    del settings
+    args = _model_arguments(command)
+    result = queries.get_sync_status(cursor, **args)
+    if result.get("store"):
+        result["logo_sync_ownership"] = wp_bridge.store_ownership(result["store"])
+    return result
+
+
 CANONICAL_AGENT_READ_CONTRACTS = {
     "list_stores": (ListStoresCommand, _list_stores),
     "list_styles": (ListStylesCommand, _list_styles),
@@ -309,6 +335,8 @@ CANONICAL_AGENT_READ_CONTRACTS = {
     "list_sync_blocks": (ListSyncBlocksCommand, _list_sync_blocks),
     "get_product_mix": (GetProductMixCommand, _get_product_mix),
     "list_design_usage": (ListDesignUsageCommand, _list_design_usage),
+    "get_product_link": (GetProductLinkCommand, _get_product_link),
+    "get_sync_status": (GetSyncStatusCommand, _get_sync_status),
 }
 
 
@@ -441,6 +469,12 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
         ),
         "remove_sync_block": _canonical_write_contract(
             RemoveSyncBlockCommand, mutations.remove_sync_block, "sync_exclusion_row",
+        ),
+        "set_logo_cost": _canonical_write_contract(
+            SetLogoCostCommand, mutations.set_logo_cost, "assignment_style",
+        ),
+        "set_store_extra_customers": _canonical_write_contract(
+            SetStoreExtraCustomersCommand, mutations.set_store_extra_customers, "store_settings_row",
         ),
     })
 )
@@ -607,6 +641,18 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ListDesignUsageCommand,
         _list_design_usage,
     ),
+    _read_spec(
+        "get_product_link",
+        "The website links for a style's product in a store: the shopper-facing page (view_url) and the WordPress edit screen (edit_url). ok=false means the store has no live product for that style or WordPress did not answer.",
+        GetProductLinkCommand,
+        _get_product_link,
+    ),
+    _read_spec(
+        "get_sync_status",
+        "Whether the sync pipeline is running and when it last ran: the latest FDM4 warehouse pull and the latest WooCommerce reconcile per environment with status, timing and errors, plus 24-hour success/failure counts. With a store: whether the app owns that store's logo sync (logo_sync_ownership.owned), its recent sync/ownership events, active freezes, logos-enabled switch and the time of its last logo edit. Use it for 'did the sync run?' and 'why isn't this on the site?'.",
+        GetSyncStatusCommand,
+        _get_sync_status,
+    ),
     _write_spec(
         "save_assignment",
         "Stage adding or updating one logo row (store, style, color, option row, position). Validated against FDM4 designs; the person confirms the review card before anything changes.",
@@ -756,6 +802,18 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Remove a store's whole-store freeze or the freezes on named styles so the hourly update runs for them again. Stages a proposal; the person confirms.",
         RemoveSyncBlockCommand,
         mutations.remove_sync_block,
+    ),
+    _write_spec(
+        "set_logo_cost",
+        "Set one shopper charge for a logo (design, optionally one color scheme) on every row of the named styles in a store, or clear the store's override (null) so the logo's default cost applies. Rows are updated in place; nothing else about them changes. Get the styles from list_design_usage; max 50 per call. Stages a proposal; the person confirms.",
+        SetLogoCostCommand,
+        mutations.set_logo_cost,
+    ),
+    _write_spec(
+        "set_store_extra_customers",
+        "Replace the list of other FDM4 customer numbers whose designs a store may use (why a save can be refused as 'belongs to a different customer'). Empty list = only the store's own customer. Stages a proposal; the person confirms.",
+        SetStoreExtraCustomersCommand,
+        mutations.set_store_extra_customers,
     ),
 )
 

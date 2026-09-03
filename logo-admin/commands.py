@@ -212,6 +212,19 @@ class RemoveSyncBlockCommand(Command):
     styles: List[str] = Field(default=[], max_length=50, description="Style codes whose freezes are removed; empty list = remove the whole-store freeze.")
 
 
+class SetLogoCostCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id of the logo whose price changes (get_style / list_design_usage show it).")
+    color_scheme_id: Optional[str] = Field(default=None, max_length=100, description="Only rows with this color scheme; null = every scheme of the design.")
+    cost_override: Optional[Decimal] = Field(default=None, description="Shopper charge in dollars for every matching row; 0 makes the logo free; null removes the store's override so the logo's default cost applies again.")
+    styles: List[str] = Field(min_length=1, max_length=50, description="Styles whose rows change; get them from list_design_usage. " + STYLE_LIST_DESC)
+
+
+class SetStoreExtraCustomersCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    customers: List[str] = Field(default=[], max_length=20, description="FDM4 customer numbers (e.g. 002165) whose designs this store may also use, replacing the current list; empty list = none besides the store's own customer.")
+
+
 MutationCommand = Union[
     SaveAssignmentCommand,
     DeactivateAssignmentCommand,
@@ -238,6 +251,8 @@ MutationCommand = Union[
     RemoveBrandStockRuleCommand,
     SetSyncBlockCommand,
     RemoveSyncBlockCommand,
+    SetLogoCostCommand,
+    SetStoreExtraCustomersCommand,
 ]
 
 
@@ -267,6 +282,8 @@ COMMAND_MODELS: Dict[str, Type[Command]] = {
     "remove_brand_stock_rule": RemoveBrandStockRuleCommand,
     "set_sync_block": SetSyncBlockCommand,
     "remove_sync_block": RemoveSyncBlockCommand,
+    "set_logo_cost": SetLogoCostCommand,
+    "set_store_extra_customers": SetStoreExtraCustomersCommand,
 }
 
 HARD_DELETE_TOOLS = frozenset({

@@ -1878,3 +1878,94 @@ def list_design_usage(cursor, *, store: str, design_id: str,
         "truncated": truncated or byte_truncated,
         "truncation": {"rows": truncated, "bytes": byte_truncated},
     }
+
+
+SYNC_STATUS_EVENT_LIMIT = 8
+
+
+def get_sync_status(cursor, *, store: Optional[str] = None) -> dict:
+    """Is the pipeline running and when did it last run: the latest FDM4 pull,
+    the latest WooCommerce reconcile per environment, 24-hour counts; with a
+    store, its logo-sync events, active freezes and the last logo edit.
+    (Logo-sync ownership lives in WordPress; the caller adds it.)"""
+    store = _clean(store, "store").upper() if store else None
+    cursor.execute(
+        """
+        SELECT op, env, status, requested_by, requested_at, started_at, finished_at,
+               EXTRACT(EPOCH FROM (finished_at - started_at))::int AS duration_s,
+               rows_loaded, left(COALESCE(note, ''), 200) AS note,
+               left(COALESCE(error, ''), 400) AS error
+          FROM (
+              SELECT *, row_number() OVER (PARTITION BY op, env ORDER BY id DESC) AS rn
+                FROM woo.sync_control
+          ) latest
+         WHERE rn = 1
+         ORDER BY op, env
+         LIMIT 20
+        """
+    )
+    latest = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT op,
+               count(*) FILTER (WHERE status = 'success') AS ok_24h,
+               count(*) FILTER (WHERE status NOT IN ('success', 'running', 'requested')) AS failed_24h,
+               max(finished_at) FILTER (WHERE status = 'success') AS last_success_at
+          FROM woo.sync_control
+         WHERE requested_at > now() - interval '24 hours'
+         GROUP BY op
+         ORDER BY op
+        """
+    )
+    day = [dict(r) for r in cursor.fetchall()]
+    out: dict = {"pipeline": {"latest": latest, "last_24h": day}, "store": store}
+    if store is None:
+        return out
+    cursor.execute(
+        """
+        SELECT at, actor, action, left(COALESCE(detail::text, ''), 300) AS detail
+          FROM logo.audit_log
+         WHERE fdm4_store = %s
+           AND action IN ('sync_requested', 'sync_succeeded', 'sync_failed',
+                          'ownership_enabled', 'ownership_disabled')
+         ORDER BY id DESC
+         LIMIT %s
+        """,
+        (store, SYNC_STATUS_EVENT_LIMIT),
+    )
+    events = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT style_code, scope, note, updated_at
+          FROM woo.sync_exclusion
+         WHERE fdm4_store = %s AND active
+         ORDER BY style_code
+         LIMIT 100
+        """,
+        (store,),
+    )
+    freezes = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT max(updated_at) AS last_logo_change,
+               count(*) FILTER (WHERE active) AS active_logo_rows
+          FROM logo.assignment
+         WHERE fdm4_store = %s
+        """,
+        (store,),
+    )
+    logos = dict(cursor.fetchone())
+    cursor.execute(
+        "SELECT enabled, allows_none FROM logo.store_settings WHERE fdm4_store = %s",
+        (store,),
+    )
+    settings_row = cursor.fetchone()
+    out["store_status"] = {
+        "logo_sync_events": events,
+        "freezes": freezes,
+        "whole_store_frozen": any(f["style_code"] == "" for f in freezes),
+        "last_logo_change": logos["last_logo_change"],
+        "active_logo_rows": int(logos["active_logo_rows"] or 0),
+        "logos_enabled": bool(settings_row["enabled"]) if settings_row else True,
+    }
+    return out
