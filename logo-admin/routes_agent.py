@@ -27,6 +27,11 @@ import agent_repository
 from authorization import AccessContext, require_agent_access
 from config import get_settings
 from db import database
+import re
+import logging
+import queries
+
+logger = logging.getLogger("arb_logo_admin.agent")
 from domain import (
     Conflict,
     DomainError,
@@ -64,6 +69,10 @@ class ChatRequest(BaseModel):
     # string to coerce to UUID while keeping strict validation for message.
     session_id: Optional[uuid.UUID] = Field(default=None, strict=False)
     message: str = Field(min_length=1)
+    # The store selected in the app header (S_xxxx). Optional context only;
+    # validated against a strict pattern and resolved to a display name
+    # server-side, never echoed as free text into the prompt.
+    store: Optional[str] = Field(default=None, max_length=40)
 
 
 class ApplyChangeSetRequest(BaseModel):
@@ -910,6 +919,29 @@ async def confirm_spreadsheet_mapping_route(
     return jsonable_encoder(_public_spreadsheet_result(result))
 
 
+_UI_STORE_CODE = re.compile(r"^S_[A-Za-z0-9_]{1,30}$")
+
+
+def _resolve_ui_store(store: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Validate the UI's selected store and look up its display name.
+
+    Anything that is not a well-formed store code is dropped. A lookup
+    failure never blocks the turn - the code alone is still useful."""
+    code = (store or "").strip()
+    if not code or not _UI_STORE_CODE.match(code):
+        return None, None
+    try:
+        with database.cursor() as cursor:
+            listing = queries.list_stores(cursor)
+        rows = listing.get("stores") if isinstance(listing, dict) else listing
+        for row in rows or []:
+            if str(row.get("fdm4_store") or row.get("code") or "") == code:
+                return code, str(row.get("display_name") or "")
+    except Exception:
+        logger.warning("agent: could not resolve UI store %s", code)
+    return code, None
+
+
 @router.post("/chat")
 async def chat_route(
     body: ChatRequest,
@@ -963,6 +995,7 @@ async def chat_route(
         raise
 
     session_id = session["id"]
+    ui_store, ui_store_name = await _joinable_to_thread(_resolve_ui_store, body.store)
     cleanup = _TurnCleanup(
         session_id,
         context.user_login,
@@ -999,6 +1032,8 @@ async def chat_route(
                 replay,
                 settings,
                 session_id=session_id,
+                ui_store=ui_store,
+                ui_store_name=ui_store_name,
             ).__aiter__()
             next_event = asyncio.create_task(iterator.__anext__())
             while True:
@@ -1106,7 +1141,12 @@ async def chat_route(
                 "session_id": str(session_id),
                 "turn_id": str(turn_id),
             })
-        except (QuotaExceeded, AgentError, TimeoutError):
+        except (QuotaExceeded, AgentError, TimeoutError) as exc:
+            failure_kind = type(exc).__name__
+            logger.warning(
+                "agent turn failed: session=%s turn=%s user=%s kind=%s detail=%s",
+                session_id, turn_id, context.user_login, failure_kind, str(exc)[:300],
+            )
             if not finished:
                 await _joinable_to_thread(
                     _finish_turn,
@@ -1124,14 +1164,23 @@ async def chat_route(
                 turn_id=turn_id,
                 user_login=context.user_login,
                 status="failed",
+                kind=failure_kind,
             )
             yield sse({
                 "type": "error",
-                "message": "The assistant could not complete that request.",
+                "message": (
+                    "The assistant's usage budget is used up for now; try again later."
+                    if isinstance(exc, QuotaExceeded)
+                    else "The assistant could not complete that request."
+                ),
                 "session_id": str(session_id),
                 "turn_id": str(turn_id),
             })
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "agent turn crashed: session=%s turn=%s user=%s kind=%s",
+                session_id, turn_id, context.user_login, type(exc).__name__,
+            )
             if not finished:
                 await _joinable_to_thread(
                     _finish_turn,

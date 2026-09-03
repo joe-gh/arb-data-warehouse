@@ -2693,6 +2693,9 @@
     try {
       const body = { message };
       if (assistantState.sessionId) body.session_id = assistantState.sessionId;
+      // The store selected in the header, so the assistant can answer "their
+      // sweatshirt" without asking which store. Validated server-side.
+      if (state.store) body.store = state.store;
       const response = await fetch("/api/agent/chat", {
         method: "POST",
         credentials: "same-origin",

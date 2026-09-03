@@ -550,3 +550,16 @@ Delivery telemetry lands on `woo.feed_consumer`
   delete cannot retain the deleted row's audit fields.
 - Import failures are retained in `logo.import_report` and shown in the app.
 - The application has no frontend build step and no CDN runtime dependency.
+
+## Assistant prompt
+
+The in-app assistant's system prompt lives in `agent_prompt.py`: one shared
+knowledge base (what every page does, vocabulary, logo pricing, sync timing,
+how to use each read tool, answer style) plus a mode section (read-only pilot
+vs staged writes). Keep it in step with the Help view and the tool registry;
+`tests/test_agent_prompt.py` fails when a feature or read tool goes unmentioned.
+Each chat turn also carries one trusted context line naming the store selected
+in the app header (`ChatRequest.store`, validated as an `S_…` code and resolved
+to its display name server-side) so follow-up questions keep their subject.
+Turn failures are logged at WARNING with their kind and detail; quota
+exhaustion surfaces to the user as a budget message instead of a generic error.
