@@ -423,14 +423,15 @@
   }
 
   function storeInputLabel(store) {
-    return `${storeDisplay(store)} - ${storeMeta(store)}`;
+    // One label shape everywhere a store is picked: "Name (S_code)".
+    return `${storeDisplay(store)} (${storeCode(store)})`;
   }
 
   function renderStoreOptions(query = "") {
     const q = query.trim().toLowerCase();
     const matches = state.stores.filter((store) => {
       if (!q) return true;
-      return storeDisplay(store).toLowerCase().includes(q) || storeCode(store).toLowerCase().includes(q);
+      return storeDisplay(store).toLowerCase().includes(q) || storeCode(store).toLowerCase().includes(q) || storeInputLabel(store).toLowerCase().includes(q);
     });
     els.storeOptions.replaceChildren();
     if (!matches.length) {
@@ -500,7 +501,9 @@
       if (allLabel && (!q || allLabel.toLowerCase().includes(q))) {
         appendOption(optionsEl, { title: allLabel, subtitle: "", meta: "", onSelect: () => pick("", "") });
       }
-      const matches = (state.stores || []).filter((s) => !q || storeDisplay(s).toLowerCase().includes(q) || storeMeta(s).toLowerCase().includes(q));
+      // Also match the picked label itself ("Name (S_code)") so re-focusing a
+      // filled field never shows "No matching stores".
+      const matches = (state.stores || []).filter((s) => !q || storeDisplay(s).toLowerCase().includes(q) || storeMeta(s).toLowerCase().includes(q) || `${storeDisplay(s)} (${storeCode(s)})`.toLowerCase().includes(q));
       if (!matches.length && !allLabel) { showEmptyOption(optionsEl, "No matching stores"); }
       matches.forEach((s) => appendOption(optionsEl, {
         title: storeDisplay(s), subtitle: storeMeta(s), meta: "",
@@ -1861,6 +1864,26 @@
     return parts.join(" · ") || "-";
   }
 
+  const AUDIT_ACTOR_SOURCES = {
+    "agent": "assistant",
+    "agent-undo": "assistant undo",
+    "agent-preview": "assistant preview",
+    "agent-quota": "assistant quota",
+    "agent-spreadsheet-upload": "assistant spreadsheet",
+    "mcp": "MCP",
+    "cli": "command line",
+  };
+
+  function auditActorHtml(actor) {
+    // Actors are "login" for people and "source:login" for automation acting
+    // on someone's behalf; show the person first and the channel underneath.
+    const raw = text(actor);
+    const match = raw.match(/^([a-z][a-z0-9-]*):(.+)$/i);
+    if (!match) return escapeHtml(raw || "-");
+    const source = AUDIT_ACTOR_SOURCES[match[1].toLowerCase()] || match[1].replace(/-/g, " ");
+    return `${escapeHtml(match[2])}<br><small class="muted">via ${escapeHtml(source)}</small>`;
+  }
+
   function populateAuditStores() {
     // Combobox attach happens once in populateReportStores(); the options list
     // reads state.stores live, so no repopulation is needed here.
@@ -1896,7 +1919,7 @@
       els.auditMore.hidden = !state.audit.beforeId;
       const rowsHtml = entries.map((entry) => `<tr>
         <td>${escapeHtml(formatDate(entry.at))}</td>
-        <td>${escapeHtml(entry.actor)}</td>
+        <td>${auditActorHtml(entry.actor)}</td>
         <td>${escapeHtml(AUDIT_ACTION_LABELS[entry.action] || entry.action)}</td>
         <td><strong>${escapeHtml(entry.fdm4_store || "-")}</strong>${entry.product_style ? `<br><code>${escapeHtml(entry.product_style)}</code>` : ""}</td>
         <td>${escapeHtml(auditTarget(entry))}</td>
@@ -5349,15 +5372,72 @@
   const catRunState = { preview: null, runs: [], activeTimer: null, freeze: null, openRuns: new Set() };
 
   async function loadCatPreviewTab() {
+    renderCatScopeNote();
     const box = $("#cat-preview-result");
     if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
   }
 
-  function catScopeBlogIds() {
+  function catScopeCandidates() {
+    // Everything we know a blog by: WP blog list, snapshots, and the store
+    // list (code + display name) - so operators can type what they think in.
+    const list = new Map();
+    catState.blogs.forEach((b) => list.set(Number(b.blog_id), { blog_id: Number(b.blog_id), name: decodeEntities(b.name || ""), path: b.path || "", store: "" }));
+    catState.snapshots.forEach((s) => {
+      if (!list.has(Number(s.blog_id))) list.set(Number(s.blog_id), { blog_id: Number(s.blog_id), name: "", path: s.blog_path || "", store: "" });
+    });
+    (state.stores || []).forEach((s) => {
+      const id = Number(s.blog_id);
+      if (!id) return;
+      const entry = list.get(id) || { blog_id: id, name: "", path: s.blog_path || "", store: "" };
+      entry.store = storeCode(s);
+      if (!entry.name) entry.name = storeDisplay(s);
+      if (!entry.path) entry.path = s.blog_path || "";
+      list.set(id, entry);
+    });
+    return [...list.values()];
+  }
+
+  function catScopeResolve() {
     const raw = ($("#cat-scope-blogs") ? $("#cat-scope-blogs").value : "").trim();
-    if (!raw) return null;
-    const ids = [...new Set(raw.split(/[\s,]+/).map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0))];
-    return ids.length ? ids : null;
+    if (!raw) return { ids: null, labels: [], unresolved: [] };
+    const candidates = catScopeCandidates();
+    const norm = (value) => String(value || "").trim().toLowerCase().replace(/^\/+|\/+$/g, "");
+    const ids = new Set();
+    const labels = [];
+    const unresolved = [];
+    raw.split(/[,;\n]+/).map((token) => token.trim()).filter(Boolean).forEach((token) => {
+      let hit = null;
+      if (/^\d+$/.test(token)) {
+        hit = candidates.find((c) => c.blog_id === Number(token)) || { blog_id: Number(token), name: "", path: "", store: "" };
+      } else {
+        const key = norm(token);
+        hit = candidates.find((c) => norm(c.store) === key || norm(c.path) === key || norm(c.name) === key) || null;
+        if (!hit) {
+          const partial = candidates.filter((c) => norm(c.name).includes(key) || norm(c.path).includes(key));
+          if (partial.length === 1) hit = partial[0];
+          else if (partial.length > 1) { unresolved.push(`${token} (ambiguous: ${partial.slice(0, 3).map((c) => c.name || c.path).join(", ")})`); return; }
+        }
+      }
+      if (!hit) { unresolved.push(token); return; }
+      if (ids.has(hit.blog_id)) return;
+      ids.add(hit.blog_id);
+      labels.push({ id: hit.blog_id, label: `${hit.blog_id} ${hit.name || hit.path || hit.store || ""}`.trim() });
+    });
+    labels.sort((a, b) => a.id - b.id);
+    return { ids: ids.size ? [...ids].sort((a, b) => a - b) : null, labels: labels.map((entry) => entry.label), unresolved };
+  }
+
+  function catScopeBlogIds() {
+    return catScopeResolve().ids;
+  }
+
+  function renderCatScopeNote() {
+    const note = $("#cat-scope-note");
+    if (!note) return;
+    const { ids, labels, unresolved } = catScopeResolve();
+    note.classList.toggle("is-error", unresolved.length > 0);
+    if (!ids && !unresolved.length) { note.textContent = "Scope: every snapshotted blog."; return; }
+    note.textContent = `${ids ? `Scope: ${ids.length} blog${ids.length === 1 ? "" : "s"} - ${labels.join(", ")}` : "Scope: no blogs matched"}${unresolved.length ? ` · not found: ${unresolved.join(", ")}` : ""}`;
   }
 
   function catApplyAllowed() {
@@ -5378,15 +5458,16 @@
   async function runCatPreview() {
     const button = $("#cat-preview-run");
     const box = $("#cat-preview-result");
+    const resolved = catScopeResolve();
+    renderCatScopeNote();
+    if (resolved.unresolved.length) { toast(`Fix the blog list first - not found: ${resolved.unresolved.join(", ")}`, "error"); return; }
     setBusy(button, true, "Computing\u2026");
     catResetPreview();
     try {
-      const scope = catScopeBlogIds();
+      const scope = resolved.ids;
       const preview = await api("/api/categories/preview", { method: "POST", body: scope ? { env: catState.env, blog_ids: scope } : { env: catState.env } });
       preview.scope = scope;
       catRunState.preview = preview;
-      const note = $("#cat-scope-note");
-      if (note) note.textContent = scope ? `Scoped to ${scope.length} blog(s): ${scope.join(", ")}` : "All snapshotted blogs";
       renderCatPreview(preview);
       $("#cat-apply-run").disabled = !(preview.ok && catApplyAllowed());
       renderCatAckPanel(preview);
@@ -5562,15 +5643,24 @@
       const data = await api(`/api/categories/wp-status?env=${encodeURIComponent(catState.env)}`);
       catRunState.freeze = Boolean(data.status && data.status.freeze);
       const button = $("#cat-freeze-toggle");
+      const chip = $("#cat-freeze-state");
       if (button) {
         button.textContent = catRunState.freeze ? "Unfreeze WP category edits" : "Freeze WP category edits";
+        button.setAttribute("aria-pressed", String(catRunState.freeze));
+        button.classList.toggle("is-on", catRunState.freeze);
         if (catApplyAllowed()) button.disabled = false;
+      }
+      if (chip) {
+        chip.textContent = catRunState.freeze ? "WP edits: frozen" : "WP edits: open";
+        chip.className = `chip ${catRunState.freeze ? "chip--frozen-warn" : "chip--muted"}`;
       }
     } catch (error) {
       // Unknown freeze state: never let the button guess.
       catRunState.freeze = null;
       const button = $("#cat-freeze-toggle");
-      if (button) { button.textContent = "Freeze state unknown (WP unreachable)"; button.disabled = true; }
+      const chip = $("#cat-freeze-state");
+      if (button) { button.textContent = "Freeze state unknown (WP unreachable)"; button.disabled = true; button.classList.remove("is-on"); }
+      if (chip) { chip.textContent = "WP edits: unknown"; chip.className = "chip chip--muted"; }
     }
   }
 
@@ -5679,6 +5769,7 @@
     if (!$("#cat-runs-panel")) return;
     $("#cat-preview-run").addEventListener("click", runCatPreview);
     $("#cat-apply-run").addEventListener("click", runCatApply);
+    $("#cat-scope-blogs")?.addEventListener("input", debounce(renderCatScopeNote, 150));
     $("#cat-ack-selected").addEventListener("click", () =>
       catAcknowledge($$(".cat-ack-check:checked", $("#cat-ack-list")).map((c) => c.value)));
     $("#cat-ack-all").addEventListener("click", () =>
@@ -5703,16 +5794,22 @@
     });
     $("#cat-drift-run").addEventListener("click", async () => {
       const out = $("#cat-drift-result");
+      const resolved = catScopeResolve();
+      if (resolved.unresolved.length) { toast(`Fix the blog list on Preview & Apply first - not found: ${resolved.unresolved.join(", ")}`, "error"); return; }
+      out.hidden = false;
+      out.className = "cat-drift-result muted";
       out.textContent = "Re-importing snapshots and re-planning\u2026 this takes a while.";
       try {
-        const scopeIds = catScopeBlogIds();
+        const scopeIds = resolved.ids;
         const result = await api("/api/categories/drift-audit", { method: "POST", body: scopeIds ? { env: catState.env, blog_ids: scopeIds } : { env: catState.env } });
         const scope = result.scope ? ` (scoped to ${result.scope.length} blog(s): ${result.scope.slice(0, 20).join(", ")})` : "";
+        out.className = `cat-drift-result ${result.converged ? "cat-ok" : "cat-warning"}`;
         out.textContent = result.converged
           ? `Converged${scope}: ${result.refreshed_blogs} blog(s) match the draft exactly.`
           : `NOT converged${scope}: ${result.pending.length} blog(s) still differ - ${result.pending.slice(0, 20).map((b) => b.blog_id).join(", ")}${result.pending.length > 20 ? ", …" : ""}` +
             (result.blockers.length ? `; blockers: ${result.blockers.map((b) => b.kind).join(", ")}` : "") + ".";
       } catch (error) {
+        out.className = "cat-drift-result cat-blocker";
         out.textContent = errorMessage(error);
       }
     });
@@ -5753,6 +5850,7 @@
       const rows = data.slugs.map((r) => ({ ...r, id: r.old_slug }));
       if (catMapState.table) {
         catMapState.table.replaceData(rows);
+        catMappingSelectionChanged(catMapState.table.getSelectedRows().length);
         return;
       }
       if (typeof Tabulator === "undefined") {
@@ -5789,9 +5887,20 @@
           { title: "Note", field: "note", widthGrow: 1, minWidth: 90 },
         ],
       });
+      catMapState.table.on("rowSelectionChanged", (data) => catMappingSelectionChanged(data.length));
+      catMappingSelectionChanged(0);
     } catch (error) {
       renderErrorState($("#cat-mapping-table"), friendlyLoadError("the slug mapping", error), loadCatMapping);
     }
+  }
+
+  function catMappingSelectionChanged(count) {
+    const label = $("#cat-map-selected");
+    if (label) label.textContent = count ? `${count} slug${count === 1 ? "" : "s"} selected` : "Nothing selected";
+    ["#cat-map-apply", "#cat-map-delete", "#cat-map-custom", "#cat-map-clear", "#cat-map-primary"].forEach((sel) => {
+      const button = $(sel);
+      if (button) button.disabled = !count;
+    });
   }
 
   const CAT_MAPPING_CHUNK = 500;   // PUT /mapping accepts at most 500 rows
@@ -5955,13 +6064,14 @@
         api(`/api/categories/assignments?node_id=${nodeId}`),
         api(`/api/categories/rules?node_id=${nodeId}`),
       ]);
+      const ruleTotal = membership.rules.reduce((total, r) => total + r.count, 0);
       membershipBox.innerHTML = `
-        <span class="cat-chip">carried ${membership.carried_count}</span>
-        <span class="cat-chip">rules ${membership.rules.reduce((total, r) => total + r.count, 0)}</span>
-        <span class="cat-chip">added ${membership.added_count}</span>
-        <span class="cat-chip cat-chip--minus">removed ${membership.removed_count}</span>
-        <span class="cat-chip cat-chip--total">final ${membership.final_count} styles</span>
-        <div class="muted">Sample: ${membership.final_sample.slice(0, 15).map(escapeHtml).join(", ") || "(none)"}</div>`;
+        <span class="cat-chip" title="Styles already in this category on the live stores, carried over through the mapped old slugs">carried ${membership.carried_count}</span>
+        <span class="cat-chip" title="Styles matched by this category's rules">rules ${ruleTotal}</span>
+        <span class="cat-chip" title="Styles added by explicit assignments">added ${membership.added_count}</span>
+        <span class="cat-chip cat-chip--minus" title="Styles kept out by explicit remove assignments">removed ${membership.removed_count}</span>
+        <span class="cat-chip cat-chip--total" title="Styles this category will contain after apply">final ${membership.final_count} styles</span>
+        <small class="muted cat-legend">carried = already here via mapped slugs · rules = matched by the rules below · added / removed = explicit assignments · final = what the category holds after apply. Sample: ${membership.final_sample.slice(0, 15).map(escapeHtml).join(", ") || "(none)"}</small>`;
       const list = $("#cat-assignment-list");
       const rows = assignments.assignments || [];
       list.innerHTML = rows.length ? `
@@ -5970,7 +6080,7 @@
             <td>${escapeHtml(a.sku)}</td><td>${escapeHtml(a.mode)}</td><td>${escapeHtml(a.source)}</td>
             <td><button type="button" class="button button--ghost button--small cat-assign-del" data-id="${a.id}">Remove</button></td>
           </tr>`).join("")}
-        </tbody></table>` : '<p class="muted">No explicit assignments.</p>';
+        </tbody></table>` : '<div class="cat-empty">No explicit assignments yet - list styles below and press Add styles, or import a CSV.</div>';
       $$(".cat-assign-del", list).forEach((btn) => btn.addEventListener("click", async () => {
         setBusy(btn, true, "\u2026");
         try {
@@ -6117,6 +6227,7 @@
     storeBlog: "",        // "" = global draft; else blog_id string
     selected: null,       // selected node object (global view)
     sortables: [],
+    query: "",            // tree search text (matches name or slug)
   };
 
   function showCatTab(tab) {
@@ -6178,6 +6289,18 @@
     return children;
   }
 
+  function catSlugLooksLikeCode(slug) {
+    return /^[a-z]{2,6}\d{2,3}$/i.test(String(slug || ""));
+  }
+
+  function catHighlight(value, query) {
+    const raw = String(value || "");
+    if (!query) return escapeHtml(raw);
+    const index = raw.toLowerCase().indexOf(query);
+    if (index < 0) return escapeHtml(raw);
+    return `${escapeHtml(raw.slice(0, index))}<mark>${escapeHtml(raw.slice(index, index + query.length))}</mark>${escapeHtml(raw.slice(index + query.length))}`;
+  }
+
   function renderCatTree() {
     const box = $("#cat-tree");
     if (!box) return;
@@ -6185,45 +6308,81 @@
     const nodes = globalView ? catTreeState.nodes : catTreeState.effective;
     catTreeState.sortables.forEach((s) => { try { s.destroy(); } catch (e) {} });
     catTreeState.sortables = [];
+    const matches = $("#cat-tree-matches");
     if (!nodes.length) {
       box.innerHTML = `<p class="muted">${globalView ? "Draft is empty." : "This store's effective tree is empty."}</p>`;
+      if (matches) matches.hidden = true;
       return;
     }
     const children = catBuildChildrenMap(nodes);
+    const query = (catTreeState.query || "").trim().toLowerCase();
+    const isMatch = (n) => Boolean(query) && `${n.name || ""} ${n.slug || ""}`.toLowerCase().includes(query);
+    // Searching keeps every match plus its ancestors, so the path stays readable.
+    let visible = null;
+    let matchCount = 0;
+    if (query) {
+      visible = new Set();
+      const byId = new Map(nodes.filter((n) => n.node_id !== null && n.node_id !== undefined).map((n) => [n.node_id, n]));
+      nodes.forEach((n) => {
+        if (!isMatch(n)) return;
+        matchCount += 1;
+        let current = n;
+        while (current && !visible.has(current)) {
+          visible.add(current);
+          current = current.parent_id === null || current.parent_id === undefined ? null : byId.get(current.parent_id);
+        }
+      });
+    }
 
-    function renderList(parentKey) {
-      const kids = children.get(parentKey) || [];
+    function renderList(parentKey, level) {
+      const kids = (children.get(parentKey) || []).filter((n) => !visible || visible.has(n));
       const items = kids.map((n) => {
         const id = n.node_id === null || n.node_id === undefined ? "" : n.node_id;
         const badges = [
           n.renamed ? '<span class="cat-badge cat-badge--rename" title="Renamed on this store">renamed</span>' : "",
           n.extra ? '<span class="cat-badge cat-badge--extra" title="Store-local category">store-only</span>' : "",
+          catSlugLooksLikeCode(n.slug) ? '<span class="cat-badge cat-badge--code" title="This slug looks like a legacy code rather than a readable name. Shoppers see it in the URL - consider renaming it in the detail pane.">code slug</span>' : "",
         ].join("");
-        const kidsHtml = renderList(id === "" ? `x-${n.override_id}` : String(id));
+        const kidsHtml = renderList(id === "" ? `x-${n.override_id}` : String(id), level + 1);
         const selected = catTreeState.selected && catTreeState.selected.node_id === n.node_id && id !== "";
-        return `<li class="cat-node ${selected ? "is-selected" : ""}" data-node="${id}" data-override="${n.override_id || ""}">
-          <div class="cat-node__row">
-            <span class="cat-node__name" title="${escapeHtml(n.slug || "")}">${escapeHtml(n.name)}</span>
-            <span class="cat-node__slug">${escapeHtml(n.slug || "")}</span>
+        return `<li class="cat-node ${selected ? "is-selected" : ""}${isMatch(n) ? " is-match" : ""}" data-node="${id}" data-override="${n.override_id || ""}" role="none">
+          <div class="cat-node__row" role="treeitem" aria-level="${level}" aria-selected="${selected ? "true" : "false"}" tabindex="${selected ? "0" : "-1"}">
+            <span class="cat-node__name" title="${escapeHtml(n.slug || "")}">${catHighlight(n.name, query)}</span>
+            <span class="cat-node__slug">${catHighlight(n.slug || "", query)}</span>
             ${badges}
           </div>
           ${kidsHtml}
         </li>`;
       }).join("");
-      // Always render the UL in the global view so empty nodes accept drops.
-      if (!items && !globalView) return "";
-      return `<ul class="cat-branch" data-parent="${parentKey.startsWith("x-") ? "" : parentKey}">${items}</ul>`;
+      // Always render the UL in the global view so empty nodes accept drops
+      // (except while searching, when dragging is off anyway).
+      if (!items && (!globalView || query)) return "";
+      return `<ul class="cat-branch" role="group" data-parent="${parentKey.startsWith("x-") ? "" : parentKey}">${items}</ul>`;
     }
 
-    box.innerHTML = renderList("");
+    box.innerHTML = renderList("", 1);
+    box.setAttribute("role", "tree");
+    box.dataset.filtering = query ? "1" : "";
+    if (matches) {
+      matches.hidden = !query;
+      matches.textContent = query
+        ? (matchCount ? `${matchCount} matching categor${matchCount === 1 ? "y" : "ies"} - drag and drop is off while searching.` : "No categories match.")
+        : "";
+    }
+    // Roving tabindex: exactly one row is reachable with Tab.
+    if (!$('.cat-node__row[tabindex="0"]', box)) {
+      const first = $(".cat-node__row", box);
+      if (first) first.tabIndex = 0;
+    }
     if (globalView) {
-      attachCatSortables(box);
+      if (!query) attachCatSortables(box);
       wireCatTreeRows(box);
     }
   }
 
   function wireCatTreeRows(box) {
-    $$(".cat-node__row", box).forEach((row) => {
+    const rows = $$(".cat-node__row", box);
+    rows.forEach((row) => {
       const li = row.closest(".cat-node");
       const id = Number(li.dataset.node);
       if (!id) return;
@@ -6235,6 +6394,26 @@
       nameEl.addEventListener("dblclick", (event) => {
         event.stopPropagation();
         startCatInlineRename(li, id, nameEl);
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.target !== row) return; // keys typed inside the inline rename box
+        const index = rows.indexOf(row);
+        const focusRow = (next) => {
+          const target = rows[Math.max(0, Math.min(rows.length - 1, next))];
+          if (!target) return;
+          rows.forEach((r) => { r.tabIndex = -1; });
+          target.tabIndex = 0;
+          target.focus();
+        };
+        switch (event.key) {
+          case "ArrowDown": event.preventDefault(); focusRow(index + 1); break;
+          case "ArrowUp": event.preventDefault(); focusRow(index - 1); break;
+          case "Home": event.preventDefault(); focusRow(0); break;
+          case "End": event.preventDefault(); focusRow(rows.length - 1); break;
+          case "Enter": case " ": event.preventDefault(); selectCatNode(catNodeById(id)); break;
+          case "F2": event.preventDefault(); startCatInlineRename(li, id, row.querySelector(".cat-node__name")); break;
+          default: break;
+        }
       });
     });
   }
@@ -6316,7 +6495,9 @@
         ? `Store overrides: ${mine.map((o) => `${o.kind} on blog ${o.blog_id}`).join(", ")}`
         : "";
     }).catch(() => { overridesBox.textContent = ""; });
+    const hadFocus = Boolean(document.activeElement && document.activeElement.closest && document.activeElement.closest("#cat-tree"));
     renderCatTree();
+    if (hadFocus) $('#cat-tree .cat-node__row[tabindex="0"]')?.focus();
   }
 
   async function saveCatDetail() {
@@ -6576,6 +6757,13 @@
       loadCatTree();
     });
     $("#cat-add-root").addEventListener("click", () => addCatChild(null));
+    const treeSearch = $("#cat-tree-search");
+    if (treeSearch) {
+      treeSearch.addEventListener("input", debounce(() => { catTreeState.query = treeSearch.value; renderCatTree(); }, 120));
+      treeSearch.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && treeSearch.value) { treeSearch.value = ""; catTreeState.query = ""; renderCatTree(); }
+      });
+    }
     $("#cat-detail-save").addEventListener("click", saveCatDetail);
     $("#cat-detail-add-child").addEventListener("click", () => {
       if (catTreeState.selected) addCatChild(catTreeState.selected.node_id);
@@ -6837,14 +7025,26 @@
         <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name" placeholder="No name yet - type one or refresh from FDM4"></td>
         <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(nameSourceLabel(r.source))}</span>${r.store_specific ? `<br><span class="badge-override">${state.store ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (state.store ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
         <td class="name-actions">
-          <button class="button button--primary button--small name-save" type="button">Save</button>
+          <button class="button button--primary button--small name-save" type="button" disabled title="Type a new name to enable saving">Save</button>
           <button class="button button--ghost button--small name-repull" type="button" title="Refresh this design's name from FDM4's current description">Refresh from FDM4</button>
         </td>
       </tr>`).join("")}</tbody></table>`;
     $$(".name-save", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); saveName(tr, b); }));
-    $$(".name-input", box).forEach((inp) => inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); const tr = inp.closest("tr"); saveName(tr, $(".name-save", tr)); }
-    }));
+    $$(".name-input", box).forEach((inp) => {
+      inp.addEventListener("input", () => {
+        const save = $(".name-save", inp.closest("tr"));
+        const value = inp.value.trim();
+        save.disabled = !value || value === (inp.dataset.original || "");
+        save.title = save.disabled ? "Type a new name to enable saving" : "";
+      });
+      inp.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const tr = inp.closest("tr");
+        const save = $(".name-save", tr);
+        if (!save.disabled) saveName(tr, save);
+      });
+    });
     $$(".name-repull", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); repullName(tr.dataset.design, b, tr.dataset.fdm4desc || "", tr.dataset.override === "1"); }));
     const start = namesState.offset + 1, end = namesState.offset + rows.length;
     $("#names-range").textContent = `${start}-${end} of ${namesState.total}`;
@@ -8104,7 +8304,7 @@
         <button class="button button--small button--secondary pr-preview" type="button">Preview</button>
         <button class="button button--small ${r.active ? "button--ghost" : "button--primary"} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be turned on" : ""}">${r.active ? "Turn off" : "Turn on"}</button>
         <button class="button button--small button--ghost pr-edit" type="button">Edit</button>
-        <button class="button button--small button--ghost pr-delete" type="button">Delete</button>
+        <button class="button button--small button--danger-ghost pr-delete" type="button">Delete</button>
       </td></tr>`).join("")}</tbody></table>`;
     $$(".pr-edit", box).forEach((b) => b.addEventListener("click", () => openPREditor(prState.rules.find((r) => r.rule_id === Number(b.closest("tr").dataset.id)))));
     $$(".pr-preview", box).forEach((b) => b.addEventListener("click", () => previewPR(Number(b.closest("tr").dataset.id), b)));
@@ -8545,17 +8745,36 @@
     const trigger = g.querySelector(".main-nav__trigger");
     const menu = g.querySelector(".main-nav__menu");
     if (!trigger || !menu) return;
-    trigger.addEventListener("click", () => {
-      const open = menu.hidden;
+    const items = () => $$(".main-nav__item", menu).filter((el) => !el.hidden && !el.disabled);
+    const setOpen = (open, focusIndex = null) => {
       closeNavMenus(g);
       menu.hidden = !open;
       trigger.setAttribute("aria-expanded", String(open));
+      if (open && focusIndex !== null) {
+        const list = items();
+        const target = list[focusIndex < 0 ? list.length - 1 : focusIndex];
+        if (target) target.focus();
+      }
+    };
+    trigger.addEventListener("click", () => setOpen(menu.hidden));
+    // Menu-button keyboard pattern: arrows open the menu on the first/last
+    // item, arrows inside cycle, Tab closes, Escape (global) closes + refocuses.
+    trigger.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true, 0); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); setOpen(true, -1); }
+    });
+    menu.addEventListener("keydown", (e) => {
+      const list = items();
+      const index = list.indexOf(document.activeElement);
+      const move = (next) => { e.preventDefault(); list[(next + list.length) % list.length]?.focus(); };
+      if (e.key === "ArrowDown") move(index + 1);
+      else if (e.key === "ArrowUp") move(index - 1);
+      else if (e.key === "Home") move(0);
+      else if (e.key === "End") move(list.length - 1);
+      else if (e.key === "Tab") setOpen(false);
     });
     menu.addEventListener("click", (e) => {
-      if (e.target.closest(".main-nav__item")) {
-        menu.hidden = true;
-        trigger.setAttribute("aria-expanded", "false");
-      }
+      if (e.target.closest(".main-nav__item")) setOpen(false);
     });
   });
   document.addEventListener("click", (e) => { if (!e.target.closest(".main-nav__group")) closeNavMenus(); });
@@ -8647,7 +8866,7 @@
     const mixCount = (feats.mix_stores || []).length;
     $("#health-stats").innerHTML = [
       healthStat("Data pull from FDM4", pipeValue, pipeSub, pipeTone),
-      healthStat("Product data", st.latest_change ? `Updated ${healthAge(st.latest_change)}` : "No data", `${Number(st.active_rows || 0).toLocaleString()} live records · ${Number(st.changed_24h || 0).toLocaleString()} changed in 24h`, stateAgeMins > 26 * 60 ? "warn" : "ok"),
+      healthStat("Product data updated", st.latest_change ? healthAge(st.latest_change) : "No data", `${Number(st.active_rows || 0).toLocaleString()} live records · ${Number(st.changed_24h || 0).toLocaleString()} changed in 24h`, stateAgeMins > 26 * 60 ? "warn" : "ok"),
       healthStat("Price rules", String(feats.price_rules?.active ?? 0), feats.price_rules?.active ? "active - hourly update takes a bit longer" : "none active", null),
       healthStat("Sync freezes", String((feats.sync_blocks?.whole_store || 0) + (feats.sync_blocks?.styles || 0)), `${feats.sync_blocks?.whole_store || 0} whole-store · ${feats.sync_blocks?.styles || 0} styles`, null),
       healthStat("Custom product lineups", String(mixCount), mixCount ? `${mixCount} store${mixCount === 1 ? "" : "s"} with a custom list` : "none - all stores follow FDM4", null),
@@ -8663,9 +8882,17 @@
       const d = Number(r.duration_s || 0);
       const bar = document.createElement("span");
       bar.className = "health-trend__bar";
-      bar.style.height = d > 0 ? `${Math.max(8, Math.round((d / maxDur) * 100))}%` : "2%";
-      const mins = Math.floor(d / 60);
-      bar.title = `${mins}m ${String(d % 60).padStart(2, "0")}s - ${formatDate(r.started_at)}`;
+      const running = r.status === "running" || r.status === "requested";
+      if (running) {
+        bar.classList.add("health-trend__bar--running");
+        bar.style.height = "60%";
+        bar.title = `In progress - started ${formatDate(r.started_at)}`;
+      } else {
+        if (r.status !== "success") bar.classList.add("health-trend__bar--failed");
+        bar.style.height = d > 0 ? `${Math.max(8, Math.round((d / maxDur) * 100))}%` : "8%";
+        const mins = Math.floor(d / 60);
+        bar.title = `${r.status === "success" ? "" : `${r.status} - `}${mins}m ${String(d % 60).padStart(2, "0")}s - ${formatDate(r.started_at)}`;
+      }
       trend.appendChild(bar);
     });
 

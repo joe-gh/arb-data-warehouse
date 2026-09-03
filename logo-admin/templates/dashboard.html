@@ -34,33 +34,33 @@
       <button class="main-nav__link" type="button" data-view="help">Help</button>
       <div class="main-nav__group" data-group="logo,names,colors,bulk">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-logos">Logos<span class="main-nav__caret" aria-hidden="true"></span></button>
-        <div class="main-nav__menu" id="nav-menu-logos" hidden>
-          <button class="main-nav__item" type="button" data-view="logo">Logo Configuration</button>
-          <button class="main-nav__item" type="button" data-view="bulk">Bulk Operations<small>Multi-style jobs: fill missing colors, paste, activate, bulk apply</small></button>
-          <button class="main-nav__item" type="button" data-view="names">Logo Names</button>
-          <button class="main-nav__item" type="button" data-view="colors">Logo Colors</button>
+        <div class="main-nav__menu" id="nav-menu-logos" role="menu" aria-label="Logos" hidden>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="logo">Logo Configuration</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="bulk">Bulk Operations<small>Multi-style jobs: fill missing colors, paste, activate, bulk apply</small></button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="names">Logo Names</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="colors">Logo Colors</button>
           <div class="main-nav__divider" role="separator"></div>
-          <p class="main-nav__section">Logo tools</p>
-          <button id="ownership-button" class="main-nav__item" type="button">Logo Sync Stores <span class="badge badge--writes">Makes changes</span><small>Turn warehouse logo sync on or off per store</small></button>
-          <button id="audit-button" class="main-nav__item" type="button" title="Change history - who changed what, and when">Activity Log<small>Who changed what, and when</small></button>
-          <a id="export-link" class="main-nav__item" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
-          <button id="import-button" class="main-nav__item" type="button">Import Assignments <span class="badge badge--writes">Makes changes</span><small>Overwrites the assignments listed in the CSV</small></button>
-          <button id="reports-button" class="main-nav__item" type="button">Import Punch List<small>Review unresolved rows (read-only)</small></button>
-          <button id="legacy-import-button" class="main-nav__item" type="button">Import Legacy Sheets <span class="badge badge--writes">Makes changes</span><small>Updates every store included in the export file</small></button>
-          <button id="legacy-images-button" class="main-nav__item" type="button">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
+          <p class="main-nav__section" role="presentation">Logo tools</p>
+          <button id="ownership-button" class="main-nav__item" type="button" role="menuitem">Logo Sync Stores <span class="badge badge--writes">Makes changes</span><small>Turn warehouse logo sync on or off per store</small></button>
+          <button id="audit-button" class="main-nav__item" type="button" role="menuitem" title="Change history - who changed what, and when">Activity Log<small>Who changed what, and when</small></button>
+          <a id="export-link" class="main-nav__item" role="menuitem" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
+          <button id="import-button" class="main-nav__item" type="button" role="menuitem">Import Assignments <span class="badge badge--writes">Makes changes</span><small>Overwrites the assignments listed in the CSV</small></button>
+          <button id="reports-button" class="main-nav__item" type="button" role="menuitem">Import Punch List<small>Review unresolved rows (read-only)</small></button>
+          <button id="legacy-import-button" class="main-nav__item" type="button" role="menuitem">Import Legacy Sheets <span class="badge badge--writes">Makes changes</span><small>Updates every store included in the export file</small></button>
+          <button id="legacy-images-button" class="main-nav__item" type="button" role="menuitem">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
         </div>
       </div>
       {% if categories_enabled %}
       <button class="main-nav__link" type="button" data-view="categories">Categories</button>
       {% endif %}
       <div class="main-nav__group" data-group="pricing,prices,blocks,mix,stock">
-        <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-store">Store<span class="main-nav__caret" aria-hidden="true"></span></button>
-        <div class="main-nav__menu" id="nav-menu-store" hidden>
-          <button class="main-nav__item" type="button" data-view="pricing">Store Pricing Levels</button>
-          <button class="main-nav__item" type="button" data-view="prices">Price Rules</button>
-          <button class="main-nav__item" type="button" data-view="blocks">Sync Blocks</button>
-          <button class="main-nav__item" type="button" data-view="mix">Product Mix</button>
-          <button class="main-nav__item" type="button" data-view="stock">Fake Inventory<small>Show styles as always in stock, or use real stock</small></button>
+        <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-store">Store Setup<span class="main-nav__caret" aria-hidden="true"></span></button>
+        <div class="main-nav__menu" id="nav-menu-store" role="menu" aria-label="Store setup" hidden>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="pricing">Store Pricing Levels</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="prices">Price Rules</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="blocks">Sync Blocks</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="mix">Product Mix</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Fake Inventory<small>Show styles as always in stock, or use real stock</small></button>
         </div>
       </div>
     </nav>
@@ -72,8 +72,8 @@
       </div>
       <span class="environment-pill" title="Shared warehouse source of truth"><span></span>Warehouse</span>
       {% if agent_access_allowed %}
-      <button id="assistant-toggle" class="button button--ghost button--small" type="button" aria-controls="assistant-panel" aria-expanded="false">
-        Assistant
+      <button id="assistant-toggle" class="button button--assistant button--small" type="button" aria-controls="assistant-panel" aria-expanded="false" title="Open the warehouse assistant">
+        <span aria-hidden="true">&#10022;</span> Assistant
       </button>
       {% endif %}
       <div class="user-menu">
@@ -726,12 +726,12 @@
           <span id="cat-env-banner-host" class="cat-env-banner__host"></span>
         </div>
         <div class="cat-tabs" role="tablist" aria-label="Category editor sections">
-          <button class="cat-tab is-active" type="button" data-cattab="snapshots">Snapshots</button>
-          <button class="cat-tab" type="button" data-cattab="tree">Tree</button>
-          <button class="cat-tab" type="button" data-cattab="mapping">Mapping</button>
-          <button class="cat-tab" type="button" data-cattab="products">Products</button>
-          <button class="cat-tab" type="button" data-cattab="preview">Preview &amp; Apply</button>
-          <button class="cat-tab" type="button" data-cattab="runs">Runs</button>
+          <button class="cat-tab is-active" type="button" role="tab" aria-selected="true" data-cattab="snapshots">Snapshots</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="tree">Tree</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="mapping">Mapping</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="products">Products</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="preview">Preview &amp; Apply</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="runs">Runs</button>
         </div>
         <section class="card" id="cat-snapshots-panel">
           <div class="card__header card__header--compact">
@@ -776,9 +776,11 @@
             <div class="cat-tree-layout">
               <div class="cat-tree-col">
                 <div class="cat-tree-toolbar">
-                  <button id="cat-add-root" class="button button--ghost button--small" type="button">+ Top-level category</button>
-                  <span class="muted" id="cat-tree-hint">Drag to move or reorder. Double-click a name to rename.</span>
+                  <button id="cat-add-root" class="button button--secondary button--small" type="button">+ Top-level category</button>
+                  <input id="cat-tree-search" class="cat-tree-search" type="search" placeholder="Find a category by name or slug&hellip;" aria-label="Find a category" autocomplete="off">
+                  <span class="muted" id="cat-tree-hint">Drag to move or reorder. Double-click a name or press F2 to rename. Arrow keys move between categories.</span>
                 </div>
+                <p id="cat-tree-matches" class="muted cat-tree-matches" hidden></p>
                 <div id="cat-tree" class="cat-tree-box"></div>
               </div>
               <aside class="cat-detail" id="cat-node-detail" hidden>
@@ -839,16 +841,23 @@
           </div>
           <div class="card__body">
             <p class="muted">Every live slug needs a disposition before a plan can be previewed: <strong>map</strong> into a draft category (first mapped slug is the in-place survivor), <strong>delete</strong> (debris), or <strong>store custom</strong> (kept as a store-local category).</p>
-            <div class="form-row cat-actions">
-              <label class="field"><span>Map selected to</span>
-                <select id="cat-map-target"></select>
-              </label>
-              <button id="cat-map-apply" class="button" type="button">Map</button>
-              <button id="cat-map-delete" class="button button--ghost" type="button">Mark delete</button>
-              <button id="cat-map-custom" class="button button--ghost" type="button">Store custom</button>
-              <button id="cat-map-clear" class="button button--ghost" type="button">Clear</button>
-              <button id="cat-map-primary" class="button button--ghost" type="button" title="The primary slug's live term survives in place (keeps its term id and SEO); other mapped slugs merge into it">Make primary</button>
-              <button id="cat-map-suggest" class="button button--ghost" type="button">Accept suggestions</button>
+            <div class="cat-action-bar" role="toolbar" aria-label="Mapping actions">
+              <div class="cat-action-bar__group">
+                <label class="field"><span>Map selected to</span>
+                  <select id="cat-map-target"></select>
+                </label>
+                <button id="cat-map-apply" class="button button--primary" type="button" disabled>Map</button>
+              </div>
+              <div class="cat-action-bar__group" role="group" aria-label="Other dispositions for the selected slugs">
+                <button id="cat-map-delete" class="button button--secondary" type="button" disabled title="Treat the selected slugs as debris: their terms are deleted once empty">Mark delete</button>
+                <button id="cat-map-custom" class="button button--secondary" type="button" disabled title="Keep the selected slugs as store-local categories outside the shared tree">Store custom</button>
+                <button id="cat-map-primary" class="button button--secondary" type="button" disabled title="The primary slug's live term survives in place (keeps its term id and SEO); other mapped slugs merge into it">Make primary</button>
+                <button id="cat-map-clear" class="button button--ghost" type="button" disabled title="Remove the disposition from the selected slugs">Clear</button>
+              </div>
+              <div class="cat-action-bar__group cat-action-bar__group--end">
+                <span id="cat-map-selected" class="muted" aria-live="polite">Nothing selected</span>
+                <button id="cat-map-suggest" class="button button--secondary" type="button" title="Apply the suggested disposition to every slug that is still unmapped">Accept suggestions</button>
+              </div>
               <span id="cat-map-busy" class="muted" aria-live="polite"></span>
             </div>
             <div id="cat-mapping-table"></div>
@@ -870,17 +879,19 @@
                 <h3>Explicit assignments</h3>
                 <div id="cat-assignment-list" class="cat-table-wrap"></div>
                 <div class="form-row">
-                  <label class="field"><span>Styles (one SKU per line)</span>
-                    <textarea id="cat-assign-skus" rows="3" spellcheck="false"></textarea>
+                  <label class="field"><span>Styles to add or remove (one SKU per line)</span>
+                    <textarea id="cat-assign-skus" rows="3" spellcheck="false" placeholder="18500&#10;400340"></textarea>
                   </label>
                 </div>
-                <div class="form-row">
-                  <button id="cat-assign-add" class="button button--ghost" type="button">Add styles</button>
-                  <button id="cat-assign-remove" class="button button--ghost" type="button">Remove styles</button>
-                </div>
-                <div class="form-row">
-                  <a id="cat-assign-export" class="button button--ghost" href="/api/categories/assignments/export">Export CSV</a>
-                  <button id="cat-assign-import" class="button button--ghost" type="button">Import CSV&hellip;</button>
+                <div class="cat-action-bar cat-action-bar--tight" role="toolbar" aria-label="Assignment actions">
+                  <div class="cat-action-bar__group">
+                    <button id="cat-assign-add" class="button" type="button" title="Put the styles listed above into this category">Add styles</button>
+                    <button id="cat-assign-remove" class="button button--secondary" type="button" title="Keep the styles listed above out of this category even when a rule or an old slug would include them">Remove styles</button>
+                  </div>
+                  <div class="cat-action-bar__group cat-action-bar__group--end">
+                    <a id="cat-assign-export" class="button button--ghost button--small" href="/api/categories/assignments/export">Export CSV</a>
+                    <button id="cat-assign-import" class="button button--ghost button--small" type="button">Import CSV&hellip;</button>
+                  </div>
                 </div>
               </div>
               <div>
@@ -944,11 +955,11 @@
           <div class="card__body">
             <p class="muted">Preview computes every blog's exact plan against the current snapshots. Apply is refused while blockers exist, while snapshots are stale, or for operators outside the apply allowlist.{% if not categories_apply_allowed %} <strong>Your login can edit and preview but not apply.</strong>{% endif %}</p>
             <div class="form-row">
-              <label class="field"><span>Limit to blogs (comma-separated ids; empty = every snapshotted blog)</span>
-                <input id="cat-scope-blogs" type="text" placeholder="e.g. 1, 7, 9" spellcheck="false">
+              <label class="field cat-scope-field"><span>Limit to blogs (optional - blog ids, store names, store codes or paths, comma-separated; empty = every snapshotted blog)</span>
+                <input id="cat-scope-blogs" type="text" placeholder="e.g. 1, Payne Tompkins, S_002165, /daveytree/" spellcheck="false" autocomplete="off">
               </label>
-              <span id="cat-scope-note" class="muted"></span>
             </div>
+            <div id="cat-scope-note" class="muted cat-scope-note" aria-live="polite"></div>
             <div id="cat-preview-result"></div>
             <div id="cat-ack-panel" class="cat-gap-top" hidden>
               <h3>Products that would end with no category</h3>
@@ -968,12 +979,13 @@
           <div class="card__header card__header--compact">
             <div><p class="eyebrow">Execution</p><h3>Apply runs</h3></div>
             <div class="cat-header-actions">
-              <button id="cat-freeze-toggle" class="button button--ghost" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Freeze WP category edits</button>
-              <button id="cat-drift-run" class="button button--ghost" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Drift audit</button>
+              <span id="cat-freeze-state" class="chip chip--muted" title="Whether store admins can currently edit categories in wp-admin">WP edits: checking&hellip;</span>
+              <button id="cat-freeze-toggle" class="button button--secondary cat-freeze-button" type="button" aria-pressed="false" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Freeze WP category edits</button>
+              <button id="cat-drift-run" class="button button--secondary" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% else %}title="Re-import every snapshot and check whether the live stores still match the draft"{% endif %}>Drift audit</button>
             </div>
           </div>
           <div class="card__body">
-            <div id="cat-drift-result" class="muted"></div>
+            <div id="cat-drift-result" class="cat-drift-result" hidden></div>
             <div id="cat-runs-list"></div>
           </div>
         </section>
@@ -1237,10 +1249,6 @@
   </main>
 
   {% if agent_access_allowed %}
-  <button id="assistant-fab" class="assistant-fab" type="button" aria-controls="assistant-panel" aria-expanded="false" title="Open the warehouse assistant">
-    <span class="assistant-fab__icon" aria-hidden="true">&#10022;</span>
-    <span class="assistant-fab__label">Assistant</span>
-  </button>
   <div id="assistant-backdrop" class="assistant-backdrop" hidden></div>
   <aside id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" aria-hidden="true" data-writes-enabled="{{ 'true' if agent_writes_enabled else 'false' }}" hidden>
     <div class="assistant-panel__header">
@@ -1716,12 +1724,13 @@
         <label class="field"><span class="field__label">User</span><input id="audit-actor" placeholder="Anyone"></label>
         <label class="field"><span class="field__label">Action</span><select id="audit-action"><option value="">All actions</option><option value="assignment_created">Logo added</option><option value="assignment_updated">Logo updated</option><option value="assignment_deleted">Logo deleted</option><option value="store_settings_created">Store settings created</option><option value="store_settings_updated">Store settings updated</option><option value="sync_requested">Sync to website</option></select></label>
         <button class="button button--secondary" type="submit">Apply filters</button>
-        <a id="audit-export" class="button button--secondary" href="/api/audit-log/export" title="Download the filtered history as CSV">Export CSV</a>
       </form>
       <div id="audit-results" class="table-wrap" aria-live="polite"></div>
-      <div class="audit-more-row"><button id="audit-more" class="button button--secondary" type="button" hidden>Load older entries</button></div>
     </div>
-    <div class="dialog__footer"><span id="audit-count" class="muted"></span><button class="button button--primary dialog-close" type="button">Done</button></div>
+    <div class="dialog__footer">
+      <div class="dialog__footer-group"><span id="audit-count" class="muted"></span><button id="audit-more" class="button button--secondary button--small" type="button" hidden>Load older entries</button><a id="audit-export" class="button button--secondary button--small" href="/api/audit-log/export" title="Download the filtered history as CSV">Export CSV</a></div>
+      <button class="button button--primary dialog-close" type="button">Done</button>
+    </div>
   </dialog>
 
   <dialog id="ownership-dialog" class="dialog dialog--wide" aria-labelledby="ownership-title">

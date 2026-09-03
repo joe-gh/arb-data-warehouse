@@ -16,7 +16,9 @@ def test_template_uses_server_side_conditions_not_css_authorization():
     assert source.count("{% if agent_access_allowed %}") == 3
     assert "agent_async_guard.js" in source
     assert 'id="assistant-toggle"' in source
-    assert 'id="assistant-fab"' in source
+    # One launcher only: the header button. The floating pill was removed
+    # because it covered table rows in the lower-right corner.
+    assert 'id="assistant-fab"' not in source
     assert 'id="assistant-panel"' in source
     assert "agent-unauthorized" not in source
 

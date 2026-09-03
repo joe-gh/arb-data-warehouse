@@ -1,5 +1,6 @@
 """Bounded, cursor-owned read services shared by HTTP and the agent."""
 
+import html
 import re
 import threading
 import time
@@ -162,15 +163,24 @@ def _style_exists(cursor, store: str, catalog: str, style: str) -> bool:
 # Friendly names for stores whose catalog slug is meaningless (e.g. virtual
 # catalogs like S_015883_Woo_1, which would otherwise render as "Woo 1").
 STORE_DISPLAY_OVERRIDES = {
+    # Virtual store codes with no WordPress blog of their own (external
+    # all-products stores); everything else takes its blog's site title.
     "S_015883": "Square",
+    "S_DAVEYTREE": "Davey Tree",
 }
 
 
-def _store_display_name(code: Any, catalog: Any) -> str:
+def _store_display_name(code: Any, catalog: Any, blog_name: Any = "") -> str:
     code_s = str(code or "")
     override = STORE_DISPLAY_OVERRIDES.get(code_s.strip().upper())
     if override:
         return override
+    # The WordPress site title (woo.store_blog_map.blog_name) is the name
+    # operators know a store by; the catalog slug is only a fallback for
+    # stores with no blog mapping.
+    blog_s = html.unescape(str(blog_name or "")).strip()
+    if blog_s:
+        return blog_s[:120]
     catalog_s = str(catalog or "")
     slug = ""
     if catalog_s and code_s and catalog_s.startswith(code_s + "_"):
@@ -208,6 +218,10 @@ def list_stores(cursor) -> dict:
                    min(blog_path) AS blog_path
               FROM woo.store_blog_map
              GROUP BY fdm4_store
+        ), blog_names AS (
+            SELECT DISTINCT ON (fdm4_store) fdm4_store, blog_name
+              FROM woo.store_blog_map
+             ORDER BY fdm4_store, blog_id
         )
         SELECT left(c.fdm4_store, 256) AS fdm4_store,
                left(c.catalog_id, 256) AS catalog_id,
@@ -218,11 +232,13 @@ def list_stores(cursor) -> dict:
                COALESCE(s.allows_none, false) AS allows_none,
                b.blog_id,
                left(COALESCE(b.blog_ids, ''), 64) AS blog_ids,
-               left(COALESCE(b.blog_path, ''), 128) AS blog_path
+               left(COALESCE(b.blog_path, ''), 128) AS blog_path,
+               left(COALESCE(bn.blog_name, ''), 200) AS blog_name
           FROM chosen c
           LEFT JOIN assignment_counts a USING (fdm4_store)
           LEFT JOIN logo.store_settings s USING (fdm4_store)
           LEFT JOIN blogs b USING (fdm4_store)
+          LEFT JOIN blog_names bn USING (fdm4_store)
          ORDER BY c.fdm4_store
          LIMIT %s
         """,
@@ -231,7 +247,7 @@ def list_stores(cursor) -> dict:
     )
     for row in rows:
         row["display_name"] = _store_display_name(
-            row.get("fdm4_store"), row.get("catalog_id")
+            row.get("fdm4_store"), row.get("catalog_id"), row.get("blog_name")
         )
     rows.sort(key=lambda row: str(row.get("display_name", "")).lower())
     return {
@@ -1433,8 +1449,16 @@ def list_store_pricing_tiers(cursor) -> dict:
                left(spt.tier_name, 256) AS tier_name,
                left(spt.note, {READ_TEXT_CHAR_LIMIT}) AS note,
                spt.updated_at,
-               left(sc.catalog_id, 256) AS catalog_id
+               left(sc.catalog_id, 256) AS catalog_id,
+               left(COALESCE(bm.blog_name, ''), 200) AS blog_name
           FROM woo.store_pricing_tier spt
+          LEFT JOIN LATERAL (
+              SELECT blog_name
+                FROM woo.store_blog_map
+               WHERE fdm4_store = spt.fdm4_store
+               ORDER BY blog_id
+               LIMIT 1
+         ) bm ON true
           LEFT JOIN LATERAL (
               SELECT catalog_id
                 FROM woo.store_catalog
@@ -1450,7 +1474,7 @@ def list_store_pricing_tiers(cursor) -> dict:
     )
     for row in rows:
         row["display_name"] = _store_display_name(
-            row["fdm4_store"], row.get("catalog_id")
+            row["fdm4_store"], row.get("catalog_id"), row.get("blog_name")
         )
     return {
         "assignments": rows,

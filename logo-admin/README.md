@@ -592,6 +592,31 @@ treated as an untrusted hint: on receipt the consumer calls back
 Delivery telemetry lands on `woo.feed_consumer`
 (`last_ping_at/status`, `last_pull_at/version`).
 
+## Store display names
+
+Every store picker shows `<name> (<S_code>)`. The name is
+`woo.store_blog_map.blog_name` - the WordPress site title of the store's blog
+(the lowest blog id when a store has several) - with a cleaned-up catalog slug
+as the fallback for stores that have no blog mapping. `STORE_DISPLAY_OVERRIDES`
+in `queries.py` still wins for the few codes that need a hand-picked name.
+Several stores share a display name ("Woo 1"), which is why the code is always
+shown next to it.
+
+Refresh the names after a store is renamed in WordPress:
+
+```bash
+# 1. prod web box - blog id + site title per site
+cd /var/www/arborwear && sudo -u www-data wp eval \
+  'foreach (get_sites(["number"=>1000]) as $s) echo $s->blog_id."\t".get_blog_option($s->blog_id,"blogname")."\n";' > /tmp/blognames.tsv
+# 2. anywhere - turn it into UPDATE statements (entities decoded, quotes escaped)
+python3 infra/store_blog_names.py < blognames.tsv > store-blog-names.sql
+# 3. warehouse box
+sudo -u postgres psql arb_warehouse -v ON_ERROR_STOP=1 -f store-blog-names.sql
+```
+
+The column was added by `sql/migrations/2026-09-03-store-blog-map-name.sql`;
+the first seed is `sql/seeds/2026-09-03-store-blog-names.sql`.
+
 ## Operations
 
 - Application logs: `journalctl -u arb-logo-admin`.
