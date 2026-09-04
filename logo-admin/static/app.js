@@ -5671,7 +5671,19 @@
     try {
       const data = await api(`/api/categories/runs?env=${encodeURIComponent(catState.env)}`);
       catRunState.runs = data.runs || [];
-      renderCatRuns();
+      // Fetch the expanded runs' job tables BEFORE touching the DOM, so the
+      // refresh swaps content in one pass. Rebuilding the list with the
+      // tables hidden and refilling them afterwards made the page shrink for
+      // a moment, and the browser snapped the scroll position to the top on
+      // every 3-second poll.
+      const details = new Map();
+      await Promise.all([...catRunState.openRuns].map(async (runId) => {
+        if (!catRunState.runs.some((r) => r.run_id === runId)) return;
+        try { details.set(runId, await api(`/api/categories/runs/${runId}`)); } catch (e) { /* the card re-fetches when opened */ }
+      }));
+      const scrollY = window.scrollY;
+      renderCatRuns(details);
+      if (Math.abs(window.scrollY - scrollY) > 1) window.scrollTo(0, scrollY);
       const restoring = catRunState.runs.some((r) => r.restoring);
       const active = catRunState.runs.find((r) => ["queued", "running"].includes(r.status)) || restoring;
       clearTimeout(catRunState.activeTimer);
@@ -5710,7 +5722,7 @@
     }
   }
 
-  function renderCatRuns() {
+  function renderCatRuns(details = null) {
     const box = $("#cat-runs-list");
     if (!box) return;
     if (!catRunState.runs.length) {
@@ -5749,8 +5761,12 @@
       } catch (error) { toast(errorMessage(error), "error"); setBusy(btn, false); }
     }));
     $$(".cat-run-open", box).forEach((btn) => btn.addEventListener("click", () => openCatRun(Number(btn.dataset.run), true)));
-    // Re-open the job tables the operator had expanded before this re-render.
-    catRunState.openRuns.forEach((runId) => { openCatRun(runId, false); });
+    // Re-open the job tables the operator had expanded before this re-render;
+    // details fetched up front render synchronously.
+    catRunState.openRuns.forEach((runId) => {
+      if (details && details.has(runId)) renderCatRunJobs(runId, details.get(runId));
+      else openCatRun(runId, false);
+    });
   }
 
   async function openCatRun(runId, toggle) {
@@ -5760,6 +5776,16 @@
     catRunState.openRuns.add(runId);
     try {
       const data = await api(`/api/categories/runs/${runId}`);
+      renderCatRunJobs(runId, data);
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    }
+  }
+
+  function renderCatRunJobs(runId, data) {
+    const holder = $(`#cat-run-jobs-${runId}`);
+    if (!holder) return;
+    try {
       const jobs = data.run.jobs || [];
       holder.innerHTML = `<table class="table cat-table"><thead><tr>
           <th>#</th><th>Store</th><th>Status</th><th>Tries</th>
