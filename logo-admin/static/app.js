@@ -5978,21 +5978,96 @@
     label.textContent = total ? `${mapped} of ${total} decided${total - mapped ? ` · ${total - mapped} to go` : " · all done"}` : "No categories yet - copy the stores first (step 1)";
   }
 
-  function catNodeOptionsHtml() {
-    return catTreeState.nodes
-      .map((n) => `<option value="${n.node_id}">${escapeHtml(n.name)} [${escapeHtml(n.slug)}]</option>`)
-      .join("");
+  // ---- "Move into…" picker: the destination is always an explicit choice.
+  // (The old inline dropdown defaulted to its first entry, so a bare click
+  // on Move once sent Men's Boots and Shoes into "Other".)
+  const catMoveState = { target: null, count: 0 };
+
+  function catNodePaths() {
+    const byId = new Map(catTreeState.nodes.map((n) => [n.node_id, n]));
+    const cache = new Map();
+    const pathOf = (n) => {
+      if (cache.has(n.node_id)) return cache.get(n.node_id);
+      const parent = n.parent_id === null || n.parent_id === undefined ? null : byId.get(n.parent_id);
+      const path = parent ? `${pathOf(parent)} › ${n.name}` : n.name;
+      cache.set(n.node_id, path);
+      return path;
+    };
+    catTreeState.nodes.forEach(pathOf);
+    return cache;
+  }
+
+  function openCatMoveDialog() {
+    const table = catMapState.table;
+    if (!table) return;
+    const selected = table.getSelectedData();
+    if (!selected.length) { toast("Tick some rows first.", "error"); return; }
+    if (!catTreeState.nodes.length) { toast("The draft tree is empty - build it on the Tree tab first.", "error"); return; }
+    catMoveState.target = null;
+    catMoveState.count = selected.length;
+    const products = selected.reduce((sum, r) => sum + Number(r.products || 0), 0);
+    $("#cat-move-context").textContent = `${selected.length} categor${selected.length === 1 ? "y" : "ies"} ticked · ${products} product${products === 1 ? "" : "s"} in total`;
+    $("#cat-move-rows").innerHTML = selected.slice(0, 12).map((r) =>
+      `<span class="cat-chip" title="${escapeHtml(r.old_slug)}">${escapeHtml(decodeEntities(r.sample_name || r.old_slug))} <small class="muted">${Number(r.products || 0)}</small></span>`).join("")
+      + (selected.length > 12 ? `<span class="cat-chip">and ${selected.length - 12} more</span>` : "");
+    $("#cat-move-search").value = "";
+    $("#cat-move-confirm").disabled = true;
+    $("#cat-move-summary").textContent = "Pick a category above.";
+    renderCatMoveList();
+    openDialog($("#cat-move-dialog"));
+    setTimeout(() => $("#cat-move-search").focus(), 60);
+  }
+
+  function renderCatMoveList() {
+    const list = $("#cat-move-list");
+    if (!list) return;
+    const q = $("#cat-move-search").value.trim().toLowerCase();
+    const paths = catNodePaths();
+    const stats = catTreeState.stats || {};
+    const nodes = catTreeState.nodes
+      .filter((n) => !q || `${paths.get(n.node_id)} ${n.slug}`.toLowerCase().includes(q))
+      .sort((a, b) => paths.get(a.node_id).localeCompare(paths.get(b.node_id)));
+    list.innerHTML = nodes.length ? nodes.map((n) => {
+      const path = paths.get(n.node_id);
+      const parts = path.split(" › ");
+      const head = parts.slice(0, -1).join(" › ");
+      const st = stats[n.slug];
+      return `<label class="cat-move-item">
+        <input type="radio" name="cat-move-target" value="${n.node_id}"${catMoveState.target === n.node_id ? " checked" : ""}>
+        <span class="cat-move-item__path">${head ? `<span class="muted">${escapeHtml(head)} › </span>` : ""}<b>${escapeHtml(parts[parts.length - 1])}</b></span>
+        <span class="cat-node__slug">${escapeHtml(n.slug)}</span>
+        <span class="cat-node__stats">${st ? `${st.stores} store${st.stores === 1 ? "" : "s"} · ${st.products} product${st.products === 1 ? "" : "s"}` : "new"}</span>
+      </label>`;
+    }).join("") : '<p class="muted cat-move-empty">No draft category matches.</p>';
+    $$("input[name='cat-move-target']", list).forEach((input) => input.addEventListener("change", () => {
+      catMoveState.target = Number(input.value);
+      $("#cat-move-confirm").disabled = false;
+      $("#cat-move-summary").textContent = `Move ${catMoveState.count} into: ${paths.get(catMoveState.target)}`;
+    }));
+  }
+
+  function wireCatMoveDialog() {
+    const search = $("#cat-move-search");
+    if (!search) return;
+    search.addEventListener("input", debounce(renderCatMoveList, 80));
+    $("#cat-move-confirm").addEventListener("click", () => {
+      const target = catMoveState.target;
+      if (!target) { toast("Pick the draft category first.", "error"); return; }
+      closeDialog($("#cat-move-dialog"));
+      catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "map", target_node_id: target })));
+    });
   }
 
   async function loadCatMapping() {
     if (!$("#cat-mapping-table")) return;
     if (!catState.env) { $("#cat-mapping-table").innerHTML = '<p class="muted">No website is configured for this environment.</p>'; return; }
     try {
-      if (!catTreeState.nodes.length) {
-        const tree = await api("/api/categories/tree");
+      if (!catTreeState.nodes.length || !catTreeState.hasStats) {
+        const tree = await api(`/api/categories/tree?env=${encodeURIComponent(catState.env)}`);
         catTreeState.nodes = tree.nodes || [];
+        catTreeState.stats = tree.stats || {};
+        catTreeState.hasStats = Object.keys(catTreeState.stats).length > 0;
       }
-      $("#cat-map-target").innerHTML = catNodeOptionsHtml();
       const data = await api(`/api/categories/mapping?env=${encodeURIComponent(catState.env)}`);
       catMapState.summary = data.summary;
       catMappingProgress();
@@ -6228,11 +6303,8 @@
 
   function wireCatMapping() {
     if (!$("#cat-mapping-panel")) return;
-    $("#cat-map-apply").addEventListener("click", () => {
-      const target = Number($("#cat-map-target").value);
-      if (!target) { toast("Choose the draft category to move them into.", "error"); return; }
-      catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "map", target_node_id: target })));
-    });
+    $("#cat-map-apply").addEventListener("click", openCatMoveDialog);
+    wireCatMoveDialog();
     $("#cat-map-delete").addEventListener("click", () =>
       catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "delete" }))));
     $("#cat-map-custom").addEventListener("click", () =>

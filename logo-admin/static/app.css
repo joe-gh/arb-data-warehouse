@@ -1065,3 +1065,17 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 .cat-map-quick .button[aria-pressed="true"] { background: var(--forest-800); color: var(--white); border-color: var(--forest-800); }
 .cat-map-quick__hint { margin-left: auto; font-size: .8rem; }
 .cat-cell-hint { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* Mapping "Move into…" picker */
+.cat-move-rows { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .7rem; }
+.cat-move-search { width: 100%; box-sizing: border-box; }
+.cat-move-list { max-height: 44vh; overflow: auto; margin-top: .5rem; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.cat-move-item { display: flex; align-items: center; gap: .6rem; padding: .4rem .6rem; border-bottom: 1px solid var(--line); cursor: pointer; }
+.cat-move-item:last-child { border-bottom: 0; }
+.cat-move-item:hover { background: var(--forest-50); }
+.cat-move-item:has(input:checked) { background: var(--forest-100); }
+.cat-move-item__path { flex: 1 1 auto; }
+.cat-move-item__path b { font-weight: 650; }
+.cat-move-item .cat-node__stats { margin-left: 0; }
+.cat-move-empty { padding: .8rem; }
+.cat-move-note { margin: .6rem 0 0; font-size: .85rem; }
