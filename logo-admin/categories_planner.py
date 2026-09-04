@@ -661,7 +661,10 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
     changed_blog1_slugs: List[Dict[str, str]] = []
     recreated: Dict[int, List[str]] = {}
     redirect_count = 0
-    totals = {"updates": 0, "creates": 0, "deletes": 0,
+    # changed_updates is what the operator reads as "categories changed";
+    # updates alone counts every existing term the plan touches, changed or
+    # not, and once read 10,217 for a cleanup that changed 2,012.
+    totals = {"updates": 0, "changed_updates": 0, "creates": 0, "deletes": 0,
               "membership_changes": 0, "reslugs": 0, "renames": 0}
 
     if not unmapped:
