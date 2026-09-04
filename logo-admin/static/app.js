@@ -3867,7 +3867,7 @@
 
   async function bulkApply() {
     const rows = Array.from(document.querySelectorAll("#bulk-preview-table tbody tr"))
-      .filter((tr) => tr.querySelector("input[type='checkbox']").checked)
+      .filter((tr) => !tr.hidden && tr.querySelector("input[type='checkbox']").checked)
       .map((tr) => ({ style_code: tr.dataset.style, color_code: tr.dataset.color }));
     if (!rows.length) { toast("No rows selected.", "error"); return; }
     const placement = $("#bulk-placement").value;
@@ -4094,9 +4094,23 @@
   // ===== Batch selection of styles (paste / activate / bulk apply scope) =====
   const batchState = { selected: new Set(), rows: [] };
 
+  // Confirmations name what a batch will touch, not just how many. A count
+  // alone once let a filtered "select all" stamp every category Delete.
+  function styleSample(codes, max = 8) {
+    const list = [...codes].map(String);
+    if (!list.length) return "none";
+    return `${list.slice(0, max).join(", ")}${list.length > max ? ` and ${list.length - max} more` : ""}`;
+  }
+
   function renderBatchBar() {
     const n = batchState.selected.size;
-    $("#batch-count").textContent = n ? `${n} style${n === 1 ? "" : "s"} selected` : "No styles selected";
+    const listed = new Set((batchState.rows || []).map((r) => styleCode(r)));
+    const offList = [...batchState.selected].filter((code) => !listed.has(code)).length;
+    const count = $("#batch-count");
+    count.textContent = n
+      ? `${n} style${n === 1 ? "" : "s"} selected${offList ? ` · ${offList} not in the current list` : ""}`
+      : "No styles selected";
+    count.title = n ? `Selected: ${styleSample(batchState.selected, 20)}` : "";
     $("#batch-paste").disabled = !n || !clipboardState.data;
     ["#batch-activate", "#batch-deactivate", "#batch-bulk-apply"].forEach((id) => { $(id).disabled = !n; });
     $("#batch-copy-from-open").disabled = !n || !state.style;
@@ -4174,7 +4188,7 @@
   async function batchActive(active) {
     const styles = [...batchState.selected];
     const confirmed = await confirmAction({ title: active ? "Set styles active" : "Set styles inactive",
-      message: `${styles.length} style${styles.length === 1 ? "" : "s"} in ${storeDisplayFor(state.store)}.`, actionLabel: active ? "Activate" : "Deactivate", danger: !active });
+      message: `${styles.length} style${styles.length === 1 ? "" : "s"} in ${storeDisplayFor(state.store)}: ${styleSample(styles)}.`, actionLabel: active ? "Activate" : "Deactivate", danger: !active });
     if (!confirmed) return;
     try {
       const result = await api("/api/style-active-batch", { method: "POST", body: { store: state.store, styles, active } });
@@ -4191,7 +4205,7 @@
     const scope = $("#batch-scope").value;
     const overwrite = $("#clipboard-overwrite")?.checked === true;
     const confirmed = await confirmAction({ title: `Paste to ${styles.length} styles`,
-      message: `${data.rows.length} logo${data.rows.length === 1 ? "" : "s"} → ${scope === "match" ? `color ${data.source.color}` : `${scope} colors`} of each selected style in ${storeDisplayFor(state.store)}. ${overwrite ? "Occupied slots are overwritten." : "Occupied slots are skipped."} One undo batch.`, actionLabel: "Paste", danger: overwrite });
+      message: `${data.rows.length} logo${data.rows.length === 1 ? "" : "s"} → ${scope === "match" ? `color ${data.source.color}` : `${scope} colors`} of each selected style in ${storeDisplayFor(state.store)}: ${styleSample(styles)}. ${overwrite ? "Occupied slots are overwritten." : "Occupied slots are skipped."} One undo batch.`, actionLabel: "Paste", danger: overwrite });
     if (!confirmed) return;
     try {
       const result = await api("/api/assignments/paste-batch", { method: "POST", body: {
@@ -4218,7 +4232,7 @@
   }
 
   function renderCopyManyTargets() {
-    $("#copy-many-targets").textContent = batchState.selected.size ? `${batchState.selected.size} target style(s) selected.` : "No target styles selected.";
+    $("#copy-many-targets").textContent = batchState.selected.size ? `${batchState.selected.size} target style${batchState.selected.size === 1 ? "" : "s"} selected: ${styleSample(batchState.selected, 12)}.` : "No target styles selected.";
   }
 
   // Any change to the options or the target selection invalidates the plan:
@@ -4855,8 +4869,14 @@
         const hit = !q || tr.textContent.toLowerCase().includes(q);
         tr.hidden = !hit;
         if (hit) shown++;
+        else {
+          // A row the filter hides drops out of the selection, so Apply can
+          // never touch something the operator cannot see.
+          const box = tr.querySelector("input[type='checkbox']");
+          if (box) box.checked = false;
+        }
       });
-      $("#bulk-preview-shown").textContent = q ? `${shown} of ${total} shown` : "";
+      $("#bulk-preview-shown").textContent = q ? `${shown} of ${total} shown - hidden rows are unticked` : "";
     });
     $("#report-quick-filter").addEventListener("input", () => {
       const q = $("#report-quick-filter").value.trim().toLowerCase();
@@ -5869,7 +5889,39 @@
   }
 
   // ------------------------------------------- categories: mapping workbench
-  const catMapState = { table: null, summary: null, suggestions: [], rows: [], quick: "all" };
+  const catMapState = { table: null, summary: null, suggestions: [], rows: [], quick: "all", headerBox: null };
+
+  // Selection is limited to the rows the operator can SEE. The stock
+  // Tabulator header checkbox selected every row in the table, hidden ones
+  // included, which once marked all 187 categories Delete while a filter
+  // showed 35.
+  function catMapShownRows() {
+    return catMapState.table ? catMapState.table.getRows("active") : [];
+  }
+
+  function catMapToggleShown(on) {
+    const table = catMapState.table;
+    if (!table) return;
+    const shown = catMapShownRows();
+    if (on) table.selectRow(shown); else table.deselectRow(shown);
+  }
+
+  function catMapSyncHeaderBox() {
+    const box = catMapState.headerBox;
+    if (!box || !catMapState.table) return;
+    const shown = catMapShownRows();
+    const selected = shown.filter((row) => row.isSelected()).length;
+    box.checked = shown.length > 0 && selected === shown.length;
+    box.indeterminate = selected > 0 && selected < shown.length;
+  }
+
+  function catMapDropHiddenSelection() {
+    const table = catMapState.table;
+    if (!table) return;
+    const shownIds = new Set(catMapShownRows().map((row) => row.getIndex()));
+    table.getSelectedRows().forEach((row) => { if (!shownIds.has(row.getIndex())) row.deselect(); });
+    catMapSyncHeaderBox();
+  }
 
   function catBlogLabel(blogId) {
     const blog = (catState.blogs || []).find((b) => b.blog_id === blogId);
@@ -5956,7 +6008,16 @@
         selectableRows: true,
         index: "id",
         columns: [
-          { formatter: "rowSelection", titleFormatter: "rowSelection", hozAlign: "center", headerSort: false, width: 42, resizable: false },
+          { formatter: "rowSelection", hozAlign: "center", headerSort: false, width: 42, resizable: false,
+            titleFormatter: () => {
+              const box = document.createElement("input");
+              box.type = "checkbox";
+              box.setAttribute("aria-label", "Select every row shown");
+              box.title = "Select every row shown. Rows hidden by a filter are never selected.";
+              box.addEventListener("click", (event) => { event.stopPropagation(); catMapToggleShown(box.checked); });
+              catMapState.headerBox = box;
+              return box;
+            } },
           { title: "Web address (slug)", field: "old_slug", headerFilter: "input", headerFilterPlaceholder: "Filter addresses…", widthGrow: 3, minWidth: 160 },
           { title: "Name", field: "sample_name", headerFilter: "input", headerFilterPlaceholder: "Filter names…", widthGrow: 3, minWidth: 160,
             formatter: (cell) => escapeHtml(decodeEntities(cell.getValue())) },
@@ -5996,7 +6057,8 @@
           { title: "Note", field: "note", widthGrow: 1, minWidth: 90 },
         ],
       });
-      catMapState.table.on("rowSelectionChanged", (data) => catMappingSelectionChanged(data.length));
+      catMapState.table.on("rowSelectionChanged", (data) => { catMappingSelectionChanged(data.length); catMapSyncHeaderBox(); });
+      catMapState.table.on("dataFiltered", () => catMapDropHiddenSelection());
       $$("#cat-map-quick [data-quick]").forEach((button) => {
         button.addEventListener("click", () => catMapQuickApply(button.dataset.quick));
       });
@@ -6010,7 +6072,8 @@
 
   function catMappingSelectionChanged(count) {
     const label = $("#cat-map-selected");
-    if (label) label.textContent = count ? `${count} slug${count === 1 ? "" : "s"} selected` : "Nothing selected";
+    const shown = catMapShownRows().length;
+    if (label) label.textContent = count ? `${count} of ${shown} shown selected` : "Nothing selected";
     ["#cat-map-apply", "#cat-map-delete", "#cat-map-custom", "#cat-map-clear", "#cat-map-primary"].forEach((sel) => {
       const button = $(sel);
       if (button) button.disabled = !count;
@@ -6046,6 +6109,25 @@
     if (!selected.length) { toast("Tick some rows first.", "error"); return; }
     const rows = rowsBuilder(selected).filter(Boolean);
     if (!rows.length) return;
+    // A big or destructive batch gets a plain-language check first: how many
+    // rows, and how many of them still hold products.
+    const first = rows[0] || {};
+    const what = first.action === "delete" ? "Delete"
+      : first.action === "store_custom" ? "Keep for this store only"
+      : first.action === "map" ? `Move into ${escapeHtml((catNodeById(first.target_node_id) || {}).name || "the chosen category")}`
+      : first.is_primary ? "Make this the surviving one" : "Apply this decision to";
+    const touched = new Set(rows.map((r) => r.old_slug));
+    const withProducts = selected.filter((r) => touched.has(r.old_slug) && Number(r.products || 0) > 0);
+    const productTotal = withProducts.reduce((sum, r) => sum + Number(r.products || 0), 0);
+    if (rows.length > 25 || (first.action === "delete" && withProducts.length)) {
+      const confirmed = await confirmAction({
+        title: `${what.replace(/<[^>]+>/g, "")}: ${rows.length} categor${rows.length === 1 ? "y" : "ies"}?`,
+        message: `${withProducts.length ? `${withProducts.length} of them still hold products (${productTotal} in total).` : "None of them hold products."}${first.action === "delete" && withProducts.length ? " Deleting a category that still holds products leaves those products with no category unless another category picks them up; the plan check will stop and list them." : ""}`,
+        actionLabel: first.action === "delete" ? "Delete anyway" : "Continue",
+        danger: first.action === "delete",
+      });
+      if (!confirmed) return;
+    }
     try {
       const { saved, failures } = await catMappingSaveRows(rows);
       if (failures.length) {
@@ -8033,7 +8115,15 @@
         <p class="mix-bulk-note">You can only add products FDM4 already offers this store. Added styles carry all their colors - open a style to trim colors or sizes.</p>
       </div>
     </section>`;
-    $(".mix-search", box).addEventListener("input", debounce(() => { mixState.q = $(".mix-search", box).value.trim(); mixState.offset = 0; loadMixStyles(); }));
+    $(".mix-search", box).addEventListener("input", debounce(() => {
+      const next = $(".mix-search", box).value.trim();
+      // A different search is a different list: the old selection would be
+      // invisible, so it is dropped rather than carried along.
+      if (next !== mixState.q) mixState.selected = new Set();
+      mixState.q = next;
+      mixState.offset = 0;
+      loadMixStyles();
+    }));
     $(".mix-prev", box).addEventListener("click", () => { if (mixState.offset > 0) { mixState.offset = Math.max(0, mixState.offset - mixState.limit); loadMixStyles(); } });
     $(".mix-next", box).addEventListener("click", () => { mixState.offset += mixState.limit; loadMixStyles(); });
     $(".mix-import", box).addEventListener("click", (e) => mixImport("merge", e.currentTarget));
@@ -8152,8 +8242,11 @@
     const btn = $(".mix-remove-selected", box);
     if (!btn) return;
     const n = mixState.selected.size;
+    const onPage = (mixState.styles || []).filter((r) => mixState.selected.has(r.style_code)).length;
+    const elsewhere = n - onPage;
     btn.hidden = n === 0;
-    btn.textContent = `Remove selected (${n})`;
+    btn.textContent = `Remove selected (${n}${elsewhere > 0 ? `, ${elsewhere} on other pages` : ""})`;
+    btn.title = n ? `Selected: ${styleSample(mixState.selected, 20)}` : "";
   }
 
   function renderMixPager(box) {
@@ -8181,7 +8274,7 @@
       impact = `Removing ${Number(p.styles_affected) || styles.length} style${plural} retires ${Number(p.products_retired) || 0} products on ${name} at the next sync. Products are hidden and set out of stock - never deleted - and come back if you re-add the style.`;
     } catch { /* fall back to generic copy */ }
     if (btn) setBusy(btn, false);
-    const ok = await confirmAction({ title: "Remove from mix?", message: impact, actionLabel: "Remove" });
+    const ok = await confirmAction({ title: `Remove ${styles.length} style${plural} from the mix?`, message: `${impact} Styles: ${styleSample(styles)}.`, actionLabel: "Remove" });
     if (!ok) return;
     setBusy(btn, true, "Removing...");
     try {
