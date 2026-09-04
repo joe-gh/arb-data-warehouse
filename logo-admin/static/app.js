@@ -5264,15 +5264,15 @@
     });
     const rows = [...known.values()].sort((a, b) => a.blog_id - b.blog_id);
     if (!rows.length) {
-      box.innerHTML = '<p class="muted">No blogs yet - if WordPress is reachable, use Import all blogs.</p>';
+      box.innerHTML = '<p class="muted">No stores listed yet. If WordPress is reachable, press Refresh all stores.</p>';
       return;
     }
     box.innerHTML = `
       <table class="table cat-table">
         <thead><tr>
           <th><input type="checkbox" id="cat-select-all" aria-label="Select all blogs"></th>
-          <th>Blog</th><th>Store</th><th>Version</th><th>Terms</th>
-          <th>Memberships</th><th>Imported</th><th></th>
+          <th>Site #</th><th>Store</th><th>Copy #</th><th>Categories</th>
+          <th>Products in categories</th><th>Copied</th><th></th>
         </tr></thead>
         <tbody>
           ${rows.map((b) => {
@@ -5285,7 +5285,7 @@
               <td>${snap ? snap.term_count : '<span class="muted">-</span>'}</td>
               <td>${snap ? snap.membership_count : '<span class="muted">-</span>'}</td>
               <td>${snap ? escapeHtml(formatDate(snap.imported_at)) : '<span class="muted">never</span>'}</td>
-              <td><button type="button" class="button button--ghost button--small cat-import-one" data-blog="${b.blog_id}">Import</button></td>
+              <td><button type="button" class="button button--ghost button--small cat-import-one" data-blog="${b.blog_id}">Refresh</button></td>
             </tr>`;
           }).join("")}
         </tbody>
@@ -5309,9 +5309,9 @@
     const target = catState.targets.find((t) => t.env === catState.env);
     if (blogIds.length > 1) {
       const confirmed = await confirmAction({
-        title: `Import ${blogIds.length} blog snapshots?`,
-        message: `Reads the live category structure from ${target ? target.host : "WordPress"} and replaces the stored ${escapeHtml(catState.env)} snapshots. Nothing on WordPress changes.`,
-        actionLabel: "Import",
+        title: `Copy the categories of ${blogIds.length} store${blogIds.length === 1 ? "" : "s"}?`,
+        message: `Reads the current categories from ${target ? target.host : "WordPress"} and replaces the stored ${escapeHtml(catState.env)} copies. Nothing on the websites changes.`,
+        actionLabel: "Copy now",
       });
       if (!confirmed) return;
     }
@@ -5322,7 +5322,7 @@
     let done = 0;
     try {
       for (const blogId of blogIds) {
-        if (progress) progress.textContent = `Importing blog ${blogId}\u2026 (${done}/${blogIds.length})`;
+        if (progress) progress.textContent = `Copying store ${blogId}\u2026 (${done}/${blogIds.length})`;
         try {
           const result = await api("/api/categories/snapshots/import", {
             method: "POST",
@@ -5342,9 +5342,9 @@
     }
     await refreshCatSnapshots().catch(() => {});
     if (failures.length) {
-      toast(`Imported ${done - failures.length}/${blogIds.length}; failures: ${failures.slice(0, 3).join("; ")}${failures.length > 3 ? "\u2026" : ""}`, "error");
+      toast(`Copied ${done - failures.length} of ${blogIds.length}; problems: ${failures.slice(0, 3).join("; ")}${failures.length > 3 ? "\u2026" : ""}`, "error");
     } else {
-      toast(`Imported ${done} blog snapshot${done === 1 ? "" : "s"}.`, "success");
+      toast(`Copied the categories of ${done} store${done === 1 ? "" : "s"}.`, "success");
     }
   }
 
@@ -5355,12 +5355,12 @@
       const ids = (catState.blogs.length
         ? catState.blogs.map((b) => b.blog_id)
         : catState.snapshots.map((s) => s.blog_id));
-      if (!ids.length) { toast("No blogs known yet - WordPress may be unreachable.", "error"); return; }
+      if (!ids.length) { toast("No stores known yet - WordPress may be unreachable.", "error"); return; }
       importCatBlogs(ids);
     });
     $("#cat-import-selected").addEventListener("click", () => {
       const ids = [...catState.selected].sort((a, b) => a - b);
-      if (!ids.length) { toast("Select at least one blog first.", "error"); return; }
+      if (!ids.length) { toast("Tick at least one store first.", "error"); return; }
       importCatBlogs(ids);
     });
   }
@@ -5374,7 +5374,7 @@
   async function loadCatPreviewTab() {
     renderCatScopeNote();
     const box = $("#cat-preview-result");
-    if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
+    if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Press Check the plan to see exactly what would change on each store.</p>';
     loadCatReadiness();
   }
 
@@ -5389,8 +5389,8 @@
       box.hidden = false;
       box.className = failures.length ? "cat-blocker" : (warnings.length ? "cat-warning" : "cat-ok");
       box.innerHTML = failures.length
-        ? `<strong>WordPress is not ready to apply</strong> - the run would be refused:<ul>${failures.map((f) => `<li>${escapeHtml(f)}</li>`).join("")}</ul>`
-        : `WordPress is ready to apply${warnings.length ? ` <span class="muted">(${warnings.map(escapeHtml).join("; ")})</span>` : ""}.`;
+        ? `<strong>The websites are not ready</strong> - applying would be refused until this is fixed:<ul>${failures.map((f) => `<li>${escapeHtml(f)}</li>`).join("")}</ul>`
+        : `The websites are ready for an apply${warnings.length ? ` <span class="muted">(${warnings.map(escapeHtml).join("; ")})</span>` : ""}.`;
       const apply = $("#cat-apply-run");
       if (apply && failures.length) apply.disabled = true;
     } catch (error) {
@@ -5459,8 +5459,8 @@
     if (!note) return;
     const { ids, labels, unresolved } = catScopeResolve();
     note.classList.toggle("is-error", unresolved.length > 0);
-    if (!ids && !unresolved.length) { note.textContent = "Scope: every snapshotted blog."; return; }
-    note.textContent = `${ids ? `Scope: ${ids.length} blog${ids.length === 1 ? "" : "s"} - ${labels.join(", ")}` : "Scope: no blogs matched"}${unresolved.length ? ` · not found: ${unresolved.join(", ")}` : ""}`;
+    if (!ids && !unresolved.length) { note.textContent = "Every store with a copy is included."; return; }
+    note.textContent = `${ids ? `${ids.length} store${ids.length === 1 ? "" : "s"}: ${labels.join(", ")}` : "No stores matched"}${unresolved.length ? ` · not found: ${unresolved.join(", ")}` : ""}`;
   }
 
   function catApplyAllowed() {
@@ -5473,7 +5473,7 @@
     const apply = $("#cat-apply-run");
     if (apply) apply.disabled = true;
     const box = $("#cat-preview-result");
-    if (box) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
+    if (box) box.innerHTML = '<p class="muted">Press Check the plan to see exactly what would change on each store.</p>';
     const ack = $("#cat-ack-panel");
     if (ack) ack.hidden = true;
   }
@@ -5483,8 +5483,8 @@
     const box = $("#cat-preview-result");
     const resolved = catScopeResolve();
     renderCatScopeNote();
-    if (resolved.unresolved.length) { toast(`Fix the blog list first - not found: ${resolved.unresolved.join(", ")}`, "error"); return; }
-    setBusy(button, true, "Computing\u2026");
+    if (resolved.unresolved.length) { toast(`Fix the store list first - not found: ${resolved.unresolved.join(", ")}`, "error"); return; }
+    setBusy(button, true, "Checking\u2026");
     catResetPreview();
     try {
       const scope = resolved.ids;
@@ -5516,29 +5516,29 @@
     if (panel.hidden) return;
     const rows = blocker ? (blocker.skus || blocker.sample || []) : [];
     listBox.innerHTML = rows.length ? `
-      <table class="table cat-table"><thead><tr><th><input type="checkbox" id="cat-ack-check-all"></th><th>SKU</th><th>Blogs</th><th>Where</th></tr></thead><tbody>
+      <table class="table cat-table"><thead><tr><th><input type="checkbox" id="cat-ack-check-all"></th><th>Style</th><th>Stores</th><th>Where</th></tr></thead><tbody>
       ${rows.map((r) => `<tr><td><input type="checkbox" class="cat-ack-check" value="${escapeHtml(r.key || r.sku)}"></td><td>${r.sku ? escapeHtml(r.sku) : `<span class="muted" title="This product has no SKU; it is acknowledged by product id">${escapeHtml(r.key || "")} (no SKU)</span>`}</td><td>${r.blogs || ""}</td><td class="muted">${(r.where || []).map((w) => `blog ${w.blog_id} #${w.product_id}`).join(", ")}</td></tr>`).join("")}
       </tbody></table>${blocker && blocker.count > rows.length ? `<p class="muted">Showing ${rows.length} of ${blocker.count}.</p>` : ""}`
-      : '<p class="muted">No products would end without a category.</p>';
+      : '<p class="muted">No product would be left without a category.</p>';
     const all = $("#cat-ack-check-all");
     if (all) all.addEventListener("change", () => $$(".cat-ack-check", listBox).forEach((c) => { c.checked = all.checked; }));
-    ackedBox.innerHTML = acked.length ? `<h4>Acknowledged (${acked.length})</h4><div class="cat-membership">${acked.map((a) => `<span class="cat-chip">${escapeHtml(a.sku)}${a.note ? ` <span class="muted">${escapeHtml(a.note)}</span>` : ""} <button type="button" class="cat-ack-del" data-sku="${escapeHtml(a.sku)}" title="Remove acknowledgement">\u00d7</button></span>`).join("")}</div>` : "";
+    ackedBox.innerHTML = acked.length ? `<h4>Accepted with no category (${acked.length})</h4><div class="cat-membership">${acked.map((a) => `<span class="cat-chip">${escapeHtml(a.sku)}${a.note ? ` <span class="muted">${escapeHtml(a.note)}</span>` : ""} <button type="button" class="cat-ack-del" data-sku="${escapeHtml(a.sku)}" title="Remove acknowledgement">\u00d7</button></span>`).join("")}</div>` : "";
     $$(".cat-ack-del", ackedBox).forEach((btn) => btn.addEventListener("click", async () => {
       try {
         await api(`/api/categories/uncategorized-ack/${encodeURIComponent(btn.dataset.sku)}`, { method: "DELETE" });
-        toast(`${btn.dataset.sku} will block again until rescued or re-acknowledged.`, "success");
+        toast(`${btn.dataset.sku} will stop the plan again until it gets a category or is accepted again.`, "success");
         await runCatPreview();
       } catch (error) { toast(errorMessage(error), "error"); }
     }));
   }
 
   async function catAcknowledge(skus) {
-    if (!skus.length) { toast("Select SKUs first.", "error"); return; }
+    if (!skus.length) { toast("Tick some products first.", "error"); return; }
     const note = ($("#cat-ack-note").value || "").trim();
     const confirmed = await confirmAction({
-      title: `Acknowledge ${skus.length} SKU(s) as intentionally uncategorized?`,
-      message: "They will no longer block the plan. On the next apply these products keep NO category on the affected stores.",
-      actionLabel: "Acknowledge",
+      title: `Accept ${skus.length} product${skus.length === 1 ? "" : "s"} with no category?`,
+      message: "They will no longer stop the plan. After the apply these products have NO category on the affected stores, so shoppers only find them by search or direct link.",
+      actionLabel: "Accept",
     });
     if (!confirmed) return;
     const button = $("#cat-ack-selected");
@@ -5547,7 +5547,7 @@
       for (let i = 0; i < skus.length; i += 500) {
         await api("/api/categories/uncategorized-ack", { method: "PUT", body: { skus: skus.slice(i, i + 500), note } });
       }
-      toast(`Acknowledged ${skus.length} SKU(s).`, "success");
+      toast(`Accepted ${skus.length} product${skus.length === 1 ? "" : "s"}.`, "success");
       await runCatPreview();
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -5562,22 +5562,23 @@
     const totals = preview.totals || {};
     const blockerHtml = (preview.blockers || []).map((b) => {
       if (b.kind === "unmapped_slugs") {
-        return `<div class="cat-blocker"><strong>${b.count} unmapped slugs</strong> - finish the Mapping tab. e.g. ${b.sample.slice(0, 8).map(escapeHtml).join(", ")}</div>`;
+        return `<div class="cat-blocker"><strong>${b.count} existing categor${b.count === 1 ? "y" : "ies"} still need a decision</strong> - go to the Mapping tab (step 3). For example: ${b.sample.slice(0, 8).map(escapeHtml).join(", ")}</div>`;
       }
       if (b.kind === "zero_category_skus") {
-        return `<div class="cat-blocker"><strong>${b.count} styles would end with no categories</strong> - rescue them in Products, or acknowledge them as intentionally uncategorized. e.g. ${b.sample.slice(0, 6).map((z) => escapeHtml(z.sku)).join(", ")}</div>`;
+        return `<div class="cat-blocker"><strong>${b.count} product${b.count === 1 ? "" : "s"} would be left with no category</strong> - give them one on the Products tab, or accept them in the list below. For example: ${b.sample.slice(0, 6).map((z) => escapeHtml(z.sku || z.key)).join(", ")}</div>`;
       }
       if (b.kind === "slug_collisions") {
-        return `<div class="cat-blocker"><strong>Slug collisions</strong>: ${b.blogs.map((row) => `blog ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}</div>`;
+        return `<div class="cat-blocker"><strong>Two categories would end up with the same web address</strong> - change one of them in the Tree: ${b.blogs.map((row) => `store ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}</div>`;
       }
       if (b.kind === "recreated_slugs") {
-        return `<div class="cat-blocker"><strong>Deleted and re-created in the same run</strong>: ${b.blogs.map((row) => `blog ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}. ${escapeHtml(b.message || "")}</div>`;
+        return `<div class="cat-blocker"><strong>These categories would be deleted and created again in the same run</strong>, which breaks their links and search results: ${b.blogs.map((row) => `store ${row.blog_id}: ${row.slugs.map(escapeHtml).join(", ")}`).join(" \u00b7 ")}. On the Mapping tab, move the existing category into the draft category instead of deleting it.</div>`;
       }
       return `<div class="cat-blocker"><strong>${escapeHtml(b.kind)}</strong></div>`;
     }).join("");
     const warningHtml = (preview.warnings || []).map((w) => {
-      if (w.kind === "redirects") return `<div class="cat-warning">${w.count} blog-1 redirects will be created.</div>`;
-      if (w.kind === "blog1_slug_changes") return `<div class="cat-warning">${escapeHtml(w.message)} (${(w.changes || []).length} slugs)</div>`;
+      if (w.kind === "redirects") return w.count ? `<div class="cat-warning">${w.count} link redirect${w.count === 1 ? "" : "s"} will be added on the public store so old category links keep working.</div>` : "";
+      if (w.kind === "blog1_slug_changes") return `<div class="cat-warning">${(w.changes || []).length} public-store category address${(w.changes || []).length === 1 ? "" : "es"} change. Old links redirect automatically; custom page styling keyed on a category address may need updating.</div>`;
+      if (w.kind === "code_item") return `<div class="cat-warning"><span class="muted">For the developers:</span> ${escapeHtml(w.message)}</div>`;
       return `<div class="cat-warning">${escapeHtml(w.message || w.kind)}</div>`;
     }).join("");
     const blogRows = (preview.blogs || []).map((b) => {
@@ -5588,35 +5589,35 @@
         <td>${st.zero_category || 0}</td><td>v${b.snapshot_version}</td></tr>`;
     }).join("");
     box.innerHTML = `
-      ${preview.ok ? '<div class="cat-ok">No blockers - this plan can be applied.</div>' : blockerHtml}
+      ${preview.ok ? '<div class="cat-ok">Nothing stops this plan. It can be applied.</div>' : blockerHtml}
       ${warningHtml}
       <div class="cat-membership cat-gap-top">
-        <span class="cat-chip">changed ${totals.changed_updates ?? totals.updates ?? 0}</span>
-        <span class="cat-chip">creates ${totals.creates || 0}</span>
-        <span class="cat-chip cat-chip--minus">deletes ${totals.deletes || 0}</span>
-        <span class="cat-chip">product moves ${totals.membership_changes || 0}</span>
-        <span class="cat-chip">re-slugs ${totals.reslugs || 0}</span>
+        <span class="cat-chip" title="Existing categories that change (name, place in the tree, order or address)">${totals.changed_updates ?? totals.updates ?? 0} categories changed</span>
+        <span class="cat-chip" title="Categories that do not exist on the store yet">${totals.creates || 0} new</span>
+        <span class="cat-chip cat-chip--minus" title="Categories removed from the store">${totals.deletes || 0} removed</span>
+        <span class="cat-chip" title="Products whose categories change">${totals.membership_changes || 0} products moved</span>
+        <span class="cat-chip" title="Categories whose web address changes">${totals.reslugs || 0} addresses changed</span>
       </div>
       <div class="cat-table-wrap cat-gap-top">
         <table class="table cat-table"><thead><tr>
-          <th>Blog</th><th>Path</th><th>Changed</th><th>Creates</th><th>Deletes</th>
-          <th>Product moves</th><th>Zero-cat</th><th>Snapshot</th>
+          <th>Site #</th><th>Path</th><th>Categories changed</th><th>New</th><th>Removed</th>
+          <th>Products moved</th><th>Left without a category</th><th>Copy #</th>
         </tr></thead><tbody>${blogRows}</tbody></table>
       </div>`;
   }
 
   async function runCatApply() {
     if (!catRunState.preview || !catRunState.preview.ok) return;
-    if (!catApplyAllowed()) { toast("Your login is not on the apply allowlist.", "error"); return; }
+    if (!catApplyAllowed()) { toast("Your login can check plans but not apply them.", "error"); return; }
     const previewed = catRunState.preview.scope || null;
     const current = catScopeBlogIds();
     if (JSON.stringify(previewed) !== JSON.stringify(current)) {
-      toast("The blog scope changed since the preview - run the preview again.", "error");
+      toast("The store list changed since the last check - press Check the plan again.", "error");
       catResetPreview();
       return;
     }
     const blogCount = (catRunState.preview.blogs || []).length;
-    const scopeText = previewed ? `${blogCount} blog(s): ${previewed.join(", ")}` : `ALL ${blogCount} snapshotted blogs`;
+    const scopeText = previewed ? `${blogCount} store${blogCount === 1 ? "" : "s"} (${previewed.join(", ")})` : `ALL ${blogCount} stores`;
     const target = catState.targets.find((t) => t.env === catState.env);
     const host = target ? target.host : "WordPress";
     if (catState.env === "prod") {
@@ -5625,7 +5626,7 @@
     } else {
       const confirmed = await confirmAction({
         title: `Apply to ${host}?`,
-        message: `Creates the run for ${scopeText} and starts working through them (blog 1 first). You can pause between blogs.`,
+        message: `Makes the planned changes on ${scopeText}, one store at a time starting with the public store. Each store is copied first so it can be restored, and you can pause between stores.`,
         actionLabel: "Apply",
         danger: true,
       });
@@ -5670,13 +5671,13 @@
       const button = $("#cat-freeze-toggle");
       const chip = $("#cat-freeze-state");
       if (button) {
-        button.textContent = catRunState.freeze ? "Unfreeze WP category edits" : "Freeze WP category edits";
+        button.textContent = catRunState.freeze ? "Unlock category editing in WordPress" : "Lock category editing in WordPress";
         button.setAttribute("aria-pressed", String(catRunState.freeze));
         button.classList.toggle("is-on", catRunState.freeze);
         if (catApplyAllowed()) button.disabled = false;
       }
       if (chip) {
-        chip.textContent = catRunState.freeze ? "WP edits: frozen" : "WP edits: open";
+        chip.textContent = catRunState.freeze ? "wp-admin editing: locked" : "wp-admin editing: open";
         chip.className = `chip ${catRunState.freeze ? "chip--frozen-warn" : "chip--muted"}`;
       }
     } catch (error) {
@@ -5684,8 +5685,8 @@
       catRunState.freeze = null;
       const button = $("#cat-freeze-toggle");
       const chip = $("#cat-freeze-state");
-      if (button) { button.textContent = "Freeze state unknown (WP unreachable)"; button.disabled = true; button.classList.remove("is-on"); }
-      if (chip) { chip.textContent = "WP edits: unknown"; chip.className = "chip chip--muted"; }
+      if (button) { button.textContent = "Lock state unknown (WordPress unreachable)"; button.disabled = true; button.classList.remove("is-on"); }
+      if (chip) { chip.textContent = "wp-admin editing: unknown"; chip.className = "chip chip--muted"; }
     }
   }
 
@@ -5693,7 +5694,7 @@
     const box = $("#cat-runs-list");
     if (!box) return;
     if (!catRunState.runs.length) {
-      box.innerHTML = '<p class="muted">No runs yet for this environment.</p>';
+      box.innerHTML = '<p class="muted">Nothing has been applied here yet. Runs appear as soon as you press Apply on the Preview & Apply tab.</p>';
       return;
     }
     box.innerHTML = catRunState.runs.map((run) => {
@@ -5741,8 +5742,8 @@
       const data = await api(`/api/categories/runs/${runId}`);
       const jobs = data.run.jobs || [];
       holder.innerHTML = `<table class="table cat-table"><thead><tr>
-          <th>#</th><th>Blog</th><th>Status</th><th>Attempts</th>
-          <th>Changed</th><th>Creates</th><th>Deletes</th><th>Moves</th><th>Result</th><th></th>
+          <th>#</th><th>Store</th><th>Status</th><th>Tries</th>
+          <th>Categories changed</th><th>New</th><th>Removed</th><th>Products moved</th><th>Result</th><th></th>
         </tr></thead><tbody>
         ${jobs.map((job) => {
           const st = job.stats || {};
@@ -5798,8 +5799,8 @@
       $$(".cat-job-ctl", holder).forEach((btn) => btn.addEventListener("click", async () => {
         if (btn.dataset.act === "restore") {
           const sure = await confirmAction({
-            title: `Restore blog from its pre-apply snapshot?`,
-            message: "Emergency rollback: converges the blog back to how it looked before this job ran (terms, then memberships in pages, then cleanup). Deleted terms recreate with new ids. Runs in the background; watch the job row.",
+            title: "Put this store back the way it was?",
+            message: "Restores the store's categories and product links to the copy taken right before this run touched it, then checks the result against that copy. Runs in the background; progress shows on the row. Categories the run had removed come back (with new internal ids).",
             actionLabel: "Restore",
             danger: true,
           });
@@ -5808,7 +5809,7 @@
         setBusy(btn, true, "\u2026");
         try {
           await api(`/api/categories/runs/${btn.dataset.run}/jobs/${btn.dataset.job}/${btn.dataset.act}`, { method: "POST" });
-          toast(btn.dataset.act === "restore" ? "Restore started - progress shows on the job row." : `${btn.dataset.act} accepted.`, "success");
+          toast(btn.dataset.act === "restore" ? "Restore started - progress shows on the store's row." : `${btn.dataset.act} accepted.`, "success");
           await loadCatRuns();
         } catch (error) { toast(errorMessage(error), "error"); setBusy(btn, false); }
       }));
@@ -5827,39 +5828,39 @@
     $("#cat-ack-all").addEventListener("click", () =>
       catAcknowledge($$(".cat-ack-check", $("#cat-ack-list")).map((c) => c.value)));
     $("#cat-freeze-toggle").addEventListener("click", async () => {
-      if (catRunState.freeze === null) { toast("Freeze state unknown - WordPress is unreachable.", "error"); return; }
+      if (catRunState.freeze === null) { toast("Lock state unknown - WordPress is unreachable.", "error"); return; }
       const next = !catRunState.freeze;
       const confirmed = await confirmAction({
-        title: next ? "Freeze WordPress category edits?" : "Unfreeze WordPress category edits?",
+        title: next ? "Lock category editing in WordPress?" : "Unlock category editing in WordPress?",
         message: next
-          ? "Blocks wp-admin category changes network-wide until unfrozen (broker applies still work)."
-          : "Re-allows wp-admin category changes.",
-        actionLabel: next ? "Freeze" : "Unfreeze",
+          ? "Store admins will not be able to add, rename or delete categories in wp-admin on any store until you unlock. Applies from this editor still work."
+          : "Store admins can edit categories in wp-admin again.",
+        actionLabel: next ? "Lock" : "Unlock",
         danger: next,
       });
       if (!confirmed) return;
       try {
         await api("/api/categories/freeze", { method: "POST", body: { env: catState.env, on: next } });
         await loadCatFreezeState();
-        toast(next ? "Frozen." : "Unfrozen.", "success");
+        toast(next ? "Locked." : "Unlocked.", "success");
       } catch (error) { toast(errorMessage(error), "error"); }
     });
     $("#cat-drift-run").addEventListener("click", async () => {
       const out = $("#cat-drift-result");
       const resolved = catScopeResolve();
-      if (resolved.unresolved.length) { toast(`Fix the blog list on Preview & Apply first - not found: ${resolved.unresolved.join(", ")}`, "error"); return; }
+      if (resolved.unresolved.length) { toast(`Fix the store list on Preview & Apply first - not found: ${resolved.unresolved.join(", ")}`, "error"); return; }
       out.hidden = false;
       out.className = "cat-drift-result muted";
-      out.textContent = "Re-importing snapshots and re-planning\u2026 this takes a while.";
+      out.textContent = "Copying every store again and comparing with the target tree\u2026 this takes a while.";
       try {
         const scopeIds = resolved.ids;
         const result = await api("/api/categories/drift-audit", { method: "POST", body: scopeIds ? { env: catState.env, blog_ids: scopeIds } : { env: catState.env } });
-        const scope = result.scope ? ` (scoped to ${result.scope.length} blog(s): ${result.scope.slice(0, 20).join(", ")})` : "";
+        const scope = result.scope ? ` (${result.scope.length} store${result.scope.length === 1 ? "" : "s"} checked: ${result.scope.slice(0, 20).join(", ")})` : "";
         out.className = `cat-drift-result ${result.converged ? "cat-ok" : "cat-warning"}`;
         out.textContent = result.converged
-          ? `Converged${scope}: ${result.refreshed_blogs} blog(s) match the draft exactly.`
-          : `NOT converged${scope}: ${result.pending.length} blog(s) still differ - ${result.pending.slice(0, 20).map((b) => b.blog_id).join(", ")}${result.pending.length > 20 ? ", …" : ""}` +
-            (result.blockers.length ? `; blockers: ${result.blockers.map((b) => b.kind).join(", ")}` : "") + ".";
+          ? `All ${result.refreshed_blogs} store${result.refreshed_blogs === 1 ? "" : "s"} match the target tree${scope}.`
+          : `${result.pending.length} store${result.pending.length === 1 ? "" : "s"} no longer match the target tree${scope}: ${result.pending.slice(0, 20).map((b) => b.blog_id).join(", ")}${result.pending.length > 20 ? ", …" : ""}` +
+            (result.blockers.length ? `. The plan also has things to clear first: ${result.blockers.map((b) => b.kind.replace(/_/g, " ")).join(", ")}` : "") + ".";
       } catch (error) {
         out.className = "cat-drift-result cat-blocker";
         out.textContent = errorMessage(error);
@@ -5878,7 +5879,7 @@
     const pct = total ? Math.round((mapped / total) * 100) : 0;
     bar.style.width = `${pct}%`;
     bar.classList.toggle("is-done", pct === 100);
-    label.textContent = total ? `${mapped} of ${total} slugs mapped` : "No live slugs - import snapshots first";
+    label.textContent = total ? `${mapped} of ${total} decided${total - mapped ? ` · ${total - mapped} to go` : " · all done"}` : "No categories yet - copy the stores first (step 1)";
   }
 
   function catNodeOptionsHtml() {
@@ -5889,7 +5890,7 @@
 
   async function loadCatMapping() {
     if (!$("#cat-mapping-table")) return;
-    if (!catState.env) { $("#cat-mapping-table").innerHTML = '<p class="muted">No WordPress target is configured for this environment.</p>'; return; }
+    if (!catState.env) { $("#cat-mapping-table").innerHTML = '<p class="muted">No website is configured for this environment.</p>'; return; }
     try {
       if (!catTreeState.nodes.length) {
         const tree = await api("/api/categories/tree");
@@ -5917,24 +5918,29 @@
         index: "id",
         columns: [
           { formatter: "rowSelection", titleFormatter: "rowSelection", hozAlign: "center", headerSort: false, width: 42, resizable: false },
-          { title: "Live slug", field: "old_slug", headerFilter: "input", headerFilterPlaceholder: "Filter slugs…", widthGrow: 3, minWidth: 160 },
-          { title: "Name", field: "sample_name", headerFilter: "input", headerFilterPlaceholder: "Filter names…", widthGrow: 3, minWidth: 160 },
-          { title: "Blogs", field: "blogs", hozAlign: "right", width: 80 },
+          { title: "Web address (slug)", field: "old_slug", headerFilter: "input", headerFilterPlaceholder: "Filter addresses…", widthGrow: 3, minWidth: 160 },
+          { title: "Name", field: "sample_name", headerFilter: "input", headerFilterPlaceholder: "Filter names…", widthGrow: 3, minWidth: 160,
+            formatter: (cell) => escapeHtml(decodeEntities(cell.getValue())) },
+          { title: "Stores", field: "blogs", hozAlign: "right", width: 84, headerTooltip: "How many stores have this category" },
           { title: "Products", field: "products", hozAlign: "right", width: 104 },
-          { title: "B1", field: "blog1", formatter: "tickCross", width: 58, hozAlign: "center",
-            headerTooltip: "Exists on blog 1 (public web)",
+          { title: "Public", field: "blog1", formatter: "tickCross", width: 80, hozAlign: "center",
+            headerTooltip: "Exists on the public store (arborwear.com)",
             headerFilter: "tickCross", headerFilterParams: { tristate: true } },
-          { title: "Disposition", field: "action", width: 120,
-            formatter: (cell) => cell.getValue() === "map"
-              ? (cell.getRow().getData().implicit ? 'map <span class="cat-badge">auto</span>' : "map")
-              : (cell.getValue() || '<span class="cat-unmapped">unmapped</span>'),
+          { title: "Decision", field: "action", width: 150,
+            formatter: (cell) => {
+              const value = cell.getValue();
+              if (value === "map") return cell.getRow().getData().implicit ? 'move <span class="cat-badge" title="Decided automatically: its web address matches a draft category">auto</span>' : "move";
+              if (value === "store_custom") return "keep (this store only)";
+              if (value === "delete") return "delete";
+              return '<span class="cat-unmapped">undecided</span>';
+            },
             headerFilter: "list",
-            headerFilterParams: { values: { "": "all", map: "map", delete: "delete", store_custom: "store custom" }, clearable: true } },
-          { title: "Target", field: "target_slug", widthGrow: 2, minWidth: 130,
+            headerFilterParams: { values: { "": "all", map: "move", delete: "delete", store_custom: "keep (store only)" }, clearable: true } },
+          { title: "Goes to", field: "target_slug", widthGrow: 2, minWidth: 130,
             formatter: (cell) => {
               const row = cell.getRow().getData();
               if (!row.target_slug) return "";
-              return `${escapeHtml(row.target_slug)}${row.is_primary ? ' <span class="cat-badge">primary</span>' : ""}`;
+              return `${escapeHtml(row.target_slug)}${row.is_primary ? ' <span class="cat-badge" title="Keeps its identity on the website; other categories moved here merge into it">surviving</span>' : ""}`;
             } },
           { title: "Note", field: "note", widthGrow: 1, minWidth: 90 },
         ],
@@ -5981,7 +5987,7 @@
   async function catMappingBulk(rowsBuilder) {
     if (!catMapState.table || catMapBusy) return;
     const selected = catMapState.table.getSelectedData();
-    if (!selected.length) { toast("Select rows first.", "error"); return; }
+    if (!selected.length) { toast("Tick some rows first.", "error"); return; }
     const rows = rowsBuilder(selected).filter(Boolean);
     if (!rows.length) return;
     try {
@@ -5989,7 +5995,7 @@
       if (failures.length) {
         toast(`${failures.length} of ${rows.length} failed: ${failures.slice(0, 2).map((f) => `${f.old_slug}: ${f.error}`).join("; ")}`, "error");
       } else {
-        toast(rows.length === 1 ? "Saved." : `Updated ${saved} slugs.`, "success");
+        toast(rows.length === 1 ? "Saved." : `Decided ${saved} categories.`, "success");
       }
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -6002,7 +6008,7 @@
   async function catMappingClearSelected() {
     if (!catMapState.table || catMapBusy) return;
     const selected = catMapState.table.getSelectedData().filter((r) => r.action && !r.implicit);
-    if (!selected.length) { toast("Select explicitly mapped rows first (automatic mappings have nothing to clear).", "error"); return; }
+    if (!selected.length) { toast("Tick rows you decided yourself first (automatic decisions have nothing to undo).", "error"); return; }
     let failed = 0;
     try {
       for (let i = 0; i < selected.length; i++) {
@@ -6014,7 +6020,7 @@
           if (failed <= 3) toast(`${selected[i].old_slug}: ${errorMessage(error)}`, "error");
         }
       }
-      if (!failed) toast(`Cleared ${selected.length} mapping(s).`, "success");
+      if (!failed) toast(`Undid ${selected.length} decision${selected.length === 1 ? "" : "s"}.`, "success");
     } finally {
       catMapSetBusy("");
     }
@@ -6024,9 +6030,9 @@
   async function catMappingMakePrimary() {
     if (!catMapState.table || catMapBusy) return;
     const selected = catMapState.table.getSelectedData();
-    if (selected.length !== 1) { toast("Select exactly one mapped slug to make primary.", "error"); return; }
+    if (selected.length !== 1) { toast("Tick exactly one row that has been moved into a category.", "error"); return; }
     const row = selected[0];
-    if (row.action !== "map" || !row.target_node_id) { toast("Only a slug mapped into a category can be primary.", "error"); return; }
+    if (row.action !== "map" || !row.target_node_id) { toast("Only a category that has been moved into a draft category can be the surviving one.", "error"); return; }
     try {
       catMapSetBusy("Saving\u2026");
       // Demote the node's current primary first (the API refuses two primaries).
@@ -6035,7 +6041,7 @@
         await api("/api/categories/mapping", { method: "PUT", body: { rows: [{ old_slug: current.old_slug, action: "map", target_node_id: current.target_node_id, is_primary: false }] } });
       }
       await api("/api/categories/mapping", { method: "PUT", body: { rows: [{ old_slug: row.old_slug, action: "map", target_node_id: row.target_node_id, is_primary: true }] } });
-      toast(`${row.old_slug} is now the primary (in-place) slug for its category.`, "success");
+      toast(`${row.old_slug} now keeps its identity on the website; the others moved into that category merge into it.`, "success");
     } catch (error) {
       toast(errorMessage(error), "error");
     } finally {
@@ -6051,22 +6057,22 @@
       const ambiguous = data.ambiguous || [];
       if (!suggestions.length) {
         toast(ambiguous.length
-          ? `No unambiguous matches. ${ambiguous.length} slug(s) match several draft categories by name - map them by hand: ${ambiguous.slice(0, 3).map((a) => a.old_slug).join(", ")}${ambiguous.length > 3 ? ", …" : ""}`
-          : "No automatic matches for unmapped slugs.", ambiguous.length ? "error" : "success");
+          ? `No clear matches. ${ambiguous.length} categor${ambiguous.length === 1 ? "y" : "ies"} match several draft categories by name - decide them by hand: ${ambiguous.slice(0, 3).map((a) => a.old_slug).join(", ")}${ambiguous.length > 3 ? ", …" : ""}`
+          : "No undecided category has a name that matches a draft category.", ambiguous.length ? "error" : "success");
         return;
       }
       const ambiguousNote = ambiguous.length
-        ? ` ${ambiguous.length} other slug(s) match SEVERAL draft categories by name and are left for you to map explicitly (${ambiguous.slice(0, 4).map((a) => `${a.old_slug}: ${a.candidates.map((c) => c.path).join(" | ")}`).join("; ")}).`
+        ? ` ${ambiguous.length} other categor${ambiguous.length === 1 ? "y" : "ies"} match SEVERAL draft categories by name and are left for you to decide (${ambiguous.slice(0, 4).map((a) => `${a.old_slug}: ${a.candidates.map((c) => c.path).join(" | ")}`).join("; ")}).`
         : "";
       const confirmed = await confirmAction({
-        title: `Accept ${suggestions.length} suggested mappings?`,
-        message: `Maps unmapped live slugs whose name exactly matches ONE draft category.${ambiguousNote}`,
+        title: `Accept ${suggestions.length} suggested decision${suggestions.length === 1 ? "" : "s"}?`,
+        message: `Each of these undecided categories has a name that exactly matches ONE draft category; they will be moved into it.${ambiguousNote}`,
         actionLabel: "Accept",
       });
       if (!confirmed) return;
       const { saved, failures } = await catMappingSaveRows(
         suggestions.map((sug) => ({ old_slug: sug.old_slug, action: "map", target_node_id: sug.node_id })));
-      toast(failures.length ? `Accepted ${saved}; ${failures.length} failed.` : `Accepted ${saved} suggestions.`, failures.length ? "error" : "success");
+      toast(failures.length ? `Accepted ${saved}; ${failures.length} could not be saved.` : `Accepted ${saved} suggestion${saved === 1 ? "" : "s"}.`, failures.length ? "error" : "success");
     } catch (error) {
       toast(errorMessage(error), "error");
     } finally {
@@ -6079,7 +6085,7 @@
     if (!$("#cat-mapping-panel")) return;
     $("#cat-map-apply").addEventListener("click", () => {
       const target = Number($("#cat-map-target").value);
-      if (!target) { toast("Pick a target category.", "error"); return; }
+      if (!target) { toast("Choose the draft category to move them into.", "error"); return; }
       catMappingBulk((selected) => selected.map((r) => ({ old_slug: r.old_slug, action: "map", target_node_id: target })));
     });
     $("#cat-map-delete").addEventListener("click", () =>
@@ -6118,7 +6124,7 @@
   async function refreshCatProducts() {
     const nodeId = catProdState.nodeId;
     const membershipBox = $("#cat-membership");
-    if (!nodeId) { membershipBox.innerHTML = '<p class="muted">Create draft categories first.</p>'; return; }
+    if (!nodeId) { membershipBox.innerHTML = '<p class="muted">Build the target tree first (step 2), then pick a category above.</p>'; return; }
     try {
       const [membership, assignments, rules] = await Promise.all([
         api(`/api/categories/membership?env=${encodeURIComponent(catState.env)}&node_id=${nodeId}`),
@@ -6127,21 +6133,21 @@
       ]);
       const ruleTotal = membership.rules.reduce((total, r) => total + r.count, 0);
       membershipBox.innerHTML = `
-        <span class="cat-chip" title="Styles already in this category on the live stores, carried over through the mapped old slugs">carried ${membership.carried_count}</span>
-        <span class="cat-chip" title="Styles matched by this category's rules">rules ${ruleTotal}</span>
-        <span class="cat-chip" title="Styles added by explicit assignments">added ${membership.added_count}</span>
-        <span class="cat-chip cat-chip--minus" title="Styles kept out by explicit remove assignments">removed ${membership.removed_count}</span>
-        <span class="cat-chip cat-chip--total" title="Styles this category will contain after apply">final ${membership.final_count} styles</span>
-        <small class="muted cat-legend">carried = already here via mapped slugs · rules = matched by the rules below · added / removed = explicit assignments · final = what the category holds after apply. Sample: ${membership.final_sample.slice(0, 15).map(escapeHtml).join(", ") || "(none)"}</small>`;
+        <span class="cat-chip" title="Styles that come along from the existing categories moved into this one">${membership.carried_count} already here</span>
+        <span class="cat-chip" title="Styles the rules below pull in">${ruleTotal} from rules</span>
+        <span class="cat-chip" title="Styles added by your style list">${membership.added_count} added by list</span>
+        <span class="cat-chip cat-chip--minus" title="Styles your list keeps out">${membership.removed_count} kept out</span>
+        <span class="cat-chip cat-chip--total" title="Styles this category will hold after apply">${membership.final_count} styles after apply</span>
+        <small class="muted cat-legend">Sample: ${membership.final_sample.slice(0, 15).map(escapeHtml).join(", ") || "(none)"}</small>`;
       const list = $("#cat-assignment-list");
       const rows = assignments.assignments || [];
       list.innerHTML = rows.length ? `
-        <table class="table cat-table"><thead><tr><th>SKU</th><th>Mode</th><th>Source</th><th></th></tr></thead><tbody>
+        <table class="table cat-table"><thead><tr><th>Style</th><th>What</th><th>Added by</th><th></th></tr></thead><tbody>
         ${rows.map((a) => `<tr>
-            <td>${escapeHtml(a.sku)}</td><td>${escapeHtml(a.mode)}</td><td>${escapeHtml(a.source)}</td>
+            <td>${escapeHtml(a.sku)}</td><td>${a.mode === "add" ? "add" : "keep out"}</td><td>${escapeHtml(a.source)}</td>
             <td><button type="button" class="button button--ghost button--small cat-assign-del" data-id="${a.id}">Remove</button></td>
           </tr>`).join("")}
-        </tbody></table>` : '<div class="cat-empty">No explicit assignments yet - list styles below and press Add styles, or import a CSV.</div>';
+        </tbody></table>` : '<div class="cat-empty">No specific styles yet. List style numbers below and press Add styles, or import a CSV.</div>';
       $$(".cat-assign-del", list).forEach((btn) => btn.addEventListener("click", async () => {
         setBusy(btn, true, "\u2026");
         try {
@@ -6173,7 +6179,7 @@
         $("#cat-rule-cancel").hidden = false;
       }));
       $$(".cat-rule-del", ruleList).forEach((btn) => btn.addEventListener("click", async () => {
-        const sure = await confirmAction({ title: "Delete this rule?", message: "Products it added are no longer assigned by it (explicit assignments stay).", actionLabel: "Delete", danger: true });
+        const sure = await confirmAction({ title: "Delete this rule?", message: "The products it pulled in stop coming from this rule. Your style lists are not affected.", actionLabel: "Delete", danger: true });
         if (!sure) return;
         setBusy(btn, true, "\u2026");
         try {
@@ -6201,7 +6207,7 @@
   async function catAssignFromTextarea(mode) {
     if (!catProdState.nodeId) return;
     const skus = $("#cat-assign-skus").value.split(/\s+/).map((sku) => sku.trim()).filter(Boolean);
-    if (!skus.length) { toast("Enter at least one SKU.", "error"); return; }
+    if (!skus.length) { toast("Enter at least one style number.", "error"); return; }
     const button = $(mode === "add" ? "#cat-assign-add" : "#cat-assign-remove");
     setBusy(button, true, "Saving\u2026");
     try {
@@ -6209,7 +6215,7 @@
         node_id: catProdState.nodeId, skus, mode,
       } });
       $("#cat-assign-skus").value = "";
-      toast(`${skus.length} SKU(s) ${mode === "add" ? "added" : "marked for removal"}.`, "success");
+      toast(`${skus.length} style${skus.length === 1 ? "" : "s"} ${mode === "add" ? "added" : "kept out"}.`, "success");
       await refreshCatProducts();
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -6243,7 +6249,7 @@
         const result = await api("/api/categories/rules/evaluate", { method: "POST", body: {
           env: catState.env, spec: catRuleSpecFromForm(),
         } });
-        $("#cat-rule-result").textContent = `${result.count} styles match. ${result.skus.slice(0, 8).join(", ")}`;
+        $("#cat-rule-result").textContent = `${result.count} style${result.count === 1 ? "" : "s"} match${result.count ? `: ${result.skus.slice(0, 8).join(", ")}${result.count > 8 ? ", …" : ""}` : ""}`;
       } catch (error) {
         $("#cat-rule-result").textContent = errorMessage(error);
       }
@@ -6371,7 +6377,7 @@
     catTreeState.sortables = [];
     const matches = $("#cat-tree-matches");
     if (!nodes.length) {
-      box.innerHTML = `<p class="muted">${globalView ? "Draft is empty." : "This store's effective tree is empty."}</p>`;
+      box.innerHTML = `<p class="muted">${globalView ? "The draft is empty." : "This store would have no categories."}</p>`;
       if (matches) matches.hidden = true;
       return;
     }
@@ -6695,7 +6701,7 @@
     const signature = [...known.keys()].sort((a, b) => a - b).join(",");
     if (select.dataset.signature === signature) return;
     const current = select.value;
-    select.innerHTML = `<option value="">Global draft (all stores)</option>${options}`;
+    select.innerHTML = `<option value="">Shared tree (all stores)</option>${options}`;
     select.dataset.signature = signature;
     if (current && [...select.options].some((o) => o.value === current)) select.value = current;
   }

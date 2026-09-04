@@ -730,31 +730,35 @@
         <div class="pricing__head">
           <p class="eyebrow">Category editor</p>
           <h1>Categories</h1>
-          <p class="muted">Restructure the WooCommerce category tree. Work happens here in the warehouse; nothing changes on a store until a planned run is applied.</p>
+          <p class="muted">Reorganise the product categories on every store from one place. You work on a draft here; the store websites only change when you press Apply on the Preview &amp; Apply tab, and a store can always be put back the way it was.</p>
+          <p class="muted cat-steps">Work left to right: <strong>1</strong> copy the live categories, <strong>2</strong> shape the target tree, <strong>3</strong> decide what happens to each existing category, <strong>4</strong> fine-tune products if needed, <strong>5</strong> check the plan and apply, <strong>6</strong> watch the run.</p>
         </div>
         <div id="cat-env-banner" class="cat-env-banner" hidden>
           <span id="cat-env-banner-label"></span>
           <span id="cat-env-banner-host" class="cat-env-banner__host"></span>
         </div>
         <div class="cat-tabs" role="tablist" aria-label="Category editor sections">
-          <button class="cat-tab is-active" type="button" role="tab" aria-selected="true" data-cattab="snapshots">Snapshots</button>
-          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="tree">Tree</button>
-          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="mapping">Mapping</button>
-          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="products">Products</button>
-          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="preview">Preview &amp; Apply</button>
-          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="runs">Runs</button>
+          <button class="cat-tab is-active" type="button" role="tab" aria-selected="true" data-cattab="snapshots"><span class="cat-tab__step">1</span>Snapshots</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="tree"><span class="cat-tab__step">2</span>Tree</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="mapping"><span class="cat-tab__step">3</span>Mapping</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="products"><span class="cat-tab__step">4</span>Products</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="preview"><span class="cat-tab__step">5</span>Preview &amp; Apply</button>
+          <button class="cat-tab" type="button" role="tab" aria-selected="false" data-cattab="runs"><span class="cat-tab__step">6</span>Runs</button>
         </div>
         <section class="card" id="cat-snapshots-panel">
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Import</p><h3>Live category snapshots</h3></div>
+            <div><p class="eyebrow">Step 1</p><h3>Copies of the live categories</h3></div>
             <div class="cat-env-pills" id="cat-env-pills" role="group" aria-label="Environment"></div>
           </div>
           <div class="card__body">
-            <p class="muted">Each blog's live product_cat state, copied into the warehouse. Re-import any time - imports fully replace a blog's snapshot and bump its version, so plans built on older snapshots show as stale.</p>
+            <div class="cat-guide">
+              <p><strong>What this is.</strong> The editor never reads the websites directly. It works from a copy of each store's categories, taken when you import.</p>
+              <p><strong>What to do.</strong> Press <em>Refresh all stores</em> when you start, and again whenever someone changes categories on a website. Check the <em>Copied</em> column shows today. A store whose copy is older than its plan is refused at apply time, so refreshing is always safe.</p>
+            </div>
             <div id="cat-wp-status" class="muted"></div>
             <div class="form-row cat-actions">
-              <button id="cat-import-all" class="button" type="button">Import all blogs</button>
-              <button id="cat-import-selected" class="button button--ghost" type="button">Import selected</button>
+              <button id="cat-import-all" class="button" type="button">Refresh all stores</button>
+              <button id="cat-import-selected" class="button button--ghost" type="button">Refresh selected</button>
               <span id="cat-import-progress" class="muted" aria-live="polite"></span>
             </div>
             <div id="cat-snapshot-table" class="cat-table-wrap"></div>
@@ -763,33 +767,37 @@
 
         <section class="card" id="cat-tree-panel" hidden>
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Draft</p><h3>Draft category tree</h3></div>
+            <div><p class="eyebrow">Step 2</p><h3>Target category tree</h3></div>
             <div class="cat-tree-scope">
               <label class="muted" for="cat-tree-store">View</label>
               <select id="cat-tree-store">
-                <option value="">Global draft (all stores)</option>
+                <option value="">Shared tree (all stores)</option>
               </select>
             </div>
           </div>
           <div class="card__body">
             <div id="cat-seed-box" class="cat-seed" hidden>
-              <p class="muted">The draft is empty. Seed it from a live snapshot so editing starts from reality.</p>
+              <p class="muted">The draft is empty. Start from a store's current categories, then change what you need.</p>
               <div class="form-row">
                 <label class="field field--xs"><span>Environment</span>
                   <select id="cat-seed-env"></select>
                 </label>
-                <label class="field field--xs"><span>Blog</span>
+                <label class="field field--xs"><span>Site #</span>
                   <input id="cat-seed-blog" type="number" min="1" value="1">
                 </label>
-                <button id="cat-seed-run" class="button" type="button">Seed draft</button>
+                <button id="cat-seed-run" class="button" type="button">Start from this store</button>
               </div>
+            </div>
+            <div class="cat-guide">
+              <p><strong>What this is.</strong> The category structure every store will end up with. A store can differ from it (a different name, a hidden category, a category of its own): pick the store under <em>View</em> to see and edit its version.</p>
+              <p><strong>What to do.</strong> Drag a category to move or reorder it. Double-click a name (or press F2) to rename. Click a category to edit its name, web address or description on the right, add a category under it, or delete it. Web addresses are the part of the link after <code>/product-category/</code>; keep them when you can so existing links and search results carry on working.</p>
             </div>
             <div class="cat-tree-layout">
               <div class="cat-tree-col">
                 <div class="cat-tree-toolbar">
                   <button id="cat-add-root" class="button button--secondary button--small" type="button">+ Top-level category</button>
-                  <input id="cat-tree-search" class="cat-tree-search" type="search" placeholder="Find a category by name or slug&hellip;" aria-label="Find a category" autocomplete="off">
-                  <span class="muted" id="cat-tree-hint">Drag to move or reorder. Double-click a name or press F2 to rename. Arrow keys move between categories.</span>
+                  <input id="cat-tree-search" class="cat-tree-search" type="search" placeholder="Find a category by name or web address&hellip;" aria-label="Find a category" autocomplete="off">
+                  <span class="muted" id="cat-tree-hint">Drag to move. Double-click or F2 to rename. Arrow keys move between rows.</span>
                 </div>
                 <p id="cat-tree-matches" class="muted cat-tree-matches" hidden></p>
                 <div id="cat-tree" class="cat-tree-box"></div>
@@ -799,75 +807,86 @@
                 <label class="field"><span>Name</span>
                   <input id="cat-detail-name" type="text" maxlength="200">
                 </label>
-                <label class="field"><span>Slug</span>
+                <label class="field"><span>Web address (slug)</span>
                   <input id="cat-detail-slug" type="text" maxlength="200" spellcheck="false">
+                  <span class="field__help">Lowercase letters, numbers and hyphens. Changing it changes the category's link on every store; the public store gets a redirect from the old link.</span>
                 </label>
                 <label class="field"><span>Description</span>
                   <textarea id="cat-detail-description" rows="3" maxlength="5000"></textarea>
                 </label>
                 <div class="form-row">
                   <button id="cat-detail-save" class="button" type="button">Save</button>
-                  <button id="cat-detail-add-child" class="button button--ghost" type="button">+ Child</button>
+                  <button id="cat-detail-add-child" class="button button--ghost" type="button">+ Category under this</button>
                   <button id="cat-detail-delete" class="button button--ghost cat-danger" type="button">Delete</button>
                 </div>
                 <div id="cat-detail-overrides" class="muted"></div>
               </aside>
             </div>
             <div id="cat-store-overrides" class="cat-overrides" hidden>
-              <h3>Store overrides</h3>
+              <h3>How this store differs</h3>
+              <p class="muted">Rename a shared category on this store only, hide one here, or add a category that exists on this store alone.</p>
               <div id="cat-override-list"></div>
               <div class="form-row cat-override-form">
                 <label class="field field--xs"><span>Kind</span>
                   <select id="cat-ov-kind">
-                    <option value="rename">Rename</option>
-                    <option value="exclude">Exclude</option>
-                    <option value="extra_node">Extra category</option>
+                    <option value="rename">Rename on this store</option>
+                    <option value="exclude">Hide on this store</option>
+                    <option value="extra_node">Store-only category</option>
                   </select>
                 </label>
                 <label class="field"><span>Category</span>
                   <select id="cat-ov-node"></select>
                 </label>
-                <label class="field"><span>Name (rename / extra)</span>
+                <label class="field"><span>Name</span>
                   <input id="cat-ov-name" type="text" maxlength="200">
                 </label>
-                <label class="field field--xs" id="cat-ov-slug-field"><span>Slug (extra)</span>
+                <label class="field field--xs" id="cat-ov-slug-field"><span>Web address (slug)</span>
                   <input id="cat-ov-slug" type="text" maxlength="200" spellcheck="false" placeholder="auto from name">
                 </label>
-                <label class="field field--xs" id="cat-ov-sort-field"><span>Sort</span>
+                <label class="field field--xs" id="cat-ov-sort-field"><span>Order</span>
                   <input id="cat-ov-sort" type="number" min="0" max="100000" value="0">
                 </label>
-                <label class="field field--check" id="cat-ov-desc-field"><input id="cat-ov-descendants" type="checkbox" checked> <span>Exclude the whole subtree</span></label>
-                <button id="cat-ov-save" class="button button--ghost" type="button">Add override</button>
+                <label class="field field--check" id="cat-ov-desc-field"><input id="cat-ov-descendants" type="checkbox" checked> <span>Also hide everything under it</span></label>
+                <button id="cat-ov-save" class="button button--secondary" type="button">Save</button>
                 <button id="cat-ov-cancel" class="button button--ghost" type="button" hidden>Cancel edit</button>
               </div>
-              <p class="muted">Editing a store extra's slug keeps its live term: the apply re-slugs it in place (and adds a redirect on blog 1).</p>
+              <p class="muted">Changing a store-only category's web address keeps the existing category on the website; only its link changes (with a redirect on the public store).</p>
             </div>
           </div>
         </section>
 
         <section class="card" id="cat-mapping-panel" hidden>
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Dispositions</p><h3>Slug mapping</h3></div>
+            <div><p class="eyebrow">Step 3</p><h3>What happens to each existing category</h3></div>
             <div id="cat-mapping-progress" class="cat-progress"><span id="cat-mapping-progress-label"></span><div class="cat-progress__track"><div id="cat-mapping-progress-bar"></div></div></div>
           </div>
           <div class="card__body">
-            <p class="muted">Every live slug needs a disposition before a plan can be previewed: <strong>map</strong> into a draft category (first mapped slug is the in-place survivor), <strong>delete</strong> (debris), or <strong>store custom</strong> (kept as a store-local category).</p>
+            <div class="cat-guide">
+              <p><strong>What this is.</strong> Every category that exists on a store today is listed here, one row per web address. Each row needs a decision before the plan can be checked. Rows whose web address already matches a draft category are decided for you.</p>
+              <p><strong>What to do.</strong> Tick one or more rows, then choose:</p>
+              <ul>
+                <li><strong>Move into&hellip;</strong> the products go to the draft category you pick. The first category moved into a draft category keeps its identity on the website (links and search keep working); any others merge into it.</li>
+                <li><strong>Keep for this store only</strong> - it stays exactly as it is, outside the shared tree.</li>
+                <li><strong>Delete</strong> - for categories nobody needs. Products still on it need another category, or the check will stop and tell you.</li>
+              </ul>
+              <p><em>Accept suggestions</em> decides every undecided row whose name exactly matches one draft category. The bar on the right shows how many rows are still undecided.</p>
+            </div>
             <div class="cat-action-bar" role="toolbar" aria-label="Mapping actions">
               <div class="cat-action-bar__group">
-                <label class="field"><span>Map selected to</span>
+                <label class="field"><span>Move selected into</span>
                   <select id="cat-map-target"></select>
                 </label>
-                <button id="cat-map-apply" class="button button--primary" type="button" disabled>Map</button>
+                <button id="cat-map-apply" class="button button--primary" type="button" disabled>Move</button>
               </div>
               <div class="cat-action-bar__group" role="group" aria-label="Other dispositions for the selected slugs">
-                <button id="cat-map-delete" class="button button--secondary" type="button" disabled title="Treat the selected slugs as debris: their terms are deleted once empty">Mark delete</button>
-                <button id="cat-map-custom" class="button button--secondary" type="button" disabled title="Keep the selected slugs as store-local categories outside the shared tree">Store custom</button>
-                <button id="cat-map-primary" class="button button--secondary" type="button" disabled title="The primary slug's live term survives in place (keeps its term id and SEO); other mapped slugs merge into it">Make primary</button>
-                <button id="cat-map-clear" class="button button--ghost" type="button" disabled title="Remove the disposition from the selected slugs">Clear</button>
+                <button id="cat-map-delete" class="button button--secondary" type="button" disabled title="Delete the selected categories from the websites once no product is left on them">Delete</button>
+                <button id="cat-map-custom" class="button button--secondary" type="button" disabled title="Leave the selected categories exactly as they are on their store, outside the shared tree">Keep for this store only</button>
+                <button id="cat-map-primary" class="button button--secondary" type="button" disabled title="When several old categories move into one draft category, this one keeps its identity on the website (links, search); the others merge into it">Make this the surviving one</button>
+                <button id="cat-map-clear" class="button button--ghost" type="button" disabled title="Undo the decision on the selected rows">Undo decision</button>
               </div>
               <div class="cat-action-bar__group cat-action-bar__group--end">
                 <span id="cat-map-selected" class="muted" aria-live="polite">Nothing selected</span>
-                <button id="cat-map-suggest" class="button button--secondary" type="button" title="Apply the suggested disposition to every slug that is still unmapped">Accept suggestions</button>
+                <button id="cat-map-suggest" class="button button--secondary" type="button" title="Decide every undecided row whose name exactly matches one draft category">Accept suggestions</button>
               </div>
               <span id="cat-map-busy" class="muted" aria-live="polite"></span>
             </div>
@@ -877,27 +896,31 @@
 
         <section class="card" id="cat-products-panel" hidden>
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Membership</p><h3>Product membership</h3></div>
+            <div><p class="eyebrow">Step 4 (optional)</p><h3>Which products go in each category</h3></div>
             <div class="cat-tree-scope">
               <label class="muted" for="cat-prod-node">Category</label>
               <select id="cat-prod-node"></select>
             </div>
           </div>
           <div class="card__body">
+            <div class="cat-guide">
+              <p><strong>What this is.</strong> Normally products simply follow their old category into its new home, so most people never need this tab. Use it when you want more: a rule that pulls products in by name, brand or code, or a list of specific styles to add or keep out.</p>
+              <p><strong>What to do.</strong> Choose a category above; the counts show what it will contain after apply. To add styles, type one style number per line and press <em>Add styles</em>; to keep styles out, list them and press <em>Keep out</em>. For a rule, pick a field and a match (for example <em>Product name starts with Boot</em>), press <em>Test rule</em> to see what it catches, then <em>Save rule</em>.</p>
+            </div>
             <div id="cat-membership" class="cat-membership"></div>
             <div class="cat-products-grid">
               <div>
-                <h3>Explicit assignments</h3>
+                <h3>Specific styles</h3>
                 <div id="cat-assignment-list" class="cat-table-wrap"></div>
                 <div class="form-row">
-                  <label class="field"><span>Styles to add or remove (one SKU per line)</span>
+                  <label class="field"><span>Style numbers, one per line</span>
                     <textarea id="cat-assign-skus" rows="3" spellcheck="false" placeholder="18500&#10;400340"></textarea>
                   </label>
                 </div>
                 <div class="cat-action-bar cat-action-bar--tight" role="toolbar" aria-label="Assignment actions">
                   <div class="cat-action-bar__group">
                     <button id="cat-assign-add" class="button" type="button" title="Put the styles listed above into this category">Add styles</button>
-                    <button id="cat-assign-remove" class="button button--secondary" type="button" title="Keep the styles listed above out of this category even when a rule or an old slug would include them">Remove styles</button>
+                    <button id="cat-assign-remove" class="button button--secondary" type="button" title="Keep the styles listed above out of this category even when a rule or an old category would include them">Keep out</button>
                   </div>
                   <div class="cat-action-bar__group cat-action-bar__group--end">
                     <a id="cat-assign-export" class="button button--ghost button--small" href="/api/categories/assignments/export">Export CSV</a>
@@ -926,17 +949,17 @@
                         <option value="regex">regex</option>
                       </select>
                     </label>
-                    <label class="field"><span>Value</span>
+                    <label class="field"><span>Text to match</span>
                       <input id="cat-rule-value" type="text" maxlength="200">
                     </label>
                   </div>
                   <div class="form-row">
-                    <label class="field"><span>Only products from old slugs (optional, comma-separated)</span>
+                    <label class="field"><span>Only products that were in these old categories (optional; web addresses, comma-separated)</span>
                       <input id="cat-rule-from" type="text" placeholder="footwear-work-boots, footwear-socks">
                     </label>
                   </div>
                   <div class="form-row">
-                    <label class="field field--xs"><span>Priority</span>
+                    <label class="field field--xs"><span>Order</span>
                       <input id="cat-rule-priority" type="number" min="0" max="100000" value="0">
                     </label>
                     <label class="field"><span>Note</span>
@@ -957,16 +980,19 @@
 
         <section class="card" id="cat-preview-panel" hidden>
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Plan</p><h3>Preview &amp; apply</h3></div>
+            <div><p class="eyebrow">Step 5</p><h3>Check the plan, then apply</h3></div>
             <div class="cat-header-actions">
-              <button id="cat-preview-run" class="button" type="button">Run preview</button>
-              <button id="cat-apply-run" class="button cat-apply-button" type="button" disabled {% if not categories_apply_allowed %}data-apply-locked="1" title="Your login is not on the apply allowlist"{% endif %}>Apply to WordPress&hellip;</button>
+              <button id="cat-preview-run" class="button" type="button">Check the plan</button>
+              <button id="cat-apply-run" class="button cat-apply-button" type="button" disabled {% if not categories_apply_allowed %}data-apply-locked="1" title="Your login is not on the apply allowlist"{% endif %}>Apply to the websites&hellip;</button>
             </div>
           </div>
           <div class="card__body">
-            <p class="muted">Preview computes every blog's exact plan against the current snapshots. Apply is refused while blockers exist, while snapshots are stale, or for operators outside the apply allowlist.{% if not categories_apply_allowed %} <strong>Your login can edit and preview but not apply.</strong>{% endif %}</p>
+            <div class="cat-guide">
+              <p><strong>What this is.</strong> <em>Check the plan</em> works out exactly what would change on each store and lists anything that stops it. <em>Apply</em> makes those changes on the websites, one store at a time starting with the public store; you can pause between stores, and each store is copied first so it can be restored.</p>
+              <p><strong>What to do.</strong> Leave the store list empty to include every store, or name a few. Press <em>Check the plan</em>, clear anything it reports, then press <em>Apply</em>.{% if not categories_apply_allowed %} <strong>Your login can check plans but not apply them.</strong>{% endif %}</p>
+            </div>
             <div class="form-row">
-              <label class="field cat-scope-field"><span>Limit to blogs (optional - blog ids, store names, store codes or paths, comma-separated; empty = every snapshotted blog)</span>
+              <label class="field cat-scope-field"><span>Only these stores (optional - store names, codes, site numbers or paths, separated by commas; empty = every store)</span>
                 <input id="cat-scope-blogs" type="text" placeholder="e.g. 1, Payne Tompkins, S_002165, /daveytree/" spellcheck="false" autocomplete="off">
               </label>
             </div>
@@ -974,13 +1000,13 @@
             <div id="cat-readiness" class="cat-ok" hidden></div>
             <div id="cat-preview-result"></div>
             <div id="cat-ack-panel" class="cat-gap-top" hidden>
-              <h3>Products that would end with no category</h3>
-              <p class="muted">Rescue them in Products (add them to a category) or acknowledge them here as intentionally uncategorized; acknowledged SKUs no longer block the plan.</p>
+              <h3>Products that would be left with no category</h3>
+              <p class="muted">Give them a category on the Products tab, or tick them here and press <em>Accept</em> to confirm they should have no category. Accepted products no longer stop the plan.</p>
               <div id="cat-ack-list" class="cat-table-wrap"></div>
               <div class="form-row">
-                <label class="field"><span>Note</span><input id="cat-ack-note" type="text" maxlength="500" placeholder="why these stay uncategorized"></label>
-                <button id="cat-ack-selected" class="button button--ghost" type="button">Acknowledge selected</button>
-                <button id="cat-ack-all" class="button button--ghost" type="button">Acknowledge all listed</button>
+                <label class="field"><span>Note</span><input id="cat-ack-note" type="text" maxlength="500" placeholder="Why these stay without a category"></label>
+                <button id="cat-ack-selected" class="button button--secondary" type="button">Accept selected</button>
+                <button id="cat-ack-all" class="button button--ghost" type="button">Accept all listed</button>
               </div>
               <div id="cat-acked-list" class="cat-gap-top"></div>
             </div>
@@ -989,14 +1015,18 @@
 
         <section class="card" id="cat-runs-panel" hidden>
           <div class="card__header card__header--compact">
-            <div><p class="eyebrow">Execution</p><h3>Apply runs</h3></div>
+            <div><p class="eyebrow">Step 6</p><h3>Runs and recovery</h3></div>
             <div class="cat-header-actions">
-              <span id="cat-freeze-state" class="chip chip--muted" title="Whether store admins can currently edit categories in wp-admin">WP edits: checking&hellip;</span>
-              <button id="cat-freeze-toggle" class="button button--secondary cat-freeze-button" type="button" aria-pressed="false" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Freeze WP category edits</button>
-              <button id="cat-drift-run" class="button button--secondary" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% else %}title="Re-import every snapshot and check whether the live stores still match the draft"{% endif %}>Drift audit</button>
+              <span id="cat-freeze-state" class="chip chip--muted" title="Whether store admins can currently edit categories in wp-admin">wp-admin editing: checking&hellip;</span>
+              <button id="cat-freeze-toggle" class="button button--secondary cat-freeze-button" type="button" aria-pressed="false" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Lock category editing in WordPress</button>
+              <button id="cat-drift-run" class="button button--secondary" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% else %}title="Re-copy every store and report any that no longer match the target tree"{% endif %}>Check stores still match</button>
             </div>
           </div>
           <div class="card__body">
+            <div class="cat-guide">
+              <p><strong>What this is.</strong> Every Apply becomes a run that works through the stores one at a time. Open a run's details to see each store's progress and result.</p>
+              <p><strong>What to do.</strong> <em>Pause</em> stops after the current store; <em>Resume</em> carries on. <em>Retry</em> re-runs a store that failed, picking up where it stopped. <em>Skip</em> leaves a store out (the run then shows as partial). <em>Restore</em> puts a store back exactly as it was before the run touched it. Lock category editing while a run is in progress so nobody changes categories in wp-admin underneath it, and use <em>Check stores still match</em> afterwards to confirm every store matches the target tree.</p>
+            </div>
             <div id="cat-drift-result" class="cat-drift-result" hidden></div>
             <div id="cat-runs-list"></div>
           </div>
@@ -1157,18 +1187,18 @@
           </div>
         </section>
         <section class="card">
-          <div class="card__header card__header--compact"><div><p class="eyebrow">Categories</p><h3 id="help-categories">Restructuring the category tree</h3></div></div>
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Categories</p><h3 id="help-categories">Reorganising the categories</h3></div></div>
           <div class="card__body">
-            <p>The <strong>Category Editor</strong> rebuilds the store websites' product categories from a draft kept here. Nothing changes on a website until a planned run is applied, and every step is checked against a fresh snapshot of the live site.</p>
+            <p>The <strong>Categories</strong> tool (under Tools) rebuilds the product categories on every store from a draft kept here. Nothing changes on a website until you press Apply, every store is copied first so it can be restored, and a store that someone edited in the meantime is refused rather than overwritten.</p>
             <ol>
-              <li><strong>Snapshots</strong> - import each store's live categories.</li>
-              <li><strong>Tree</strong> - shape the new category tree (drag to move, double-click to rename); store-specific renames, exclusions and extra categories live in the store view.</li>
-              <li><strong>Mapping</strong> - say what happens to every live category: map it into a draft category, delete it, or keep it as that store's own.</li>
-              <li><strong>Products</strong> - assign styles to categories by rule, list, or CSV.</li>
-              <li><strong>Preview &amp; Apply</strong> - see the exact plan per store; blockers (unmapped categories, products left with no category, slug collisions) must be cleared first.</li>
-              <li><strong>Runs</strong> - watch the apply, retry a store, or restore a store from its pre-apply snapshot.</li>
+              <li><strong>Snapshots</strong> - copy the live categories from every store. Do it again after anything changes on a website.</li>
+              <li><strong>Tree</strong> - shape the target tree: drag to move, double-click to rename, click to edit. Pick a store under View for that store's own differences.</li>
+              <li><strong>Mapping</strong> - decide what happens to each existing category: move it into a draft category, keep it for that store only, or delete it. Everything must be decided before the plan can be checked.</li>
+              <li><strong>Products</strong> - optional: rules and style lists for categories that should hold more than they inherit.</li>
+              <li><strong>Preview &amp; Apply</strong> - check the plan (it lists anything that stops it), then apply to the websites.</li>
+              <li><strong>Runs</strong> - watch progress, retry or skip a store, lock wp-admin editing during a run, restore a store, and confirm the stores still match.</li>
             </ol>
-            <p>Applying is limited to people on the apply list. Deleting a category is only allowed once every product has been moved off it, and a category that someone edited on the website mid-run is refused rather than overwritten.</p>
+            <p>Applying is limited to the people on the apply list. Right now applies go to the development site only.</p>
           </div>
         </section>
         <section class="card">

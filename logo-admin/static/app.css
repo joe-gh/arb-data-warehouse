@@ -1036,3 +1036,15 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 }
 .main-nav__menu--wide .main-nav__item { display: flex; flex-wrap: wrap; align-items: center; gap: .15rem .45rem; }
 .main-nav__menu--wide .main-nav__item small { flex-basis: 100%; }
+
+/* Category editor plain-language pass (2026-09-04) */
+.cat-steps { margin-top: -.4rem; }
+.cat-tab__step { display: inline-flex; align-items: center; justify-content: center; width: 1.35rem; height: 1.35rem; margin-right: .45rem; border-radius: 50%; background: var(--forest-100); color: var(--forest-800); font-size: .72rem; font-weight: 800; }
+.cat-tab.is-active .cat-tab__step { background: var(--forest-800); color: var(--white); }
+.cat-guide { margin: 0 0 1rem; padding: .85rem 1rem; border: 1px solid var(--line); border-left: 4px solid var(--forest-700); border-radius: var(--radius-sm); background: var(--forest-50); font-size: .92rem; line-height: 1.5; }
+.cat-guide p { margin: 0 0 .45rem; }
+.cat-guide p:last-child { margin-bottom: 0; }
+.cat-guide ul { margin: .2rem 0 .5rem 1.2rem; padding: 0; }
+.cat-guide li { margin: .15rem 0; }
+.cat-guide code { font-size: .85em; }
+.cat-detail .field__help { display: block; margin-top: .25rem; font-size: .78rem; color: var(--ink-soft); }

@@ -280,7 +280,7 @@ def create_node(cursor, *, parent_id: Optional[int], name: str,
         slug = _validate_slug(slug)
         owner = _slug_owner(cursor, slug)
         if owner:
-            raise DraftConflict(f"slug already in use by {owner}: {slug}")
+            raise DraftConflict(f"the web address '{slug}' is already used by {owner} - choose another")
     else:
         base = slugify(name)
         slug = base
@@ -321,7 +321,7 @@ def update_node(cursor, node_id: int, *, name: Optional[str] = None,
         if slug != node["slug"]:
             owner = _slug_owner(cursor, slug, exclude_node_id=node_id)
             if owner:
-                raise DraftConflict(f"slug already in use by {owner}: {slug}")
+                raise DraftConflict(f"the web address '{slug}' is already used by {owner} - choose another")
             changes["slug"] = {"from": node["slug"], "to": slug}
     if description is not None and description != node["description"]:
         changes["description"] = True
@@ -426,7 +426,7 @@ def delete_node(cursor, node_id: int, *, cascade: bool = False,
     child_count = cursor.fetchone()["n"]
     if child_count and not cascade:
         raise DraftConflict(
-            f"node {node_id} has {child_count} children; move them or pass cascade"
+            f"this category has {child_count} categories under it - move or delete those first"
         )
     deleted: List[int] = []
 
@@ -478,7 +478,7 @@ def seed_from_snapshot(cursor, *, env: str, blog_id: int, actor: str,
     existing = cursor.fetchone()["n"]
     if existing and not force:
         raise DraftConflict(
-            f"draft already has {existing} nodes; pass force to replace it"
+            f"the draft already has {existing} categories - confirm replacing it"
         )
     cursor.execute(
         """
@@ -601,7 +601,7 @@ def set_override(cursor, *, blog_id: int, kind: str,
         owner = _slug_owner(cursor, slug, exclude_override_id=override_id,
                             blog_id=blog_id)
         if owner:
-            raise DraftConflict(f"slug already in use by {owner}: {slug}")
+            raise DraftConflict(f"the web address '{slug}' is already used by {owner} - choose another")
     previous_slug = None
     if override_id is None:
         try:
@@ -618,8 +618,8 @@ def set_override(cursor, *, blog_id: int, kind: str,
             )
         except pg_errors.UniqueViolation as exc:
             raise DraftConflict(
-                f"blog {blog_id} already has a {kind.replace('_', ' ')} override"
-                + (f" for slug {slug}" if slug else " for that category")
+                f"store {blog_id} already has a '{kind.replace('_', ' ')}' entry"
+                + (f" for the web address '{slug}'" if slug else " for that category")
             ) from exc
         override_id = cursor.fetchone()["override_id"]
     else:
@@ -656,7 +656,7 @@ def set_override(cursor, *, blog_id: int, kind: str,
                  previous_slug, actor[:100], override_id, blog_id, kind),
             )
         except pg_errors.UniqueViolation as exc:
-            raise DraftConflict(f"blog {blog_id} already has an override for slug {slug}") from exc
+            raise DraftConflict(f"store {blog_id} already has an entry for the web address '{slug}'") from exc
     record_audit(cursor, actor=actor, action="override_saved", entity="override",
                  entity_key=str(override_id),
                  detail={"blog_id": blog_id, "kind": kind, "node_id": node_id,

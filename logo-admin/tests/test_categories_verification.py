@@ -211,7 +211,7 @@ def test_restore_fails_when_the_broker_restores_fewer_terms_than_the_snapshot(re
     monkeypatch.setattr(categories_runs, "broker_call", Lossy(fake))
     result = categories_runs.restore_blog(run["run_id"], done["jobs"][0]["job_id"], actor="tester", background=False)
     assert result["restore"]["status"] == "failed"
-    assert "restored 5 of 6 terms" in result["restore"]["error"]
+    assert "put back 5 of 6 categories" in result["restore"]["error"]
     phases = [p["phase"] for _, path, p in fake.calls if path == "/restore"]
     assert phases == ["terms"]          # stopped before memberships/finalize
 
@@ -449,11 +449,11 @@ def test_readiness_gates_run_creation_with_exact_failures(ready):
     with pytest.raises(DraftConflict) as excinfo:
         _write(categories_runs.create_run, env="prod", blog_ids=[7])
     message = str(excinfo.value)
-    assert "version 1" in message and "durable jobs" in message
+    assert "version 1" in message and "in the background" in message
     fake.status_overrides = {"freeze": False}
     with pytest.raises(DraftConflict) as excinfo:
         _write(categories_runs.create_run, env="prod", blog_ids=[7])
-    assert "frozen" in str(excinfo.value)
+    assert "not locked" in str(excinfo.value)
     ready_state = categories_runs.readiness("prod", [7])
     assert ready_state["ok"] is False and len(ready_state["failures"]) == 1
     fake.status_overrides = {}

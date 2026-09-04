@@ -162,8 +162,8 @@ def set_mapping(cursor, *, old_slug: str, action: str,
             other = cursor.fetchone()
             if other:
                 raise DraftConflict(
-                    f"node already has primary slug {other['old_slug']!r};"
-                    " demote it first"
+                    f"this category already has a surviving one ({other['old_slug']})"
+                    " - undo that first"
                 )
     else:
         target_node_id = None

@@ -235,44 +235,47 @@ def readiness(env: str, blog_ids: Optional[List[int]] = None) -> Dict[str, Any]:
     try:
         status = fetch_wp_status(env)
     except categories_service.BrokerError as exc:
-        return {"ok": False, "failures": [f"WordPress is unreachable: {exc}"],
+        return {"ok": False, "failures": [f"WordPress cannot be reached: {exc}"],
                 "warnings": [], "status": None}
     failures: List[str] = []
     warnings: List[str] = []
     version = int(status.get("broker_version") or 0)
     if version < BROKER_MIN_VERSION:
         failures.append(
-            f"the WordPress category broker is version {version}; this app needs"
-            f" {BROKER_MIN_VERSION}+ (deploy the arb-admin plugin update)"
+            f"the WordPress side of the category editor is out of date (version"
+            f" {version}, needs {BROKER_MIN_VERSION} or newer) - ask a developer"
+            " to deploy the arb-admin plugin update"
         )
     if not status.get("durable_jobs"):
-        failures.append("durable jobs are unavailable on WordPress (PHP-FPM"
-                        " fastcgi_finish_request missing): applies would run"
-                        " synchronously under the HTTP timeout")
+        failures.append("WordPress cannot run category jobs in the background"
+                        " (PHP-FPM fastcgi_finish_request is missing) - ask a"
+                        " developer; applying would time out")
     if not status.get("job_table"):
-        failures.append("the WordPress job table could not be created")
+        failures.append("WordPress could not create its category job table"
+                        " - ask a developer")
     if status.get("freeze") is not True:
         (failures if env == "prod" else warnings).append(
-            "WP category edits are not frozen - freeze them so nothing changes"
-            " under the run"
+            "category editing in WordPress is not locked - lock it on the Runs"
+            " tab so nobody changes categories while the run is in progress"
         )
     if not status.get("avne_available"):
         (failures if env == "prod" else warnings).append(
-            "the Elasticsearch update queue (AVNE) is unavailable: search"
-            " documents would go stale"
+            "the site search index cannot be updated right now (the"
+            " Elasticsearch queue is unavailable) - search results would be"
+            " out of date after the run"
         )
     if not status.get("unspsc_available"):
         (failures if env == "prod" else warnings).append(
-            "the UNSPSC mapping service is unavailable: product codes would"
-            " not be re-derived"
+            "the UNSPSC product-code service is unavailable - product codes"
+            " would not be recalculated after the run"
         )
     if blog_ids is None or 1 in blog_ids:
         if not status.get("redirection_active"):
-            failures.append("the Redirection plugin is not active on blog 1:"
-                            " public category URLs would break without redirects")
+            failures.append("the Redirection plugin is not active on the public"
+                            " store - old category links would break without it")
         elif not int(status.get("redirect_group_id") or 0):
-            failures.append("Redirection has no enabled group to hold the"
-                            " category redirects")
+            failures.append("the Redirection plugin has no enabled group to"
+                            " hold the category redirects - ask a developer")
     return {"ok": not failures, "failures": failures, "warnings": warnings,
             "status": status}
 
@@ -281,7 +284,7 @@ def _require_ready(env: str, blog_ids: Optional[List[int]]) -> Dict[str, Any]:
     ready = readiness(env, blog_ids)
     if not ready["ok"]:
         raise DraftConflict(
-            "WordPress is not ready to apply: " + "; ".join(ready["failures"])
+            "The websites are not ready for an apply: " + "; ".join(ready["failures"])
         )
     return ready
 
@@ -308,15 +311,15 @@ def _assert_env_exclusive(cursor, env: str, run_id: Optional[int]) -> None:
     other = cursor.fetchone()
     if other:
         raise DraftConflict(
-            f"run {other['run_id']} is {other['status']} for {env};"
-            " finish or cancel it first"
+            f"another run (#{other['run_id']}) is {other['status']} on {env}"
+            " - finish, pause or cancel it first"
         )
     restoring = _running_restores(cursor, env)
     if restoring:
         first = restoring[0]
         raise DraftConflict(
-            f"blog {first['blog_id']} is being restored from run {first['run_id']}"
-            f" (job {first['job_id']}); wait for the restore to finish"
+            f"store {first['blog_id']} is still being restored (run"
+            f" #{first['run_id']}) - wait for the restore to finish"
         )
 
 
@@ -389,7 +392,10 @@ def create_run(cursor, *, env: str, blog_ids: Optional[List[int]],
     preview = categories_planner.preview(cursor, env, blog_ids)
     if not preview["ok"]:
         kinds = ", ".join(b["kind"] for b in preview["blockers"])
-        raise DraftConflict(f"preview has blockers: {kinds}")
+        raise DraftConflict(
+            "the plan check still reports problems to clear first: "
+            + str(kinds).replace("_", " ")
+        )
     if not preview["blogs"]:
         raise DraftError("no blogs to apply")
     ready = _require_ready(env, [b["blog_id"] for b in preview["blogs"]])
@@ -520,7 +526,7 @@ def _set_run_status(cursor, run_id: int, status: str, *,
 def request_pause(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
     run = get_run(cursor, run_id)
     if run["status"] not in ("queued", "running"):
-        raise DraftConflict(f"run is {run['status']}")
+        raise DraftConflict(f"the run is already {run['status']} and cannot be cancelled")
     cursor.execute(
         "UPDATE catmgr.run SET cancel_requested = true WHERE run_id = %s",
         (run_id,),
@@ -561,10 +567,11 @@ def resume(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
     run = get_run(cursor, run_id)
     if run["status"] == "running":
         if not _stale(run):
-            raise DraftConflict("run is running and its worker is alive")
+            raise DraftConflict("the run is still working - pause it first, or wait"
+                                " for the current store to finish")
         _reclaim_stale_jobs(cursor, run_id, actor=actor)
     elif run["status"] not in ("paused", "failed", "queued"):
-        raise DraftConflict(f"run is {run['status']}")
+        raise DraftConflict(f"the run is {run['status']} and cannot be resumed")
     _assert_env_exclusive(cursor, run["env"], run_id)
     _require_ready(run["env"], list(run["target_blogs"] or []))
     cursor.execute(
@@ -588,7 +595,7 @@ def start(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
     )
     run = get_run(cursor, run_id)
     if run["status"] != "queued":
-        raise DraftConflict(f"run is {run['status']}; only a queued run can be started")
+        raise DraftConflict(f"the run is {run['status']} - only a queued run can be started")
     _assert_env_exclusive(cursor, run["env"], run_id)
     _require_ready(run["env"], list(run["target_blogs"] or []))
     record_audit(cursor, actor=actor, action="run_started", entity="run",
@@ -599,9 +606,9 @@ def start(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
 def cancel(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
     run = get_run(cursor, run_id)
     if run["status"] in ("completed", "cancelled"):
-        raise DraftConflict(f"run is already {run['status']}")
+        raise DraftConflict(f"the run is already {run['status']}")
     if run["status"] == "running":
-        raise DraftConflict("pause the run first; the current job must finish")
+        raise DraftConflict("pause the run first - the store it is working on has to finish")
     cursor.execute(
         "UPDATE catmgr.run SET status = 'cancelled', finished_at = now()"
         " WHERE run_id = %s",
@@ -620,7 +627,7 @@ def cancel(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
 def retry_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]:
     run = get_run(cursor, run_id)
     if run["status"] == "running" and not _stale(run):
-        raise DraftConflict("run is running; wait for the current job to finish")
+        raise DraftConflict("the run is still working - wait for the current store to finish")
     _assert_env_exclusive(cursor, run["env"], run_id)
     _require_ready(run["env"], list(run["target_blogs"] or []))
     # A retry is a NEW attempt: its phase keys differ from the failed
@@ -633,7 +640,7 @@ def retry_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]
         (run_id, job_id),
     )
     if cursor.fetchone() is None:
-        raise DraftConflict("job is not failed/skipped")
+        raise DraftConflict("only a store that failed or was skipped can be retried")
     cursor.execute(
         "UPDATE catmgr.run SET status = 'queued', cancel_requested = false,"
         " finished_at = NULL WHERE run_id = %s",
@@ -652,7 +659,7 @@ def skip_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]:
         (run_id, job_id),
     )
     if cursor.fetchone() is None:
-        raise DraftConflict("only failed jobs can be skipped")
+        raise DraftConflict("only a store that failed can be skipped")
     record_audit(cursor, actor=actor, action="job_skipped", entity="job",
                  entity_key=str(job_id), detail={"run_id": run_id})
     # Skipping must let the run continue (or finish) - it used to strand the
@@ -960,8 +967,9 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
         if current_version != payload["snapshot_version"]:
             if not progress.get("terms_done"):
                 raise DraftConflict(
-                    f"snapshot for blog {blog_id} is v{current_version}, plan was"
-                    f" built on v{payload['snapshot_version']}; re-plan required"
+                    f"the copy of store {blog_id} was refreshed (copy #{current_version})"
+                    f" after this plan was built (copy #{payload['snapshot_version']})"
+                    " - re-plan required: press Check the plan again"
                 )
             result["resumed_past_version_fence"] = {
                 "plan": payload["snapshot_version"], "snapshot": current_version,
@@ -998,7 +1006,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
                                      "error": "live state drifted from the snapshot",
                                      "diff": diff})
             raise DraftConflict(
-                f"WordPress blog {blog_id} changed since snapshot v{payload['snapshot_version']}"
+                f"store {blog_id} changed since snapshot v{payload['snapshot_version']}"
                 f" was imported ({diff['terms_changed']} term(s), {diff['memberships_added']}"
                 f" membership(s) added, {diff['memberships_removed']} removed):"
                 " re-import the snapshot and re-plan"
@@ -1038,7 +1046,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
         }, run_id=run_id, prior_keys=prior_keys("apply-terms"))
         if not isinstance(result["terms"], dict) or result["terms"].get("ok") is False:
             raise DraftConflict(
-                f"apply-terms was refused for blog {blog_id}: {result['terms']}"
+                f"WordPress refused the category changes for store {blog_id}: {result['terms']}"
             )
         progress["terms_done"] = True
         _save_progress(job_id, progress, token)
@@ -1064,7 +1072,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
                                      "offset": offset, "fence": fence}
             _save_progress(job_id, {**progress, "membership_fence": fence}, token)
             raise DraftConflict(
-                f"apply-memberships refused rows for blog {blog_id}: {fence}"
+                f"WordPress refused some product moves for store {blog_id}: {fence}"
             )
         applied += int(outcome.get("applied") or 0)
         offset += len(page)
@@ -1138,7 +1146,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
             parts.append(f"{len(drifted_deletes)} delete(s) (terms still carry products or moved): {drifted_deletes[:3]}")
         if failed_redirects:
             parts.append(f"{len(failed_redirects)} redirect(s) not created/verified: {failed_redirects[:3]}")
-        raise DraftConflict(f"finalize refused for blog {blog_id}: " + "; ".join(parts))
+        raise DraftConflict(f"WordPress refused the final step for store {blog_id}: " + "; ".join(parts))
     if not progress.get("finalize_done"):
         progress["finalize_done"] = True
         progress["finalize_result"] = {
@@ -1177,8 +1185,9 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
                                          "problems": problems[:50]})
                 _save_progress(job_id, {**progress, "verification": problems[:50]}, token)
                 raise DraftConflict(
-                    f"blog {blog_id} did not converge: {len(problems)} mismatch(es)"
-                    f" between the plan and the live export, e.g. {problems[:3]}"
+                    f"store {blog_id} did not converge: after the apply,"
+                    f" {len(problems)} thing(s) still differ between the plan and"
+                    f" the website, e.g. {problems[:3]}"
                 )
             result["verified"] = True
             try:
@@ -1498,11 +1507,11 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
 
     def refused(outcome: Any, what: str) -> None:
         if not isinstance(outcome, dict):
-            raise DraftConflict(f"restore {what} returned no result: {outcome!r}")
+            raise DraftConflict(f"the restore step '{what}' returned no result: {outcome!r}")
         failures = outcome.get("failures") or []
         if outcome.get("ok") is False or failures:
             raise DraftConflict(
-                f"restore {what} reported {len(failures) or 'a'} failure(s): "
+                f"the restore step '{what}' reported {len(failures) or 'a'} problem(s): "
                 f"{failures[:5] if failures else outcome}"
             )
 
@@ -1515,7 +1524,7 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
         refused(outcome, "terms pass")
         if int(outcome.get("terms") or 0) != len(terms):
             raise DraftConflict(
-                f"restore terms pass restored {outcome.get('terms')} of {len(terms)} terms"
+                f"the restore put back {outcome.get('terms')} of {len(terms)} categories"
             )
         restore["terms_result"] = {k: outcome.get(k) for k in ("terms", "created", "updated")}
         restore["phase"] = "memberships"
@@ -1532,8 +1541,8 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
             expected_products = len({int(r.get("product_id") or 0) for r in page})
             if int(outcome.get("products_restored") or 0) != expected_products:
                 raise DraftConflict(
-                    f"restore membership page {offset} restored"
-                    f" {outcome.get('products_restored')} of {expected_products} products"
+                    f"the restore put back {outcome.get('products_restored')} of"
+                    f" {expected_products} products (page {offset})"
                 )
             restored += int(outcome.get("products_restored") or 0)
             offset += len(page)
@@ -1555,8 +1564,8 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
         if problems:
             restore["verification"] = problems[:50]
             raise DraftConflict(
-                f"restore did not converge: {len(problems)} difference(s) from the"
-                f" snapshot remain, e.g. {problems[:3]}"
+                f"the restore did not converge: {len(problems)} difference(s) from"
+                f" the saved copy remain, e.g. {problems[:3]}"
             )
         restore["verified"] = True
         restore["status"] = "done"
@@ -1626,21 +1635,21 @@ def restore_blog(run_id: int, job_id: int, *, actor: str,
             active = other["status"] == "queued" or not _stale(dict(other))
             if active:
                 raise DraftConflict(
-                    f"run {other['run_id']} is {other['status']} for {run['env']};"
-                    " pause or finish it before restoring a blog"
+                    f"run #{other['run_id']} is {other['status']} on {run['env']}"
+                    " - pause or finish it before restoring a store"
                 )
         running = _running_restores(cursor, run["env"], exclude_job_id=job_id)
         if running:
             raise DraftConflict(
-                f"blog {running[0]['blog_id']} (run {running[0]['run_id']}) is still"
-                " being restored; one restore at a time per environment"
+                f"store {running[0]['blog_id']} (run #{running[0]['run_id']}) is still"
+                " being restored - one restore at a time"
             )
     current = (job.get("restore") or {})
     existing = _restore_threads.get(job_id)
     if current.get("status") == "running" and existing and existing.is_alive():
-        raise DraftConflict("a restore is already running for this blog")
+        raise DraftConflict("a restore is already running for this store")
     if current.get("status") == "running" and not _restore_stale(current):
-        raise DraftConflict("a restore is already running for this blog (fresh heartbeat)")
+        raise DraftConflict("a restore is already running for this store (it reported progress moments ago)")
     with database.cursor(write=True, actor=actor) as cursor:
         record_audit(cursor, actor=actor, action="restore_requested",
                      entity="job", entity_key=str(job_id),
