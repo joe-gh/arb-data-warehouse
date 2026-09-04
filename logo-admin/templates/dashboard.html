@@ -791,19 +791,22 @@
             <div class="cat-guide">
               <p><strong>What this is.</strong> The category structure every store will end up with. A store can differ from it (a different name, a hidden category, a category of its own): pick the store under <em>View</em> to see and edit its version.</p>
               <p><strong>What to do.</strong> Drag a category to move or reorder it. Double-click a name (or press F2) to rename. Click a category to edit its name, web address or description on the right, add a category under it, or delete it. Web addresses are the part of the link after <code>/product-category/</code>; keep them when you can so existing links and search results carry on working.</p>
+              <p>Each row shows how many stores have the category and how many products it holds across them, taken from the store copies. <em>empty</em> means no store has any product in it; <em>new</em> means no store has it yet. Press <em>Show only empty</em> to list the empty ones and delete the ones nobody needs, one at a time or all at once.</p>
             </div>
             <div class="cat-tree-layout">
               <div class="cat-tree-col">
                 <div class="cat-tree-toolbar">
                   <button id="cat-add-root" class="button button--secondary button--small" type="button">+ Top-level category</button>
                   <input id="cat-tree-search" class="cat-tree-search" type="search" placeholder="Find a category by name or web address&hellip;" aria-label="Find a category" autocomplete="off">
-                  <span class="muted" id="cat-tree-hint">Drag to move. Double-click or F2 to rename. Arrow keys move between rows.</span>
+                  <button id="cat-tree-empty-toggle" class="button button--ghost button--small cat-tree-toggle" type="button" aria-pressed="false" title="Show only categories that hold no products on any store">Show only empty</button>
+                  <span class="muted" id="cat-tree-hint">Click a category to edit or delete it. Drag to move. Double-click or F2 to rename.</span>
                 </div>
                 <p id="cat-tree-matches" class="muted cat-tree-matches" hidden></p>
                 <div id="cat-tree" class="cat-tree-box"></div>
               </div>
               <aside class="cat-detail" id="cat-node-detail" hidden>
                 <h3 id="cat-detail-title">Category</h3>
+                <p id="cat-detail-stats" class="muted cat-detail-stats"></p>
                 <label class="field"><span>Name</span>
                   <input id="cat-detail-name" type="text" maxlength="200">
                 </label>
@@ -870,6 +873,14 @@
                 <li><strong>Delete</strong> - for categories nobody needs. Products still on it need another category, or the check will stop and tell you.</li>
               </ul>
               <p><em>Accept suggestions</em> decides every undecided row whose name exactly matches one draft category. The bar on the right shows how many rows are still undecided.</p>
+            </div>
+            <div id="cat-map-quick" class="cat-map-quick" role="group" aria-label="Quick filters">
+              <span class="muted">Show:</span>
+              <button type="button" class="button button--ghost button--small" data-quick="all" aria-pressed="true">All</button>
+              <button type="button" class="button button--ghost button--small" data-quick="undecided" aria-pressed="false">Undecided</button>
+              <button type="button" class="button button--ghost button--small" data-quick="empty" aria-pressed="false" title="Categories with no products on any store">Empty</button>
+              <button type="button" class="button button--ghost button--small" data-quick="empty_undecided" aria-pressed="false">Empty and undecided</button>
+              <span class="muted cat-map-quick__hint">Hover a Stores count to see which stores have that category.</span>
             </div>
             <div class="cat-action-bar" role="toolbar" aria-label="Mapping actions">
               <div class="cat-action-bar__group">

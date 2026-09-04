@@ -105,6 +105,33 @@ def slug_is_live(cursor, slug: str, blog_id: Optional[int] = None) -> bool:
     return cursor.fetchone() is not None
 
 
+def slug_stats(cursor, env: str, blog_id: Optional[int] = None) -> Dict[str, Dict[str, int]]:
+    """Per logical slug: how many stores carry it and how many products it
+    holds (summed over every store, or on one store when blog_id is given).
+    Feeds the "N stores · N products" counts and the empty/new badges in the
+    Tree tab."""
+    params: List[Any] = [env]
+    where = "t.env = %s"
+    if blog_id is not None:
+        where += " AND t.blog_id = %s"
+        params.append(blog_id)
+    cursor.execute(
+        f"""
+        SELECT {LOGICAL_SLUG_SQL} AS slug,
+               count(DISTINCT t.blog_id) AS stores,
+               COALESCE(sum(t.count), 0) AS products
+          FROM catmgr.wp_term t
+         WHERE {where}
+         GROUP BY {LOGICAL_SLUG_SQL}
+        """,
+        params,
+    )
+    return {
+        row["slug"]: {"stores": int(row["stores"]), "products": int(row["products"])}
+        for row in cursor.fetchall()
+    }
+
+
 def _slug_owner(cursor, slug: str, *, exclude_node_id: Optional[int] = None,
                 exclude_override_id: Optional[int] = None,
                 blog_id: Optional[int] = None) -> Optional[str]:

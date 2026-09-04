@@ -1048,3 +1048,20 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 .cat-guide li { margin: .15rem 0; }
 .cat-guide code { font-size: .85em; }
 .cat-detail .field__help { display: block; margin-top: .25rem; font-size: .78rem; color: var(--ink-soft); }
+
+/* Tree counts, empty/new badges, row delete, empty filter, mapping quick filters (2026-09-04) */
+.cat-node__stats { margin-left: auto; padding-left: .6rem; color: var(--ink-soft); font-size: .74rem; white-space: nowrap; }
+.cat-badge--empty { background: #fbeaea; color: #8a2a2a; }
+.cat-badge--new { background: #e7f0fb; color: #1d4e89; }
+.cat-node__delete {
+  flex: 0 0 auto; margin-left: .2rem; border: 0; background: transparent; color: var(--ink-soft);
+  font-size: .85rem; line-height: 1; padding: .15rem .4rem; border-radius: 4px; cursor: pointer; opacity: 0;
+}
+.cat-node__row:hover .cat-node__delete, .cat-node__row:focus .cat-node__delete, .cat-node__row:focus-within .cat-node__delete { opacity: 1; }
+.cat-node__delete:hover, .cat-node__delete:focus-visible { background: #fbeaea; color: #8a2a2a; opacity: 1; }
+.cat-tree-toggle[aria-pressed="true"] { background: var(--forest-800); color: var(--white); border-color: var(--forest-800); }
+.cat-detail-stats { margin: -.3rem 0 .6rem; font-size: .82rem; }
+.cat-map-quick { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .7rem; }
+.cat-map-quick .button[aria-pressed="true"] { background: var(--forest-800); color: var(--white); border-color: var(--forest-800); }
+.cat-map-quick__hint { margin-left: auto; font-size: .8rem; }
+.cat-cell-hint { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }

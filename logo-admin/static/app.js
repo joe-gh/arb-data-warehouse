@@ -5869,7 +5869,44 @@
   }
 
   // ------------------------------------------- categories: mapping workbench
-  const catMapState = { table: null, summary: null, suggestions: [] };
+  const catMapState = { table: null, summary: null, suggestions: [], rows: [], quick: "all" };
+
+  function catBlogLabel(blogId) {
+    const blog = (catState.blogs || []).find((b) => b.blog_id === blogId);
+    const snap = (catState.snapshots || []).find((s) => s.blog_id === blogId);
+    const name = blog && blog.name ? decodeEntities(blog.name) : "";
+    const path = (blog && blog.path) || (snap && snap.blog_path) || "";
+    return name ? `${name} ${path || `#${blogId}`}` : (path || `site #${blogId}`);
+  }
+
+  const CAT_MAP_QUICK = {
+    all: null,
+    undecided: (row) => !row.action,
+    empty: (row) => !Number(row.products || 0),
+    empty_undecided: (row) => !row.action && !Number(row.products || 0),
+  };
+
+  function catMapQuickRender() {
+    const rows = catMapState.rows || [];
+    $$("#cat-map-quick [data-quick]").forEach((button) => {
+      const kind = button.dataset.quick;
+      const test = CAT_MAP_QUICK[kind];
+      const count = test ? rows.filter(test).length : rows.length;
+      const label = { all: "All", undecided: "Undecided", empty: "Empty", empty_undecided: "Empty and undecided" }[kind] || kind;
+      button.textContent = `${label} (${count})`;
+      button.setAttribute("aria-pressed", catMapState.quick === kind ? "true" : "false");
+    });
+  }
+
+  function catMapQuickApply(kind) {
+    catMapState.quick = CAT_MAP_QUICK[kind] === undefined ? "all" : kind;
+    catMapQuickRender();
+    const table = catMapState.table;
+    if (!table) return;
+    const test = CAT_MAP_QUICK[catMapState.quick];
+    if (test) table.setFilter((data) => test(data));
+    else table.clearFilter(false);
+  }
 
   function catMappingProgress() {
     const bar = $("#cat-mapping-progress-bar");
@@ -5901,8 +5938,10 @@
       catMapState.summary = data.summary;
       catMappingProgress();
       const rows = data.slugs.map((r) => ({ ...r, id: r.old_slug }));
+      catMapState.rows = rows;
       if (catMapState.table) {
         catMapState.table.replaceData(rows);
+        catMapQuickApply(catMapState.quick);
         catMappingSelectionChanged(catMapState.table.getSelectedRows().length);
         return;
       }
@@ -5921,8 +5960,20 @@
           { title: "Web address (slug)", field: "old_slug", headerFilter: "input", headerFilterPlaceholder: "Filter addresses…", widthGrow: 3, minWidth: 160 },
           { title: "Name", field: "sample_name", headerFilter: "input", headerFilterPlaceholder: "Filter names…", widthGrow: 3, minWidth: 160,
             formatter: (cell) => escapeHtml(decodeEntities(cell.getValue())) },
-          { title: "Stores", field: "blogs", hozAlign: "right", width: 84, headerTooltip: "How many stores have this category" },
-          { title: "Products", field: "products", hozAlign: "right", width: 104 },
+          { title: "Stores", field: "blogs", hozAlign: "right", width: 84, headerTooltip: "How many stores have this category - hover a count to see which",
+            formatter: (cell) => {
+              const ids = cell.getRow().getData().blog_ids || [];
+              if (ids.length) {
+                cell.getElement().title = `${ids.slice(0, 20).map(catBlogLabel).join("\n")}${ids.length > 20 ? `\n… and ${ids.length - 20} more` : ""}`;
+                cell.getElement().classList.add("cat-cell-hint");
+              }
+              return String(cell.getValue() ?? "");
+            } },
+          { title: "Products", field: "products", hozAlign: "right", width: 118, headerTooltip: "Products in this category, added up across the stores",
+            formatter: (cell) => {
+              const value = Number(cell.getValue() || 0);
+              return value ? String(value) : '0 <span class="cat-badge cat-badge--empty" title="No products on any store">empty</span>';
+            } },
           { title: "Public", field: "blog1", formatter: "tickCross", width: 80, hozAlign: "center",
             headerTooltip: "Exists on the public store (arborwear.com)",
             headerFilter: "tickCross", headerFilterParams: { tristate: true } },
@@ -5946,6 +5997,11 @@
         ],
       });
       catMapState.table.on("rowSelectionChanged", (data) => catMappingSelectionChanged(data.length));
+      $$("#cat-map-quick [data-quick]").forEach((button) => {
+        button.addEventListener("click", () => catMapQuickApply(button.dataset.quick));
+      });
+      catMapState.table.on("tableBuilt", () => catMapQuickApply(catMapState.quick));
+      catMapQuickRender();
       catMappingSelectionChanged(0);
     } catch (error) {
       renderErrorState($("#cat-mapping-table"), friendlyLoadError("the slug mapping", error), loadCatMapping);
@@ -6295,7 +6351,33 @@
     selected: null,       // selected node object (global view)
     sortables: [],
     query: "",            // tree search text (matches name or slug)
+    stats: {},            // slug -> {stores, products} across every store copy
+    storeStats: {},       // slug -> {stores, products} for the store in view
+    hasStats: false,
+    onlyEmpty: false,     // "Show only empty" toggle
   };
+
+  function catNodeStats(n) {
+    const pick = (map) => map[n.slug] || (n.previous_slug ? map[n.previous_slug] : null) || null;
+    const all = pick(catTreeState.stats);
+    const here = catTreeState.storeBlog ? pick(catTreeState.storeStats) : null;
+    return {
+      known: Boolean(all),
+      stores: all ? all.stores : 0,
+      products: all ? all.products : 0,
+      here: here ? here.products : (catTreeState.storeBlog && all ? 0 : null),
+    };
+  }
+
+  function catNodeIsEmpty(n) {
+    const s = catNodeStats(n);
+    return s.known && s.products === 0;
+  }
+
+  function catStatsText(s) {
+    if (!s.known) return "not on any store yet";
+    return `${s.stores} store${s.stores === 1 ? "" : "s"} · ${s.products} product${s.products === 1 ? "" : "s"}${s.here !== null ? ` · ${s.here} here` : ""}`;
+  }
 
   function showCatTab(tab) {
     catTreeState.tab = tab;
@@ -6329,13 +6411,29 @@
     const box = $("#cat-tree");
     if (!box) return;
     try {
+      const envQuery = catState.env ? `env=${encodeURIComponent(catState.env)}` : "";
       if (catTreeState.storeBlog) {
-        const data = await api(`/api/categories/tree/effective?blog_id=${encodeURIComponent(catTreeState.storeBlog)}`);
+        const data = await api(`/api/categories/tree/effective?blog_id=${encodeURIComponent(catTreeState.storeBlog)}${envQuery ? `&${envQuery}` : ""}`);
         catTreeState.effective = data.nodes || [];
         catTreeState.overrides = data.overrides || [];
+        catTreeState.stats = data.stats || {};
+        catTreeState.storeStats = data.store_stats || {};
       } else {
-        const data = await api("/api/categories/tree");
+        const data = await api(`/api/categories/tree${envQuery ? `?${envQuery}` : ""}`);
         catTreeState.nodes = data.nodes || [];
+        catTreeState.stats = data.stats || {};
+        catTreeState.storeStats = {};
+      }
+      catTreeState.hasStats = Object.keys(catTreeState.stats).length > 0;
+      const emptyToggle = $("#cat-tree-empty-toggle");
+      if (emptyToggle) {
+        emptyToggle.disabled = !catTreeState.hasStats;
+        emptyToggle.title = catTreeState.hasStats
+          ? "Show only categories that hold no products on any store"
+          : "Copy the stores first (step 1) - counts come from the store copies";
+        if (!catTreeState.hasStats) catTreeState.onlyEmpty = false;
+        emptyToggle.setAttribute("aria-pressed", catTreeState.onlyEmpty ? "true" : "false");
+        emptyToggle.textContent = catTreeState.onlyEmpty ? "Showing only empty" : "Show only empty";
       }
       renderCatTree();
       renderCatSeedBox();
@@ -6383,16 +6481,21 @@
     }
     const children = catBuildChildrenMap(nodes);
     const query = (catTreeState.query || "").trim().toLowerCase();
-    const isMatch = (n) => Boolean(query) && `${n.name || ""} ${n.slug || ""}`.toLowerCase().includes(query);
-    // Searching keeps every match plus its ancestors, so the path stays readable.
+    const onlyEmpty = Boolean(catTreeState.onlyEmpty && catTreeState.hasStats);
+    const filtering = Boolean(query || onlyEmpty);
+    const textMatch = (n) => `${n.name || ""} ${n.slug || ""}`.toLowerCase().includes(query);
+    const isMatch = (n) => filtering && (!query || textMatch(n)) && (!onlyEmpty || catNodeIsEmpty(n));
+    // Filtering keeps every match plus its ancestors, so the path stays readable.
     let visible = null;
     let matchCount = 0;
-    if (query) {
+    const matched = [];
+    if (filtering) {
       visible = new Set();
       const byId = new Map(nodes.filter((n) => n.node_id !== null && n.node_id !== undefined).map((n) => [n.node_id, n]));
       nodes.forEach((n) => {
         if (!isMatch(n)) return;
         matchCount += 1;
+        matched.push(n);
         let current = n;
         while (current && !visible.has(current)) {
           visible.add(current);
@@ -6405,11 +6508,16 @@
       const kids = (children.get(parentKey) || []).filter((n) => !visible || visible.has(n));
       const items = kids.map((n) => {
         const id = n.node_id === null || n.node_id === undefined ? "" : n.node_id;
+        const st = catTreeState.hasStats ? catNodeStats(n) : null;
         const badges = [
           n.renamed ? '<span class="cat-badge cat-badge--rename" title="Renamed on this store">renamed</span>' : "",
           n.extra ? '<span class="cat-badge cat-badge--extra" title="Store-local category">store-only</span>' : "",
-          catSlugLooksLikeCode(n.slug) ? '<span class="cat-badge cat-badge--code" title="This slug looks like a legacy code rather than a readable name. Shoppers see it in the URL - consider renaming it in the detail pane.">code slug</span>' : "",
+          catSlugLooksLikeCode(n.slug) ? '<span class="cat-badge cat-badge--code" title="This web address looks like a legacy code rather than a readable name. Shoppers see it in the link - consider renaming it in the panel on the right.">code slug</span>' : "",
+          st && st.known && st.products === 0 ? `<span class="cat-badge cat-badge--empty" title="Exists on ${st.stores} store${st.stores === 1 ? "" : "s"} but holds no products on any of them">empty</span>` : "",
+          st && !st.known ? '<span class="cat-badge cat-badge--new" title="No store has this category yet - the apply will create it">new</span>' : "",
         ].join("");
+        const statsHtml = st ? `<span class="cat-node__stats" title="${escapeHtml(catStatsText(st))}${st.known ? " - from the store copies" : ""}">${escapeHtml(catStatsText(st))}</span>` : "";
+        const deleteHtml = globalView && id !== "" ? `<button type="button" class="cat-node__delete" title="Delete this category from the draft" aria-label="Delete ${escapeHtml(n.name || "")}" tabindex="-1">&#x2715;</button>` : "";
         const kidsHtml = renderList(id === "" ? `x-${n.override_id}` : String(id), level + 1);
         const selected = catTreeState.selected && catTreeState.selected.node_id === n.node_id && id !== "";
         return `<li class="cat-node ${selected ? "is-selected" : ""}${isMatch(n) ? " is-match" : ""}" data-node="${id}" data-override="${n.override_id || ""}" role="none">
@@ -6417,24 +6525,41 @@
             <span class="cat-node__name" title="${escapeHtml(n.slug || "")}">${catHighlight(n.name, query)}</span>
             <span class="cat-node__slug">${catHighlight(n.slug || "", query)}</span>
             ${badges}
+            ${statsHtml}
+            ${deleteHtml}
           </div>
           ${kidsHtml}
         </li>`;
       }).join("");
       // Always render the UL in the global view so empty nodes accept drops
       // (except while searching, when dragging is off anyway).
-      if (!items && (!globalView || query)) return "";
+      if (!items && (!globalView || filtering)) return "";
       return `<ul class="cat-branch" role="group" data-parent="${parentKey.startsWith("x-") ? "" : parentKey}">${items}</ul>`;
     }
 
     box.innerHTML = renderList("", 1);
     box.setAttribute("role", "tree");
-    box.dataset.filtering = query ? "1" : "";
+    box.dataset.filtering = filtering ? "1" : "";
     if (matches) {
-      matches.hidden = !query;
-      matches.textContent = query
-        ? (matchCount ? `${matchCount} matching categor${matchCount === 1 ? "y" : "ies"} - drag and drop is off while searching.` : "No categories match.")
-        : "";
+      matches.hidden = !filtering;
+      if (!filtering) {
+        matches.textContent = "";
+      } else if (!matchCount) {
+        matches.textContent = onlyEmpty
+          ? (query ? "No empty categories match." : "No empty categories - every draft category holds products on at least one store.")
+          : "No categories match.";
+      } else {
+        const what = onlyEmpty ? `empty categor${matchCount === 1 ? "y" : "ies"}` : `matching categor${matchCount === 1 ? "y" : "ies"}`;
+        const leaves = onlyEmpty && globalView
+          ? matched.filter((n) => n.node_id && !(children.get(String(n.node_id)) || []).length)
+          : [];
+        const kept = matchCount - leaves.length;
+        matches.innerHTML = `${matchCount} ${what} shown - drag and drop is off while filtering.`
+          + (leaves.length ? ` <button type="button" id="cat-tree-delete-empty" class="button button--ghost button--small cat-danger">Delete ${leaves.length === matchCount ? "all " : ""}${leaves.length} from the draft</button>` : "")
+          + (onlyEmpty && globalView && kept ? ` <span class="muted">${kept} of them still ha${kept === 1 ? "s" : "ve"} categories underneath and ${kept === 1 ? "is" : "are"} left alone.</span>` : "");
+        const bulk = $("#cat-tree-delete-empty");
+        if (bulk) bulk.addEventListener("click", () => deleteCatNodesBulk(leaves));
+      }
     }
     // Roving tabindex: exactly one row is reachable with Tab.
     if (!$('.cat-node__row[tabindex="0"]', box)) {
@@ -6442,7 +6567,7 @@
       if (first) first.tabIndex = 0;
     }
     if (globalView) {
-      if (!query) attachCatSortables(box);
+      if (!filtering) attachCatSortables(box);
       wireCatTreeRows(box);
     }
   }
@@ -6462,6 +6587,13 @@
         event.stopPropagation();
         startCatInlineRename(li, id, nameEl);
       });
+      const deleteButton = row.querySelector(".cat-node__delete");
+      if (deleteButton) {
+        deleteButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          deleteCatNodeById(catNodeById(id));
+        });
+      }
       row.addEventListener("keydown", (event) => {
         if (event.target !== row) return; // keys typed inside the inline rename box
         const index = rows.indexOf(row);
@@ -6479,6 +6611,7 @@
           case "End": event.preventDefault(); focusRow(rows.length - 1); break;
           case "Enter": case " ": event.preventDefault(); selectCatNode(catNodeById(id)); break;
           case "F2": event.preventDefault(); startCatInlineRename(li, id, row.querySelector(".cat-node__name")); break;
+          case "Delete": event.preventDefault(); deleteCatNodeById(catNodeById(id)); break;
           default: break;
         }
       });
@@ -6552,6 +6685,11 @@
     if (!node) { panel.hidden = true; renderCatTree(); return; }
     panel.hidden = false;
     $("#cat-detail-title").textContent = node.name;
+    const statsLine = $("#cat-detail-stats");
+    if (statsLine) {
+      const st = catTreeState.hasStats ? catNodeStats(node) : null;
+      statsLine.textContent = st ? `${st.known ? "On " : ""}${catStatsText(st)}${st.known ? " - from the store copies" : ""}` : "";
+    }
     $("#cat-detail-name").value = node.name;
     $("#cat-detail-slug").value = node.slug;
     $("#cat-detail-description").value = node.description || "";
@@ -6608,49 +6746,93 @@
     }
   }
 
-  async function deleteCatNode() {
-    const node = catTreeState.selected;
-    if (!node) return;
+  function catAfterNodeDeleted(nodeIds) {
+    if (catTreeState.selected && nodeIds.includes(catTreeState.selected.node_id)) {
+      catTreeState.selected = null;
+      $("#cat-node-detail").hidden = true;
+    }
+  }
+
+  function catUnmappedToast(unmapped) {
+    if (!unmapped.length) return;
+    toast(`${unmapped.length} existing categor${unmapped.length === 1 ? "y was" : "ies were"} moved into it and now need${unmapped.length === 1 ? "s" : ""} a new decision on the Mapping tab: ${unmapped.slice(0, 6).join(", ")}${unmapped.length > 6 ? ", …" : ""}`, "error");
+  }
+
+  async function deleteCatNodeById(node) {
+    if (!node || !node.node_id) return;
+    const st = catTreeState.hasStats ? catNodeStats(node) : null;
     const confirmed = await confirmAction({
-      title: `Delete "${node.name}"?`,
-      message: "Deletes this draft category (and, if you confirm again, its whole subtree). Live stores are not touched.",
-      actionLabel: "Delete",
+      title: `Delete "${node.name}" from the draft?`,
+      message: `${st && st.known ? `It is on ${st.stores} store${st.stores === 1 ? "" : "s"} with ${st.products} product${st.products === 1 ? "" : "s"}. ` : ""}Nothing changes on the websites. Its row on the Mapping tab becomes undecided; mark it Delete there so the apply removes it from the stores, or move it into another category.`,
+      actionLabel: "Delete from draft",
       danger: true,
     });
     if (!confirmed) return;
     try {
       const result = await api(`/api/categories/nodes/${node.node_id}`, { method: "DELETE" });
-      catTreeState.selected = null;
-      $("#cat-node-detail").hidden = true;
+      catAfterNodeDeleted([node.node_id]);
       await loadCatTree();
-      const unmapped = (result && result.unmapped_slugs) || [];
-      if (unmapped.length) {
-        toast(`${unmapped.length} live slug(s) were mapped to that category and now need a new disposition in Mapping: ${unmapped.slice(0, 6).join(", ")}${unmapped.length > 6 ? ", …" : ""}`, "error");
-      }
+      catUnmappedToast((result && result.unmapped_slugs) || []);
     } catch (error) {
       if (error && error.status === 409) {
         const cascade = await confirmAction({
-          title: "Delete the whole subtree?",
-          message: errorMessage(error),
-          actionLabel: "Delete subtree",
+          title: "Delete everything under it too?",
+          message: `${errorMessage(error)}. Deleting anyway removes this category and every category under it from the draft.`,
+          actionLabel: "Delete all of it",
           danger: true,
         });
         if (cascade) {
           try {
-            await api(`/api/categories/nodes/${node.node_id}?cascade=true`, { method: "DELETE" });
-            catTreeState.selected = null;
-            $("#cat-node-detail").hidden = true;
+            const result = await api(`/api/categories/nodes/${node.node_id}?cascade=true`, { method: "DELETE" });
+            catAfterNodeDeleted([node.node_id]);
             await loadCatTree();
-            return;
+            catUnmappedToast((result && result.unmapped_slugs) || []);
           } catch (inner) {
             toast(errorMessage(inner), "error");
-            return;
           }
         }
-        return;
+      } else {
+        toast(errorMessage(error), "error");
       }
-      toast(errorMessage(error), "error");
     }
+  }
+
+  function deleteCatNode() {
+    return deleteCatNodeById(catTreeState.selected);
+  }
+
+  async function deleteCatNodesBulk(nodes) {
+    if (!nodes.length) return;
+    const names = nodes.map((n) => n.name);
+    const confirmed = await confirmAction({
+      title: `Delete ${nodes.length} empty categor${nodes.length === 1 ? "y" : "ies"} from the draft?`,
+      message: `${names.slice(0, 12).join(", ")}${names.length > 12 ? ` and ${names.length - 12} more` : ""}. Nothing changes on the websites. Their rows on the Mapping tab become undecided; mark them Delete there so the apply removes them from the stores.`,
+      actionLabel: "Delete from draft",
+      danger: true,
+    });
+    if (!confirmed) return;
+    const button = $("#cat-tree-delete-empty");
+    if (button) setBusy(button, true, "Deleting\u2026");
+    let done = 0;
+    const failures = [];
+    const unmapped = [];
+    for (const n of nodes) {
+      try {
+        const result = await api(`/api/categories/nodes/${n.node_id}`, { method: "DELETE" });
+        done += 1;
+        unmapped.push(...((result && result.unmapped_slugs) || []));
+      } catch (error) {
+        failures.push(`${n.name}: ${errorMessage(error)}`);
+      }
+    }
+    catAfterNodeDeleted(nodes.map((n) => n.node_id));
+    await loadCatTree();
+    if (failures.length) {
+      toast(`Deleted ${done}; ${failures.length} could not be deleted: ${failures.slice(0, 2).join("; ")}`, "error");
+    } else {
+      toast(`Deleted ${done} categor${done === 1 ? "y" : "ies"} from the draft. Now mark their rows Delete on the Mapping tab.`, "success");
+    }
+    catUnmappedToast(unmapped);
   }
 
   function renderCatSeedBox() {
@@ -6829,6 +7011,16 @@
       treeSearch.addEventListener("input", debounce(() => { catTreeState.query = treeSearch.value; renderCatTree(); }, 120));
       treeSearch.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && treeSearch.value) { treeSearch.value = ""; catTreeState.query = ""; renderCatTree(); }
+      });
+    }
+    const emptyToggle = $("#cat-tree-empty-toggle");
+    if (emptyToggle) {
+      emptyToggle.addEventListener("click", () => {
+        if (!catTreeState.hasStats) return;
+        catTreeState.onlyEmpty = !catTreeState.onlyEmpty;
+        emptyToggle.setAttribute("aria-pressed", catTreeState.onlyEmpty ? "true" : "false");
+        emptyToggle.textContent = catTreeState.onlyEmpty ? "Showing only empty" : "Show only empty";
+        renderCatTree();
       });
     }
     $("#cat-detail-save").addEventListener("click", saveCatDetail);

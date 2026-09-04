@@ -175,18 +175,23 @@ def _draft_errors(exc: Exception):
 
 @router.get("/tree")
 def get_tree(
+    env: Optional[str] = Query(None),
     user: Dict[str, str] = Depends(require_user),
     _: None = Depends(require_catmgr),
 ):
+    """The draft tree; with ?env= also per-slug store/product counts from
+    that environment's snapshots (keyed by slug)."""
     del user
     with database.cursor() as cursor:
         nodes = categories_draft.list_nodes(cursor)
-    return {"nodes": nodes}
+        stats = categories_draft.slug_stats(cursor, env) if env else {}
+    return {"nodes": nodes, "stats": stats}
 
 
 @router.get("/tree/effective")
 def get_effective_tree(
     blog_id: int = Query(..., ge=1),
+    env: Optional[str] = Query(None),
     user: Dict[str, str] = Depends(require_user),
     _: None = Depends(require_catmgr),
 ):
@@ -194,7 +199,10 @@ def get_effective_tree(
     with database.cursor() as cursor:
         nodes = categories_draft.effective_tree(cursor, blog_id)
         overrides = categories_draft.list_overrides(cursor, blog_id)
-    return {"blog_id": blog_id, "nodes": nodes, "overrides": overrides}
+        stats = categories_draft.slug_stats(cursor, env) if env else {}
+        store_stats = categories_draft.slug_stats(cursor, env, blog_id) if env else {}
+    return {"blog_id": blog_id, "nodes": nodes, "overrides": overrides,
+            "stats": stats, "store_stats": store_stats}
 
 
 class NodeCreateRequest(BaseModel):

@@ -43,6 +43,7 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
             -- apply keeps its merge destination.
             SELECT {LOGICAL_SLUG_SQL}                   AS slug,
                    count(DISTINCT t.blog_id)             AS blogs,
+                   array_agg(DISTINCT t.blog_id ORDER BY t.blog_id) AS blog_ids,
                    sum(t.count)                          AS products,
                    bool_or(t.blog_id = 1)                AS blog1,
                    bool_or(t.parked_from <> '')          AS parked,
@@ -51,7 +52,7 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
              WHERE t.env = %s
              GROUP BY {LOGICAL_SLUG_SQL}
         )
-        SELECT live.slug AS old_slug, live.blogs, live.products, live.blog1,
+        SELECT live.slug AS old_slug, live.blogs, live.blog_ids, live.products, live.blog1,
                live.parked, live.sample_name,
                COALESCE(m.action,
                         CASE WHEN implicit.node_id IS NOT NULL THEN 'map'
