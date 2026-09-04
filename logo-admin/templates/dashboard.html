@@ -49,12 +49,14 @@
           <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Fake Inventory</button>
         </div>
       </div>
-      {% if categories_enabled %}
-      <button class="main-nav__link" type="button" data-view="categories">Categories</button>
-      {% endif %}
-      <div class="main-nav__group" data-group="">
+      <div class="main-nav__group" data-group="categories,health">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-tools">Tools<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu main-nav__menu--wide" id="nav-menu-tools" role="menu" aria-label="Tools" hidden>
+          {% if categories_enabled %}
+          <button class="main-nav__item" type="button" role="menuitem" data-view="categories">Categories</button>
+          {% endif %}
+          <button class="main-nav__item" type="button" role="menuitem" data-view="health">System Health</button>
+          <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section" role="presentation">Logo data</p>
           <button id="import-button" class="main-nav__item" type="button" role="menuitem">Import Assignments <span class="badge badge--writes">Makes changes</span></button>
           <a id="export-link" class="main-nav__item" role="menuitem" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
@@ -71,8 +73,7 @@
       </div>
     </nav>
     <div class="header-actions">
-      <nav class="utility-nav" aria-label="Help and status">
-        <button class="main-nav__link main-nav__link--quiet" type="button" data-view="health">Health</button>
+      <nav class="utility-nav" aria-label="Help">
         <button class="main-nav__link main-nav__link--quiet" type="button" data-view="help">Help</button>
       </nav>
       <div class="combobox combobox--header" id="header-store-box">
