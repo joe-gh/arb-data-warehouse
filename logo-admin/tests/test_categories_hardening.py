@@ -20,31 +20,28 @@ from tests.test_categories_planner import _build_scenario, _read, _write
 from tests.test_categories_runs import BrokerRecorder
 
 
-def _export_from_snapshot(env, blog_id):
-    """A fake WordPress export that returns exactly what the warehouse snapshot
-    holds, so the post-apply refresh re-imports the same (mapped) state."""
-    with database.cursor() as cursor:
-        cursor.execute("SELECT blog_path FROM catmgr.snapshot WHERE env=%s AND blog_id=%s", (env, blog_id))
-        row = cursor.fetchone()
-        cursor.execute(
-            "SELECT term_id, slug, name, parent_term_id AS parent, description, sort_order"
-            " FROM catmgr.wp_term WHERE env=%s AND blog_id=%s ORDER BY term_id", (env, blog_id))
-        terms = [dict(r) for r in cursor.fetchall()]
-        cursor.execute(
-            "SELECT term_id, product_id, sku FROM catmgr.wp_term_product WHERE env=%s AND blog_id=%s",
-            (env, blog_id))
-        products = [dict(r) for r in cursor.fetchall()]
-    return {"blog_path": row["blog_path"] if row else "/", "terms": terms, "products": products}
+@pytest.fixture(autouse=True)
+def _fast_broker_polls(monkeypatch):
+    monkeypatch.setattr(categories_runs, "JOB_POLL_SECONDS", 0)
 
 
 @pytest.fixture
 def ready(monkeypatch):
     nodes = _build_scenario()
     _write(categories_planner.set_acks, skus=["RESCUE-2", "ORPHAN-1"], note="test")
-    recorder = BrokerRecorder()
-    monkeypatch.setattr(categories_runs, "broker_call", recorder)
-    monkeypatch.setattr(categories_service, "fetch_export", _export_from_snapshot)
+    recorder = BrokerRecorder().install(monkeypatch)
     return nodes, recorder
+
+
+def _rewind_after_terms(run_id, job_id):
+    """Put a finished job back to 'terms landed, worker died' so recovery
+    resumes it from its cursor against the (already converged) fake."""
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE catmgr.run_job SET status='running', finished_at=NULL, result=NULL, progress = %s WHERE job_id = %s",
+                           ('{"snapshot_taken": true, "terms_done": true}', job_id))
+            cursor.execute("UPDATE catmgr.run SET status='running', finished_at=NULL, worker_heartbeat_at = now() - interval '30 minutes' WHERE run_id = %s",
+                           (run_id,))
 
 
 def _set_heartbeat(run_id, minutes_ago):
@@ -67,19 +64,15 @@ def _set_job_status(job_id, status):
 def test_stale_running_job_is_reclaimed_and_resumes_from_its_cursor(ready):
     _, recorder = ready
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
-    job = run["jobs"][0]
+    job = categories_runs.process_run(run["run_id"], actor="tester")["jobs"][0]
     # Simulate a worker that died after apply-terms: job 'running', run 'running',
     # heartbeat old, cursors say terms are done.
-    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE catmgr.run_job SET status='running', progress = %s WHERE job_id = %s",
-                           ('{"snapshot_taken": true, "terms_done": true}', job["job_id"]))
-            cursor.execute("UPDATE catmgr.run SET status='running', worker_heartbeat_at = now() - interval '30 minutes' WHERE run_id = %s",
-                           (run["run_id"],))
+    _rewind_after_terms(run["run_id"], job["job_id"])
     listed = _read(categories_runs.list_runs, "prod")
     assert listed[0]["worker_stale"] is True
+    recorder.calls.clear()
     done = categories_runs.process_run(run["run_id"], actor="tester")
-    assert done["status"] == "completed"
+    assert done["status"] == "completed", done["jobs"][0]["result"]
     paths = [p for _, p, _ in recorder.calls]
     assert "/apply-terms" not in paths          # terms_done cursor honoured
     assert paths[0] == "/apply-memberships" and paths[-1] == "/finalize"
@@ -125,8 +118,7 @@ def test_membership_fence_violation_fails_the_job_with_a_report(ready, monkeypat
                 return {"ok": False, "applied": 0,
                         "skipped": [{"product_id": 100, "reason": "sku_mismatch"}], "missing_slugs": []}
             return super().__call__(env, path, payload)
-    recorder = Refusing()
-    monkeypatch.setattr(categories_runs, "broker_call", recorder)
+    recorder = Refusing().install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     assert failed["status"] == "failed"
@@ -143,7 +135,7 @@ def test_finalize_delete_drift_fails_the_job(ready, monkeypatch):
             if path == "/finalize":
                 result["delete_report"] = [{"term_id": 12, "status": "has_products", "count": 3}]
             return result
-    monkeypatch.setattr(categories_runs, "broker_call", DriftingFinalize())
+    DriftingFinalize().install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     assert failed["status"] == "failed"
@@ -179,7 +171,8 @@ def test_skip_continues_or_finishes_the_run(ready):
     after_skip = _write(categories_runs.skip_job, run["run_id"], first["job_id"])
     assert after_skip["status"] == "queued"                  # pending job remains -> continue
     done = categories_runs.process_run(run["run_id"], actor="tester")
-    assert done["status"] == "completed"
+    # A skipped blog was NOT migrated: the run says so instead of "completed".
+    assert done["status"] == "completed_with_skips"
     assert {j["status"] for j in done["jobs"]} == {"skipped", "done"}
 
 
@@ -197,7 +190,7 @@ def test_apply_terms_sends_doomed_terms_and_refuses_ok_false(ready, monkeypatch)
             if path == "/apply-terms":
                 return {"ok": False, "code": "arb_catmgr_drift", "drift": [{"term_id": 10}]}
             return super().__call__(env, path, payload)
-    monkeypatch.setattr(categories_runs, "broker_call", Refuse())
+    Refuse().install(monkeypatch)
     with psycopg2.connect(TEST_ADMIN_DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute("UPDATE catmgr.run SET status='completed' WHERE run_id = %s", (run["run_id"],))
@@ -209,33 +202,23 @@ def test_apply_terms_sends_doomed_terms_and_refuses_ok_false(ready, monkeypatch)
 def test_restore_is_paged_and_resumable(ready, monkeypatch):
     _, recorder = ready
     monkeypatch.setattr(categories_runs, "RESTORE_PAGE_SIZE", 1)
-    monkeypatch.setattr(
-        categories_service, "fetch_export",
-        # Term-ordered like the real export: product 100's rows straddle what a
-        # naive 1-row page would cut. Pages must close only at product boundaries.
-        lambda env, blog_id: {"blog_path": "/", "terms": [{"term_id": 1, "slug": "live", "name": "Live", "parent": 0},
-                                                          {"term_id": 2, "slug": "other", "name": "Other", "parent": 0}],
-                              "products": [{"term_id": 1, "product_id": 100, "sku": "A"},
-                                           {"term_id": 1, "product_id": 101, "sku": "B"},
-                                           {"term_id": 1, "product_id": 102, "sku": "C"},
-                                           {"term_id": 2, "product_id": 100, "sku": "A"}]},
-    )
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     done = categories_runs.process_run(run["run_id"], actor="tester")
     job = done["jobs"][0]
     recorder.calls.clear()
     result = categories_runs.restore_blog(run["run_id"], job["job_id"], actor="tester", background=False)
-    assert result["accepted"] is True and result["restore"]["status"] == "done"
+    assert result["accepted"] is True and result["restore"]["status"] == "done", result
     phases = [p["phase"] for _, path, p in recorder.calls if path == "/restore"]
-    assert phases == ["terms", "memberships", "memberships", "memberships", "finalize"]
+    # Blog 1's snapshot has 7 membership rows over 6 products; product 100
+    # straddles two terms, so a 1-row page must still carry both of its rows.
+    assert phases == ["terms"] + ["memberships"] * 6 + ["finalize"]
     pages = [p["snapshot"]["products"] for _, path, p in recorder.calls if path == "/restore" and p["phase"] == "memberships"]
-    assert [[(r["product_id"], r["term_id"]) for r in page] for page in pages] == [
-        [(100, 1), (100, 2)], [(101, 1)], [(102, 1)]]
+    assert [[(r["product_id"], r["term_id"]) for r in page] for page in pages][0] == [(100, 10), (100, 11)]
     offsets = [p["products_offset"] for _, path, p in recorder.calls if path == "/restore" and p["phase"] == "memberships"]
-    assert offsets == [0, 2, 3]
+    assert offsets == [0, 2, 3, 4, 5, 6]
     assert all(p["snapshot"]["blog_path"] == "/" for _, path, p in recorder.calls if path == "/restore")
     detail = _read(categories_runs.get_run, run["run_id"])["jobs"][0]["restore"]
-    assert detail["offset"] == 4 and detail["phase"] == "done"
+    assert detail["offset"] == 7 and detail["phase"] == "done" and detail["verified"] is True
 
 
 def test_restore_refuses_while_the_run_is_active(ready):
@@ -274,7 +257,10 @@ def test_store_extra_reslug_converges_in_place_with_redirect():
     overrides = _read(categories_draft.list_overrides, 7)
     extra = next(o for o in overrides if o["kind"] == "extra_node")
     plan_before = _read(categories_planner.build_blog_plan, "prod", 7)
-    assert not any(u["expected_slug"] == "crew-shop" for u in plan_before["terms"]["update"])
+    # The extra's own live term converges in place on its blog (here its
+    # parent moves under Clothing) but its slug is not touched before the re-slug.
+    before = next(u for u in plan_before["terms"]["update"] if u["expected_slug"] == "crew-shop")
+    assert not before["changed"].get("slug") and before["set"]["slug"] == "crew-shop"
     _write(categories_draft.set_override, blog_id=7, kind="extra_node",
            override_id=extra["override_id"], name="Crew Store", slug="crew-store",
            parent_node_id=extra["parent_node_id"])
@@ -484,11 +470,15 @@ class AsyncBroker(BrokerRecorder):
 
     def __call__(self, env, path, payload):
         if path == "/job":
+            key = payload["key"]
+            if key not in self.jobs:
+                # The engine probes deterministic keys before posting; an
+                # unknown key is a 404 like the real broker.
+                raise categories_service.BrokerError("No job with that key.", 404)
             self.calls.append((env, path, payload))
             if self.status_hiccups > 0:
                 self.status_hiccups -= 1
                 raise categories_service.BrokerError("WordPress is currently unreachable", 502)
-            key = payload["key"]
             job = self.jobs[key]
             job["polls"] += 1
             if job["polls"] < self.polls_before_done:
@@ -518,8 +508,7 @@ def fast_polls(monkeypatch):
 
 
 def test_detached_broker_jobs_are_polled_to_completion(ready, monkeypatch, fast_polls):
-    broker = AsyncBroker(polls_before_done=3)
-    monkeypatch.setattr(categories_runs, "broker_call", broker)
+    broker = AsyncBroker(polls_before_done=3).install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     done = categories_runs.process_run(run["run_id"], actor="tester")
     assert done["status"] == "completed", done["jobs"][0]["result"]
@@ -542,7 +531,7 @@ def test_detached_broker_jobs_are_polled_to_completion(ready, monkeypatch, fast_
 
 
 def test_dead_broker_worker_fails_the_job_with_retry_guidance(ready, monkeypatch, fast_polls):
-    monkeypatch.setattr(categories_runs, "broker_call", AsyncBroker(outcome="dead"))
+    AsyncBroker(outcome="dead").install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     assert failed["status"] == "failed"
@@ -555,7 +544,7 @@ def test_dead_broker_worker_fails_the_job_with_retry_guidance(ready, monkeypatch
 
 
 def test_stale_broker_job_fails_with_wait_then_retry(ready, monkeypatch, fast_polls):
-    monkeypatch.setattr(categories_runs, "broker_call", AsyncBroker(outcome="stale"))
+    AsyncBroker(outcome="stale").install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     result = failed["jobs"][0]["result"]
@@ -564,7 +553,7 @@ def test_stale_broker_job_fails_with_wait_then_retry(ready, monkeypatch, fast_po
 
 
 def test_broker_reported_failure_is_definite_not_unknown(ready, monkeypatch, fast_polls):
-    monkeypatch.setattr(categories_runs, "broker_call", AsyncBroker(outcome="failed"))
+    AsyncBroker(outcome="failed").install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     result = failed["jobs"][0]["result"]
@@ -573,15 +562,14 @@ def test_broker_reported_failure_is_definite_not_unknown(ready, monkeypatch, fas
 
 
 def test_status_poll_hiccups_are_tolerated(ready, monkeypatch, fast_polls):
-    broker = AsyncBroker(polls_before_done=1, status_hiccups=2)
-    monkeypatch.setattr(categories_runs, "broker_call", broker)
+    broker = AsyncBroker(polls_before_done=1, status_hiccups=2).install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     done = categories_runs.process_run(run["run_id"], actor="tester")
     assert done["status"] == "completed", done["jobs"][0]["result"]
 
 
 def test_transport_failures_are_flagged_wp_side_unknown(ready, monkeypatch):
-    monkeypatch.setattr(categories_runs, "broker_call", BrokerRecorder(fail_on={"/apply-terms"}))
+    BrokerRecorder(fail_on={"/apply-terms"}).install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     result = failed["jobs"][0]["result"]
@@ -591,55 +579,65 @@ def test_transport_failures_are_flagged_wp_side_unknown(ready, monkeypatch):
 def test_restore_pages_carry_one_request_id_and_their_page(ready, monkeypatch):
     _, recorder = ready
     monkeypatch.setattr(categories_runs, "RESTORE_PAGE_SIZE", 1)
-    monkeypatch.setattr(
-        categories_service, "fetch_export",
-        lambda env, blog_id: {"blog_path": "/", "terms": [{"term_id": 1, "slug": "live", "name": "Live", "parent": 0}],
-                              "products": [{"term_id": 1, "product_id": 100, "sku": "A"},
-                                           {"term_id": 1, "product_id": 101, "sku": "B"}]},
-    )
-    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[7])
     done = categories_runs.process_run(run["run_id"], actor="tester")
     recorder.calls.clear()
     categories_runs.restore_blog(run["run_id"], done["jobs"][0]["job_id"], actor="tester", background=False)
     restores = [p for _, path, p in recorder.calls if path == "/restore"]
     ids = {p["request_id"] for p in restores}
     assert len(ids) == 1 and next(iter(ids)).startswith(f"restore-{done['jobs'][0]['job_id']}-")
-    assert [p.get("page") for p in restores] == [None, 0, 1, None]
+    assert [p.get("page") for p in restores] == [None, 0, 1, None]   # blog 7: two single-row products
 
 
 # ---------------------------------------------------------------- planner/broker delete contract
 
 
-def test_parked_slug_is_an_implicit_delete_with_explicit_membership_rows(ready):
-    """A term left on catmgrtmp-<id> by a refused apply is a doomed leftover:
-    the Mapping tab shows it as an implicit delete, the plan deletes it, and
-    every product on it gets a row - even one that keeps its other category -
-    because finalize only deletes empty terms."""
+def test_parked_term_keeps_its_original_disposition_and_merge_destination(ready):
+    """A term the broker parked on catmgrtmp-<id> reports its original slug
+    (parked_from). The Mapping tab groups it under that slug, its
+    disposition (here: merge into mens) still applies on a re-plan, every
+    product on it carries to the merge destination, and blog 1 redirects the
+    ORIGINAL public URL. A slug that merely starts with catmgrtmp- and has no
+    lineage is an ordinary unmapped slug."""
+    nodes, _ = ready
     _write(categories_service.import_blog_snapshot, env="prod", blog_id=7, blog_path="/isa/",
            terms=[{"term_id": 20, "slug": "men-s", "name": "Men's", "parent": 0},
-                  {"term_id": 31, "slug": "catmgrtmp-31", "name": "Women's Bargain", "parent": 0}],
+                  {"term_id": 31, "slug": "catmgrtmp-31", "name": "Women's Bargain", "parent": 0,
+                   "parked_from": "women-s-bargain"}],
            products=[{"term_id": 20, "product_id": 200, "sku": "PANT-1"},
                      {"term_id": 31, "product_id": 200, "sku": "PANT-1"},
                      {"term_id": 31, "product_id": 300, "sku": "ONLY-PARKED"}])
+    # The mapping is keyed by the ORIGINAL slug, which the parked term still counts as live under.
+    _write(categories_mapping.set_mapping, old_slug="women-s-bargain", action="map",
+           target_node_id=nodes["mens"]["node_id"], is_primary=False)
     status = _read(categories_mapping.mapping_status, "prod")
-    row = next(s for s in status["slugs"] if s["old_slug"] == "catmgrtmp-31")
-    assert row["action"] == "delete" and row["implicit"] is True
-    assert status["summary"]["unmapped"] == 0
+    row = next(s for s in status["slugs"] if s["old_slug"] == "women-s-bargain")
+    assert row["action"] == "map" and row["parked"] is True
+    assert not any(s["old_slug"].startswith("catmgrtmp-") for s in status["slugs"])
     plan = _read(categories_planner.build_blog_plan, "prod", 7)
-    assert {d["expected_slug"]: d["reason"] for d in plan["terms"]["delete"]}["catmgrtmp-31"] == "delete"
-    rows = {m["product_id"]: m["final_slugs"] for m in plan["memberships"]}
-    assert rows[200] == ["mens"]     # keeps mens, still leaves the parked term explicitly
-    assert rows[300] == []           # nothing left: detached explicitly, surfaced as zero-category
-    assert {z["sku"] for z in plan["zero_category"]} == {"ONLY-PARKED"}
-    # On blog 1 a parked slug never gets a redirect: it was never a public URL.
+    delete = next(d for d in plan["terms"]["delete"] if d["term_id"] == 31)
+    assert delete["reason"] == "merge" and delete["expected_slug"] == "catmgrtmp-31"
+    assert delete["public_slug"] == "women-s-bargain"
+    rows = {m["product_id"]: m for m in plan["memberships"]}
+    assert rows[200]["final_slugs"] == ["mens"] and rows[200]["expected_term_ids"] == [20, 31]
+    assert rows[300]["final_slugs"] == ["mens"]        # carried to the merge destination, not dropped
+    assert plan["zero_category"] == []
+    # Blog 1: the redirect comes from the original public slug.
     _write(categories_service.import_blog_snapshot, env="prod", blog_id=1, blog_path="/",
            terms=[{"term_id": 10, "slug": "men-s", "name": "Men's", "parent": 0},
-                  {"term_id": 41, "slug": "catmgrtmp-41", "name": "Parked", "parent": 0}],
+                  {"term_id": 41, "slug": "catmgrtmp-41", "name": "Parked", "parent": 0,
+                   "parked_from": "women-s-bargain"}],
            products=[{"term_id": 10, "product_id": 100, "sku": "PANT-1"},
                      {"term_id": 41, "product_id": 100, "sku": "PANT-1"}])
     plan1 = _read(categories_planner.build_blog_plan, "prod", 1)
-    assert any(d["expected_slug"] == "catmgrtmp-41" for d in plan1["terms"]["delete"])
-    assert not any("catmgrtmp" in r["old_path"] for r in plan1["redirects"])
+    assert {r["old_path"]: r["new_path"] for r in plan1["redirects"]}["/product-category/women-s-bargain/"] == "/product-category/mens/"
+    assert plan1["unspsc"]["merges"] == {"women-s-bargain": "mens", "men-s-bottoms": "mens"} or \
+        plan1["unspsc"]["merges"].get("women-s-bargain") == "mens"
+    # No lineage = ordinary slug: unmapped until the operator decides.
+    _write(categories_service.import_blog_snapshot, env="prod", blog_id=9, blog_path="/nelson/",
+           terms=[{"term_id": 90, "slug": "catmgrtmp-99", "name": "Odd", "parent": 0}], products=[])
+    with pytest.raises(DraftError):
+        _read(categories_planner.build_blog_plan, "prod", 9)
 
 
 def test_preview_blocks_a_slug_deleted_and_recreated_in_one_run(ready):
@@ -721,7 +719,7 @@ def test_in_flight_job_continues_past_a_bumped_snapshot_version(ready, monkeypat
     with psycopg2.connect(TEST_ADMIN_DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE catmgr.run_job SET status='pending', finished_at=NULL,"
+                "UPDATE catmgr.run_job SET status='pending', finished_at=NULL, result=NULL,"
                 " progress = '{\"snapshot_taken\": true, \"terms_done\": true}'::jsonb WHERE job_id=%s",
                 (job["job_id"],))
             cursor.execute("UPDATE catmgr.run SET status='queued', finished_at=NULL WHERE run_id=%s", (run["run_id"],))

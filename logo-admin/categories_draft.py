@@ -83,11 +83,40 @@ def slugify(value: str) -> str:
     return value or "category"
 
 
+# Live-slug identity: a term the broker parked on catmgrtmp-<id> keeps its
+# original slug in parked_from, and that original is the slug every
+# disposition, mapping and lineage lookup must see.
+LOGICAL_SLUG_SQL = "COALESCE(NULLIF(t.parked_from, ''), t.slug)"
+
+
+def slug_is_live(cursor, slug: str, blog_id: Optional[int] = None) -> bool:
+    """Does any snapshot (or one blog's) hold a term whose logical slug is this?"""
+    if blog_id is None:
+        cursor.execute(
+            f"SELECT 1 FROM catmgr.wp_term t WHERE {LOGICAL_SLUG_SQL} = %s LIMIT 1",
+            (slug,),
+        )
+    else:
+        cursor.execute(
+            f"SELECT 1 FROM catmgr.wp_term t WHERE t.blog_id = %s"
+            f" AND {LOGICAL_SLUG_SQL} = %s LIMIT 1",
+            (blog_id, slug),
+        )
+    return cursor.fetchone() is not None
+
+
 def _slug_owner(cursor, slug: str, *, exclude_node_id: Optional[int] = None,
-                exclude_override_id: Optional[int] = None) -> Optional[str]:
-    """Who already owns a slug in the draft: a global node or a store extra.
-    A slug must be unique across BOTH so an apply can never converge a store's
-    extra term into a global node (or vice versa)."""
+                exclude_override_id: Optional[int] = None,
+                blog_id: Optional[int] = None) -> Optional[str]:
+    """Who already owns a slug in the draft.
+
+    Global nodes are unique across the whole draft. Store extras are per blog
+    (WordPress taxonomy uniqueness is per site, and the unique index is
+    (blog_id, slug)): the same store-local slug may exist on several stores.
+    A global node may never share a slug with ANY store extra - an apply
+    would converge the store's own term into the global category - and an
+    extra may not share a slug with a global node or another extra on the
+    same blog. blog_id=None means "checking for a global node"."""
     cursor.execute(
         "SELECT node_id, name FROM catmgr.node WHERE slug = %s AND node_id IS DISTINCT FROM %s",
         (slug, exclude_node_id),
@@ -95,17 +124,54 @@ def _slug_owner(cursor, slug: str, *, exclude_node_id: Optional[int] = None,
     row = cursor.fetchone()
     if row:
         return f"category {row['name']!r}"
-    cursor.execute(
-        """
-        SELECT override_id, blog_id, name FROM catmgr.node_store_override
-         WHERE kind = 'extra_node' AND slug = %s AND override_id IS DISTINCT FROM %s
-        """,
-        (slug, exclude_override_id),
-    )
+    if blog_id is None:
+        cursor.execute(
+            """
+            SELECT override_id, blog_id, name FROM catmgr.node_store_override
+             WHERE kind = 'extra_node' AND slug = %s AND override_id IS DISTINCT FROM %s
+             ORDER BY blog_id LIMIT 1
+            """,
+            (slug, exclude_override_id),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT override_id, blog_id, name FROM catmgr.node_store_override
+             WHERE kind = 'extra_node' AND slug = %s AND blog_id = %s
+               AND override_id IS DISTINCT FROM %s
+            """,
+            (slug, blog_id, exclude_override_id),
+        )
     row = cursor.fetchone()
     if row:
         return f"store extra {row['name']!r} on blog {row['blog_id']}"
     return None
+
+
+def _extra_live_slug(cursor, blog_id: int, candidates: List[Optional[str]],
+                     new_slug: str) -> Optional[str]:
+    """The slug a store extra's term currently carries on its own blog, if it
+    is not already the wanted slug. Lineage is read from the live snapshot,
+    never carried forward blindly: after an apply converged the term to the
+    new slug the lineage clears itself, and a second re-slug starts from what
+    is actually live (blog 7 crew-shop -> crew-store -> crew-market)."""
+    seen = []
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate != new_slug and candidate not in seen:
+            seen.append(candidate)
+    if not seen:
+        return None
+    cursor.execute(
+        f"""
+        SELECT {LOGICAL_SLUG_SQL} AS slug FROM catmgr.wp_term t
+         WHERE t.blog_id = %s AND {LOGICAL_SLUG_SQL} = ANY(%s)
+         ORDER BY (t.env = 'prod') DESC, t.env, t.term_id LIMIT 1
+        """,
+        (blog_id, seen),
+    )
+    row = cursor.fetchone()
+    return row["slug"] if row else None
 
 
 def _validate_slug(slug: str) -> str:
@@ -289,19 +355,32 @@ def _carry_identity_mapping(cursor, node_id: int, old_slug: str, *, actor: str) 
     live somewhere and has no explicit disposition yet, record the explicit
     map (primary unless the node already has one) that the identity implied.
     """
-    cursor.execute(
-        "SELECT 1 FROM catmgr.wp_term WHERE slug = %s LIMIT 1", (old_slug,),
-    )
-    if cursor.fetchone() is None:
+    if not slug_is_live(cursor, old_slug):
         return
     cursor.execute("SELECT 1 FROM catmgr.slug_map WHERE old_slug = %s", (old_slug,))
     if cursor.fetchone() is not None:
         return
     cursor.execute(
-        "SELECT 1 FROM catmgr.slug_map WHERE target_node_id = %s AND is_primary",
+        "SELECT old_slug FROM catmgr.slug_map WHERE target_node_id = %s AND is_primary",
         (node_id,),
     )
-    is_primary = cursor.fetchone() is None
+    primary = cursor.fetchone()
+    is_primary = primary is None
+    if primary is not None and not slug_is_live(cursor, primary["old_slug"]):
+        # The explicit primary names a slug no store carries any more (a
+        # previous re-slug already converged every live term away from it):
+        # the slug that IS live now is the node's identity. Demote the stale
+        # row so the second re-slug (b -> c) updates the surviving term in
+        # place instead of deleting it and creating c.
+        cursor.execute(
+            "UPDATE catmgr.slug_map SET is_primary = false, updated_by = %s,"
+            " updated_at = now() WHERE old_slug = %s",
+            (actor[:100], primary["old_slug"]),
+        )
+        record_audit(cursor, actor=actor, action="mapping_primary_demoted",
+                     entity="slug_map", entity_key=primary["old_slug"],
+                     detail={"node_id": node_id, "reason": "no longer live"})
+        is_primary = True
     cursor.execute(
         """
         INSERT INTO catmgr.slug_map
@@ -519,7 +598,8 @@ def set_override(cursor, *, blog_id: int, kind: str,
         row = cursor.fetchone()
         blog_path = row["blog_path"] if row else ""
     if kind == "extra_node":
-        owner = _slug_owner(cursor, slug, exclude_override_id=override_id)
+        owner = _slug_owner(cursor, slug, exclude_override_id=override_id,
+                            blog_id=blog_id)
         if owner:
             raise DraftConflict(f"slug already in use by {owner}: {slug}")
     previous_slug = None
@@ -551,15 +631,17 @@ def set_override(cursor, *, blog_id: int, kind: str,
         current = cursor.fetchone()
         if current is None:
             raise DraftError(f"unknown override: {override_id}")
-        # A store extra whose slug changes keeps its ORIGINAL live slug so the
-        # planner converges the existing term in place (term_id kept, redirect
-        # on blog 1). Changing back clears it.
+        # A store extra's lineage is whatever slug its term carries live on
+        # its own blog right now (the current draft slug, or the previous one
+        # if the last re-slug was never applied). The planner converges that
+        # term in place (term_id kept, redirect on blog 1); once an apply has
+        # landed the lineage reads as empty again, so a second re-slug starts
+        # from the live slug rather than the original one.
         previous_slug = current["previous_slug"]
-        if kind == "extra_node" and slug != current["slug"]:
-            if previous_slug is None:
-                previous_slug = current["slug"]
-            elif previous_slug == slug:
-                previous_slug = None
+        if kind == "extra_node":
+            previous_slug = _extra_live_slug(
+                cursor, blog_id, [current["slug"], current["previous_slug"]], slug,
+            )
         try:
             cursor.execute(
                 """

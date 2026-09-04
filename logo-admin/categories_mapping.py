@@ -11,7 +11,8 @@ at STYLE (sku) granularity; per-blog product ids resolve at plan time.
 import re
 from typing import Any, Dict, List, Optional
 
-from categories_draft import DraftConflict, DraftError, lock_draft
+from categories_draft import (LOGICAL_SLUG_SQL, DraftConflict, DraftError,
+                              lock_draft, slug_is_live)
 from categories_service import record_audit
 
 
@@ -34,22 +35,26 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
     """
 
     cursor.execute(
-        """
+        f"""
         WITH live AS (
-            SELECT t.slug,
+            -- A term the broker parked on catmgrtmp-<id> is grouped under its
+            -- ORIGINAL slug (parked_from): the disposition the operator gave
+            -- that slug still applies, so a replan after a refused or crashed
+            -- apply keeps its merge destination.
+            SELECT {LOGICAL_SLUG_SQL}                   AS slug,
                    count(DISTINCT t.blog_id)             AS blogs,
                    sum(t.count)                          AS products,
                    bool_or(t.blog_id = 1)                AS blog1,
+                   bool_or(t.parked_from <> '')          AS parked,
                    max(t.name)                           AS sample_name
               FROM catmgr.wp_term t
              WHERE t.env = %s
-             GROUP BY t.slug
+             GROUP BY {LOGICAL_SLUG_SQL}
         )
         SELECT live.slug AS old_slug, live.blogs, live.products, live.blog1,
-               live.sample_name,
+               live.parked, live.sample_name,
                COALESCE(m.action,
-                        CASE WHEN live.slug LIKE 'catmgrtmp-%%' THEN 'delete'
-                             WHEN implicit.node_id IS NOT NULL THEN 'map'
+                        CASE WHEN implicit.node_id IS NOT NULL THEN 'map'
                              WHEN implicit_extra.override_id IS NOT NULL
                                  THEN 'store_custom' END)
                    AS action,
@@ -63,16 +68,13 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
                    END,
                    false) AS is_primary,
                (m.old_slug IS NULL AND (implicit.node_id IS NOT NULL
-                    OR implicit_extra.override_id IS NOT NULL
-                    OR live.slug LIKE 'catmgrtmp-%%')) AS implicit,
+                    OR implicit_extra.override_id IS NOT NULL)) AS implicit,
                m.override_id, m.note, m.updated_by, m.updated_at,
                COALESCE(n.slug, implicit.slug) AS target_slug,
                COALESCE(n.name, implicit.name) AS target_name
           FROM live
           LEFT JOIN catmgr.slug_map m ON m.old_slug = live.slug
           LEFT JOIN catmgr.node n ON n.node_id = m.target_node_id
-          -- catmgrtmp-<id> is a term the broker parked during an apply that was
-          -- refused or crashed: always a doomed leftover, implicitly delete.
           LEFT JOIN catmgr.node implicit
             ON m.old_slug IS NULL AND implicit.slug = live.slug
           LEFT JOIN LATERAL (
@@ -84,8 +86,7 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
                LIMIT 1
           ) implicit_extra ON m.old_slug IS NULL AND implicit.node_id IS NULL
          ORDER BY (m.action IS NULL AND implicit.node_id IS NULL
-                   AND implicit_extra.override_id IS NULL
-                   AND live.slug NOT LIKE 'catmgrtmp-%%') DESC,
+                   AND implicit_extra.override_id IS NULL) DESC,
                   live.blog1 DESC, live.products DESC NULLS LAST, live.slug
         """,
         (env,),
@@ -106,10 +107,7 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
 
 
 def _slug_exists_in_snapshots(cursor, old_slug: str) -> bool:
-    cursor.execute(
-        "SELECT 1 FROM catmgr.wp_term WHERE slug = %s LIMIT 1", (old_slug,)
-    )
-    return cursor.fetchone() is not None
+    return slug_is_live(cursor, old_slug)
 
 
 def set_mapping(cursor, *, old_slug: str, action: str,
@@ -251,39 +249,74 @@ def bulk_set(cursor, rows: List[Dict[str, Any]], *, actor: str) -> List[Dict[str
     return results
 
 
-def auto_suggest(cursor, env: str) -> List[Dict[str, Any]]:
-    """Unmapped live slugs that exactly match a draft node's NAME (slug-exact
-    matches are already implicit identity mappings and need no suggestion)."""
+def _node_paths(cursor) -> Dict[int, str]:
+    """node_id -> 'Parent > Child' for human-readable candidate lists."""
+    cursor.execute("SELECT node_id, parent_id, name FROM catmgr.node")
+    nodes = {row["node_id"]: dict(row) for row in cursor.fetchall()}
+    paths: Dict[int, str] = {}
+    for node_id in nodes:
+        parts = []
+        current: Optional[int] = node_id
+        guard = 0
+        while current is not None and current in nodes and guard < 20:
+            parts.append(nodes[current]["name"])
+            current = nodes[current]["parent_id"]
+            guard += 1
+        paths[node_id] = " > ".join(reversed(parts))
+    return paths
+
+
+def auto_suggest(cursor, env: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Unmapped live slugs whose NAME exactly matches a draft node's name
+    (slug-exact matches are already implicit identity mappings).
+
+    A name that matches SEVERAL draft nodes (the tree has more than one
+    "T-Shirts") is never suggested: picking the first join result would map
+    the slug into an arbitrary branch. Those come back under ``ambiguous``
+    with every candidate's full path so the operator chooses explicitly."""
 
     cursor.execute(
-        """
+        f"""
         WITH live AS (
-            SELECT DISTINCT t.slug, max(t.name) AS name
+            SELECT {LOGICAL_SLUG_SQL} AS slug, max(t.name) AS name
               FROM catmgr.wp_term t
              WHERE t.env = %s
                AND NOT EXISTS (SELECT 1 FROM catmgr.slug_map m
-                                WHERE m.old_slug = t.slug)
+                                WHERE m.old_slug = {LOGICAL_SLUG_SQL})
                AND NOT EXISTS (SELECT 1 FROM catmgr.node ni
-                                WHERE ni.slug = t.slug)
-             GROUP BY t.slug
+                                WHERE ni.slug = {LOGICAL_SLUG_SQL})
+             GROUP BY {LOGICAL_SLUG_SQL}
         )
         SELECT live.slug AS old_slug, n.node_id, n.slug AS node_slug,
                n.name AS node_name, 'name_exact' AS reason
           FROM live
           JOIN catmgr.node n
             ON lower(btrim(n.name)) = lower(btrim(live.name))
-         ORDER BY live.slug
+         ORDER BY live.slug, n.node_id
         """,
         (env,),
     )
-    seen = set()
-    suggestions = []
+    by_slug: Dict[str, List[Dict[str, Any]]] = {}
     for row in cursor.fetchall():
-        if row["old_slug"] in seen:
-            continue  # slug matched multiple nodes ambiguously - keep first (slug_exact sorts naturally via join order)
-        seen.add(row["old_slug"])
-        suggestions.append(dict(row))
-    return suggestions
+        by_slug.setdefault(row["old_slug"], []).append(dict(row))
+    paths = _node_paths(cursor) if any(len(v) > 1 for v in by_slug.values()) else {}
+    suggestions: List[Dict[str, Any]] = []
+    ambiguous: List[Dict[str, Any]] = []
+    for old_slug in sorted(by_slug):
+        candidates = by_slug[old_slug]
+        if len(candidates) == 1:
+            suggestions.append(candidates[0])
+            continue
+        ambiguous.append({
+            "old_slug": old_slug,
+            "reason": "name_matches_several_nodes",
+            "candidates": [
+                {"node_id": c["node_id"], "node_slug": c["node_slug"],
+                 "node_name": c["node_name"], "path": paths.get(c["node_id"], c["node_name"])}
+                for c in candidates
+            ],
+        })
+    return {"suggestions": suggestions, "ambiguous": ambiguous}
 
 
 # ---------------------------------------------------------------- rules
@@ -416,8 +449,17 @@ def evaluate_rule(cursor, env: str, spec: Any, *, limit: int = 50) -> Dict[str, 
          WHERE p.env = %s AND p.sku <> ''
     """
     if clean["from"] != "all":
-        universe += " AND t.slug = ANY(%s)"
+        universe += f" AND {LOGICAL_SLUG_SQL} = ANY(%s)"
         params.append(list(clean["from"]))
+    else:
+        # Products with no category at all are part of the universe too:
+        # otherwise a rule can never rescue them.
+        universe += """
+        UNION
+        SELECT DISTINCT u.sku FROM catmgr.wp_uncategorized_product u
+         WHERE u.env = %s AND u.sku <> ''
+        """
+        params.append(env)
     condition = _rule_condition(clean["field"], clean["op"])
     params.append(clean["value"])
     cursor.execute(
@@ -523,10 +565,10 @@ def effective_membership(cursor, env: str, node_id: int,
         raise DraftError(f"unknown node: {node_id}")
 
     cursor.execute(
-        """
+        f"""
         SELECT DISTINCT p.sku
           FROM catmgr.slug_map m
-          JOIN catmgr.wp_term t ON t.slug = m.old_slug AND t.env = %s
+          JOIN catmgr.wp_term t ON {LOGICAL_SLUG_SQL} = m.old_slug AND t.env = %s
           JOIN catmgr.wp_term_product p ON p.env = t.env
                                         AND p.blog_id = t.blog_id
                                         AND p.term_id = t.term_id

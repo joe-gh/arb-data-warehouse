@@ -129,8 +129,9 @@ def test_auto_suggest():
     _snapshot()
     _node("Saws", slug="hand-saws")     # NAME matches live 'saws', slug differs
     _node("Anything", slug="men-s")     # slug-exact -> IMPLICIT map, no suggestion
-    suggestions = _read(categories_mapping.auto_suggest, "prod")
-    by_slug = {s["old_slug"]: s for s in suggestions}
+    outcome = _read(categories_mapping.auto_suggest, "prod")
+    assert outcome["ambiguous"] == []
+    by_slug = {s["old_slug"]: s for s in outcome["suggestions"]}
     assert "men-s" not in by_slug       # implicit identity mapping covers it
     assert by_slug["saws"]["reason"] == "name_exact"
     assert by_slug["saws"]["node_slug"] == "hand-saws"

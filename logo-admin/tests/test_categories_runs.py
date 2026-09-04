@@ -11,7 +11,13 @@ import categories_runs
 import categories_service
 from categories_draft import DraftConflict
 from db import database
+from tests.fake_wp import FakeWordPress
 from tests.test_categories_planner import _build_scenario, _read, _write
+
+
+@pytest.fixture(autouse=True)
+def _fast_broker_polls(monkeypatch):
+    monkeypatch.setattr(categories_runs, "JOB_POLL_SECONDS", 0)
 
 
 @pytest.fixture
@@ -22,44 +28,25 @@ def ready_scenario():
     return nodes
 
 
-class BrokerRecorder:
-    def __init__(self, fail_on=None):
-        self.calls = []
-        self.fail_on = fail_on or set()
+class BrokerRecorder(FakeWordPress):
+    """The stateful fake WordPress (tests/fake_wp.py) under its historical
+    name: `.calls` records every phase call, `fail_on` fails a path at the
+    transport layer. Unlike the old recorder it APPLIES each phase to real
+    per-blog state, so the engine's live-state fence, verification and
+    restore run against something that behaves like WordPress."""
 
-    def __call__(self, env, path, payload):
-        self.calls.append((env, path, payload))
-        if path in self.fail_on:
-            raise categories_service.BrokerError(f"boom on {path}", 503)
-        if path == "/apply-terms":
-            return {"ok": True, "updated": len(payload["updates"]),
-                    "created": len(payload["creates"])}
-        if path == "/apply-memberships":
-            return {"ok": True, "applied": len(payload["rows"]),
-                    "skipped": [], "missing_slugs": []}
-        if path == "/finalize":
-            return {"ok": True, "deleted": len(payload["deletes"]),
-                    "redirects_created": [
-                        {"old_path": r["old_path"], "new_path": r["new_path"]}
-                        for r in payload["redirects"]
-                    ],
-                    "unspsc_rewritten": len(payload["unspsc_renames"])}
-        if path == "/restore":
-            return {"ok": True, "terms": len(payload["snapshot"]["terms"])}
-        raise AssertionError(f"unexpected broker path {path}")
+    def install(self, monkeypatch, env="prod", blog_ids=(1, 7)):
+        for blog_id in blog_ids:
+            self.seed_from_snapshot(env, blog_id)
+        monkeypatch.setattr(categories_runs, "broker_call", self)
+        monkeypatch.setattr(categories_service, "fetch_export", self.export)
+        monkeypatch.setattr(categories_runs, "fetch_wp_status", self.status)
+        return self
 
 
 @pytest.fixture
 def broker(monkeypatch, ready_scenario):
-    recorder = BrokerRecorder()
-    monkeypatch.setattr(categories_runs, "broker_call", recorder)
-    monkeypatch.setattr(
-        categories_service, "fetch_export",
-        lambda env, blog_id: {"blog_path": "/", "terms": [
-            {"term_id": 1, "slug": "live", "name": "Live", "parent": 0},
-        ], "products": []},
-    )
-    return recorder
+    return BrokerRecorder().install(monkeypatch)
 
 
 def test_create_run_requires_clean_preview():
@@ -116,12 +103,7 @@ def test_membership_paging_and_progress(broker, monkeypatch):
 
 
 def test_failure_stops_run_and_retry_resumes(ready_scenario, monkeypatch):
-    recorder = BrokerRecorder(fail_on={"/finalize"})
-    monkeypatch.setattr(categories_runs, "broker_call", recorder)
-    monkeypatch.setattr(
-        categories_service, "fetch_export",
-        lambda env, blog_id: {"blog_path": "/", "terms": [], "products": []},
-    )
+    recorder = BrokerRecorder(fail_on={"/finalize"}).install(monkeypatch)
     run = _write(categories_runs.create_run, env="prod", blog_ids=None)
     failed = categories_runs.process_run(run["run_id"], actor="tester")
     assert failed["status"] == "failed"
@@ -136,13 +118,17 @@ def test_failure_stops_run_and_retry_resumes(ready_scenario, monkeypatch):
     recorder.fail_on = set()          # WP recovered; retry converges
     _write(categories_runs.retry_job, run["run_id"], job1["job_id"])
     done = categories_runs.process_run(run["run_id"], actor="tester")
-    assert done["status"] == "completed"
+    assert done["status"] == "completed", done["jobs"][0]["result"]
     retried = next(j for j in done["jobs"] if j["blog_id"] == 1)
     assert retried["attempt"] == 2
-    # progress survived: terms + memberships were NOT re-run on retry
+    # A retry is a new attempt with its own broker keys (a refused finalize
+    # must actually run again), but progress survived: terms + memberships
+    # were NOT re-run.
+    assert retried["request_id"] == f"j{retried['job_id']}a2"
     term_calls = [c for c in recorder.calls if c[1] == "/apply-terms"
                   and c[2]["blog_id"] == 1]
     assert len(term_calls) == 1
+    assert retried["result"]["verified"] is True
 
 
 def test_pause_between_jobs_and_resume(broker):
@@ -181,13 +167,21 @@ def test_restore_uses_job_snapshot(broker):
     run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
     done = categories_runs.process_run(run["run_id"], actor="tester")
     job = done["jobs"][0]
+    before = broker.export("prod", 1)
     result = categories_runs.restore_blog(run["run_id"], job["job_id"],
                                           actor="tester", background=False)
-    assert result["accepted"] is True and result["restore"]["status"] == "done"
+    assert result["accepted"] is True and result["restore"]["status"] == "done", result
+    assert result["restore"]["verified"] is True
     restore_calls = [c for c in broker.calls if c[1] == "/restore"]
-    assert [c[2]["phase"] for c in restore_calls] == ["terms", "finalize"]   # no products -> no membership pages
+    assert [c[2]["phase"] for c in restore_calls] == ["terms", "memberships", "finalize"]
     assert restore_calls[0][2]["blog_id"] == 1
-    assert restore_calls[0][2]["snapshot"]["terms"][0]["slug"] == "live"
+    assert restore_calls[0][2]["expected_blog_path"] == "/"
+    # the pre-apply snapshot (not the applied state) is what goes back
+    assert {t["slug"] for t in restore_calls[0][2]["snapshot"]["terms"]} == {
+        "men-s", "men-s-bottoms", "saws", "old-boots", "lonely", "field-uniform"}
+    after = broker.export("prod", 1)
+    assert {t["slug"] for t in after["terms"]} == {t["slug"] for t in restore_calls[0][2]["snapshot"]["terms"]}
+    assert after["products"] != before["products"]
 
 
 def test_apply_routes_gated_by_allowlist(client_as, monkeypatch, ready_scenario):
@@ -205,8 +199,7 @@ def test_apply_routes_gated_by_allowlist(client_as, monkeypatch, ready_scenario)
 
     monkeypatch.setenv("CATMGR_APPLY_USERS", "ADMIN-ONE")
     get_settings.cache_clear()
-    recorder = BrokerRecorder()
-    monkeypatch.setattr(categories_runs, "broker_call", recorder)
+    BrokerRecorder().install(monkeypatch)
     created = client.post("/api/categories/runs",
                           json={"env": "prod", "start": False})
     assert created.status_code == 200
@@ -221,48 +214,11 @@ def test_apply_routes_gated_by_allowlist(client_as, monkeypatch, ready_scenario)
 
 def test_drift_audit_converges(broker, monkeypatch):
     run = _write(categories_runs.create_run, env="prod", blog_ids=None)
-    categories_runs.process_run(run["run_id"], actor="tester")
-
-    # Simulate WordPress now matching the target: live export == plan result.
-    def converged_export(env, blog_id):
-        with database.cursor() as cursor:
-            plan_target = categories_planner.blog_target(cursor, blog_id)
-        terms = []
-        next_id = 1000
-        slug_to_id = {}
-        for node in plan_target["kept"].values():
-            slug_to_id[node["slug"]] = next_id
-            terms.append({"term_id": next_id, "slug": node["slug"],
-                          "name": node["name"], "parent": 0,
-                          "sort_order": node["sort_order"]})
-            next_id += 1
-        for term in terms:
-            node = next(n for n in plan_target["kept"].values()
-                        if n["slug"] == term["slug"])
-            if node["parent_slug"]:
-                term["parent"] = slug_to_id[node["parent_slug"]]
-        for extra in plan_target["extras"]:
-            terms.append({"term_id": next_id, "slug": extra["slug"],
-                          "name": extra["name"],
-                          "parent": slug_to_id.get(extra["parent_slug"], 0)})
-            next_id += 1
-        # store_custom live terms stay
-        with database.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT t.term_id, t.slug, t.name FROM catmgr.wp_term t
-                  JOIN catmgr.slug_map m ON m.old_slug = t.slug
-                 WHERE t.env = 'prod' AND t.blog_id = %s
-                   AND m.action = 'store_custom'
-                """, (blog_id,),
-            )
-            for row in cursor.fetchall():
-                terms.append({"term_id": row["term_id"], "slug": row["slug"],
-                              "name": row["name"], "parent": 0})
-        return {"blog_path": "/", "terms": terms, "products": []}
-
-    monkeypatch.setattr(categories_service, "fetch_export", converged_export)
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    assert done["status"] == "completed", [j["result"] for j in done["jobs"]]
+    # WordPress (the fake) now holds the applied tree; a fresh audit re-plans
+    # it to zero changes on every blog.
     outcome = categories_runs.drift_audit("prod", actor="tester")
     assert outcome["refreshed_blogs"] == 2
-    assert outcome["converged"] is True
+    assert outcome["converged"] is True, outcome
     assert outcome["pending"] == []

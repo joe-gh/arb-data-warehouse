@@ -37,6 +37,7 @@ TRUNCATE TABLE
     catmgr.snapshot,
     catmgr.wp_term,
     catmgr.wp_term_product,
+    catmgr.wp_uncategorized_product,
     catmgr.audit_log,
     catmgr.node,
     catmgr.node_store_override,

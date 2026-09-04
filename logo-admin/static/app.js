@@ -5375,6 +5375,29 @@
     renderCatScopeNote();
     const box = $("#cat-preview-result");
     if (box && !catRunState.preview) box.innerHTML = '<p class="muted">Run a preview to see the full plan.</p>';
+    loadCatReadiness();
+  }
+
+  async function loadCatReadiness() {
+    const box = $("#cat-readiness");
+    if (!box || !catState.env) return;
+    try {
+      const data = await api(`/api/categories/readiness?env=${encodeURIComponent(catState.env)}`);
+      catRunState.readiness = data;
+      const failures = data.failures || [];
+      const warnings = data.warnings || [];
+      box.hidden = false;
+      box.className = failures.length ? "cat-blocker" : (warnings.length ? "cat-warning" : "cat-ok");
+      box.innerHTML = failures.length
+        ? `<strong>WordPress is not ready to apply</strong> - the run would be refused:<ul>${failures.map((f) => `<li>${escapeHtml(f)}</li>`).join("")}</ul>`
+        : `WordPress is ready to apply${warnings.length ? ` <span class="muted">(${warnings.map(escapeHtml).join("; ")})</span>` : ""}.`;
+      const apply = $("#cat-apply-run");
+      if (apply && failures.length) apply.disabled = true;
+    } catch (error) {
+      box.hidden = false;
+      box.className = "cat-warning";
+      box.textContent = `Readiness could not be checked: ${errorMessage(error)}`;
+    }
   }
 
   function catScopeCandidates() {
@@ -5469,8 +5492,10 @@
       preview.scope = scope;
       catRunState.preview = preview;
       renderCatPreview(preview);
-      $("#cat-apply-run").disabled = !(preview.ok && catApplyAllowed());
+      const ready = !catRunState.readiness || (catRunState.readiness.failures || []).length === 0;
+      $("#cat-apply-run").disabled = !(preview.ok && catApplyAllowed() && ready);
       renderCatAckPanel(preview);
+      loadCatReadiness();
     } catch (error) {
       catResetPreview();
       renderErrorState(box, friendlyLoadError("the preview", error), runCatPreview);
@@ -5492,7 +5517,7 @@
     const rows = blocker ? (blocker.skus || blocker.sample || []) : [];
     listBox.innerHTML = rows.length ? `
       <table class="table cat-table"><thead><tr><th><input type="checkbox" id="cat-ack-check-all"></th><th>SKU</th><th>Blogs</th><th>Where</th></tr></thead><tbody>
-      ${rows.map((r) => `<tr><td><input type="checkbox" class="cat-ack-check" value="${escapeHtml(r.sku)}"></td><td>${escapeHtml(r.sku)}</td><td>${r.blogs || ""}</td><td class="muted">${(r.where || []).map((w) => `blog ${w.blog_id} #${w.product_id}`).join(", ")}</td></tr>`).join("")}
+      ${rows.map((r) => `<tr><td><input type="checkbox" class="cat-ack-check" value="${escapeHtml(r.key || r.sku)}"></td><td>${r.sku ? escapeHtml(r.sku) : `<span class="muted" title="This product has no SKU; it is acknowledged by product id">${escapeHtml(r.key || "")} (no SKU)</span>`}</td><td>${r.blogs || ""}</td><td class="muted">${(r.where || []).map((w) => `blog ${w.blog_id} #${w.product_id}`).join(", ")}</td></tr>`).join("")}
       </tbody></table>${blocker && blocker.count > rows.length ? `<p class="muted">Showing ${rows.length} of ${blocker.count}.</p>` : ""}`
       : '<p class="muted">No products would end without a category.</p>';
     const all = $("#cat-ack-check-all");
@@ -5678,11 +5703,17 @@
       if (["queued", "running"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="pause" data-run="${run.run_id}"${dis}>Pause</button>`);
       if (["paused", "failed"].includes(run.status) || run.worker_stale) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="resume" data-run="${run.run_id}"${dis}>${run.worker_stale ? "Recover" : "Resume"}</button>`);
       if (["paused", "queued", "failed"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-danger cat-run-ctl" data-act="cancel" data-run="${run.run_id}"${dis}>Cancel</button>`);
+      const statusLabel = { completed_with_skips: "completed - PARTIAL (blogs skipped)", completed_unverified: "completed - UNVERIFIED" }[run.status] || run.status;
+      const statusTitle = { completed_with_skips: "At least one blog was skipped: the migration is incomplete on those stores. Retry or restore them from the run details.",
+                            completed_unverified: "Every phase landed but a post-apply export could not be fetched for at least one blog, so the result was not verified. Run a drift audit." }[run.status] || "";
+      const heartbeat = run.status === "running"
+        ? (run.worker_stale ? " \u00b7 worker heartbeat lost" : ` \u00b7 worker alive (${run.heartbeat_age ?? "?"}s ago)`)
+        : "";
       return `<div class="cat-run" data-run="${run.run_id}">
         <div class="cat-run__head">
           <strong>Run ${run.run_id}</strong>
-          <span class="cat-badge cat-run--${escapeHtml(run.status)}">${escapeHtml(run.status)}${run.worker_stale ? " (worker lost)" : ""}</span>
-          <span class="muted">${escapeHtml(String(run.env))} \u00b7 ${run.target_blogs.length} blogs \u00b7 by ${escapeHtml(run.created_by || "?")} \u00b7 ${escapeHtml(formatDate(run.created_at))}</span>
+          <span class="cat-badge cat-run--${escapeHtml(run.status)}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}${run.worker_stale ? " (worker lost)" : ""}</span>
+          <span class="muted">${escapeHtml(String(run.env))} \u00b7 ${run.target_blogs.length} blogs \u00b7 by ${escapeHtml(run.created_by || "?")} \u00b7 ${escapeHtml(formatDate(run.created_at))}${heartbeat}</span>
           ${controls.join(" ")}
           <button class="button button--ghost button--small cat-run-open" data-run="${run.run_id}">Details</button>
         </div>
@@ -5721,17 +5752,38 @@
             controls.push(`<button class="button button--ghost button--small cat-job-ctl" data-act="skip" data-run="${runId}" data-job="${job.job_id}">Skip</button>`);
           }
           const restore = job.restore || null;
-          if (["done", "failed"].includes(job.status) && job.has_snapshot && !(restore && restore.status === "running")) {
-            controls.push(`<button class="button button--ghost button--small cat-danger cat-job-ctl" data-act="restore" data-run="${runId}" data-job="${job.job_id}"${catApplyAllowed() ? "" : " disabled"}>${restore && restore.status === "done" ? "Restore again" : "Restore"}</button>`);
+          const restoreBusy = restore && restore.status === "running" && !restore.stale;
+          if (["done", "failed", "skipped"].includes(job.status) && job.has_snapshot && !restoreBusy) {
+            const label = !restore ? "Restore" : restore.status === "done" ? "Restore again" : restore.status === "failed" ? "Retry restore" : "Restore (worker lost)";
+            controls.push(`<button class="button button--ghost button--small cat-danger cat-job-ctl" data-act="restore" data-run="${runId}" data-job="${job.job_id}"${catApplyAllowed() ? "" : " disabled"}>${label}</button>`);
           }
-          let resultText = job.result && job.result.error
-            ? escapeHtml(String(job.result.error).slice(0, 220))
-            : (job.status === "done" ? "ok" : "");
-          if (job.result && job.result.membership_fence) resultText += ` <span class="muted">(fence: ${escapeHtml(JSON.stringify(job.result.membership_fence).slice(0, 160))})</span>`;
-          if (job.result && job.result.redirect_failures) resultText += ` <span class="muted">(${job.result.redirect_failures.length} redirect(s) failed)</span>`;
+          const result = job.result || {};
+          const progress = job.progress || {};
+          let resultText = "";
+          if (result.error) {
+            resultText = escapeHtml(String(result.error).slice(0, 220));
+          } else if (job.status === "done") {
+            resultText = result.verified === false
+              ? `<span class="cat-badge cat-run--paused" title="${escapeHtml(result.verification_error || "the post-apply export could not be fetched")}">applied, UNVERIFIED</span>`
+              : (result.replayed ? "ok (recovered)" : "ok, verified");
+          } else if (job.status === "skipped") {
+            resultText = `<span class="cat-badge cat-run--failed">skipped - this store was NOT migrated</span>`;
+          }
+          const phase = progress.finalize_done ? "finalize done" : progress.terms_done
+            ? `memberships ${progress.membership_offset || 0}/${st.membership_changes ?? "?"}`
+            : progress.snapshot_taken ? "terms" : (job.status === "running" ? "capturing live state" : "");
+          if (job.status === "running" && phase) resultText += `<div class="muted">phase: ${escapeHtml(phase)}</div>`;
+          if (result.live_drift) resultText += `<div class="muted">live state changed since the snapshot: ${result.live_drift.terms_changed} term(s), +${result.live_drift.memberships_added}/-${result.live_drift.memberships_removed} memberships \u2014 re-import this blog, preview again, then Retry.</div>`;
+          if (result.membership_fence) resultText += `<div class="muted">refused rows: ${escapeHtml(JSON.stringify(result.membership_fence).slice(0, 160))} \u2014 re-import, preview, then Retry.</div>`;
+          if (result.finalize_fence) resultText += `<div class="muted">finalize refused: ${escapeHtml(JSON.stringify(result.finalize_fence).slice(0, 200))} \u2014 fix on WordPress (or re-plan), then Retry; finalize runs again.</div>`;
+          if (result.verification) resultText += `<div class="muted">did not converge: ${escapeHtml(JSON.stringify(result.verification.slice(0, 3)).slice(0, 200))} \u2014 Retry re-runs the fenced phases.</div>`;
+          if (result.wp_side_unknown) resultText += `<div class="muted">WordPress may still have applied this step - wait a minute, then Retry (it adopts whatever landed).</div>`;
+          if (result.redirect_failures) resultText += ` <span class="muted">(${result.redirect_failures.length} redirect(s) failed)</span>`;
+          if (result.fingerprint_unchecked) resultText += `<div class="muted">snapshot predates live-state fingerprints: the pre-apply state was not fenced.</div>`;
           if (restore) {
             const pct = restore.total ? Math.round(100 * (restore.offset || 0) / restore.total) : 100;
-            resultText += `<div class="cat-restore cat-restore--${escapeHtml(restore.status || "")}">restore ${escapeHtml(restore.status || "")}: ${escapeHtml(restore.phase || "")}${restore.status === "running" ? ` ${pct}%` : ""}${restore.error ? ` \u2014 ${escapeHtml(String(restore.error).slice(0, 160))}` : ""}</div>`;
+            const restoreState = restore.status === "running" && restore.stale ? "running (heartbeat lost)" : restore.status || "";
+            resultText += `<div class="cat-restore cat-restore--${escapeHtml(restore.status || "")}">restore ${escapeHtml(restoreState)}: ${escapeHtml(restore.phase || "")}${restore.status === "running" ? ` ${pct}%` : ""}${restore.verified ? " \u00b7 verified against the snapshot" : ""}${restore.error ? ` \u2014 ${escapeHtml(String(restore.error).slice(0, 160))}` : ""}</div>`;
           }
           return `<tr><td>${job.seq}</td>
             <td>${job.blog_id} <span class="muted">${escapeHtml(job.blog_path || "")}</span></td>
@@ -5996,10 +6048,19 @@
     try {
       const data = await api(`/api/categories/mapping/suggest?env=${encodeURIComponent(catState.env)}`);
       const suggestions = data.suggestions || [];
-      if (!suggestions.length) { toast("No automatic matches for unmapped slugs.", "success"); return; }
+      const ambiguous = data.ambiguous || [];
+      if (!suggestions.length) {
+        toast(ambiguous.length
+          ? `No unambiguous matches. ${ambiguous.length} slug(s) match several draft categories by name - map them by hand: ${ambiguous.slice(0, 3).map((a) => a.old_slug).join(", ")}${ambiguous.length > 3 ? ", …" : ""}`
+          : "No automatic matches for unmapped slugs.", ambiguous.length ? "error" : "success");
+        return;
+      }
+      const ambiguousNote = ambiguous.length
+        ? ` ${ambiguous.length} other slug(s) match SEVERAL draft categories by name and are left for you to map explicitly (${ambiguous.slice(0, 4).map((a) => `${a.old_slug}: ${a.candidates.map((c) => c.path).join(" | ")}`).join("; ")}).`
+        : "";
       const confirmed = await confirmAction({
         title: `Accept ${suggestions.length} suggested mappings?`,
-        message: "Maps unmapped live slugs whose slug or name exactly matches a draft category.",
+        message: `Maps unmapped live slugs whose name exactly matches ONE draft category.${ambiguousNote}`,
         actionLabel: "Accept",
       });
       if (!confirmed) return;

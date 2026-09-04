@@ -603,7 +603,9 @@ CREATE TABLE IF NOT EXISTS catmgr.run (
     target_blogs        integer[] NOT NULL,
     status              text NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued', 'running', 'paused',
-                                          'completed', 'failed', 'cancelled')),
+                                          'completed', 'completed_with_skips',
+                                          'completed_unverified', 'failed',
+                                          'cancelled')),
     plan_totals         jsonb NOT NULL DEFAULT '{}'::jsonb,
     snapshot_versions   jsonb NOT NULL DEFAULT '{}'::jsonb,
     stop_on_failure     boolean NOT NULL DEFAULT true,
@@ -630,6 +632,7 @@ CREATE TABLE IF NOT EXISTS catmgr.run_job (
     result     jsonb,
     attempt    integer NOT NULL DEFAULT 0,
     request_id text NOT NULL DEFAULT '',
+    worker_token text NOT NULL DEFAULT '',
     started_at timestamptz,
     finished_at timestamptz,
     UNIQUE (run_id, blog_id)
@@ -664,3 +667,34 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA catmgr TO logo_admin;
 
 
 COMMIT;
+
+
+-- ---------------------------------------------------------------------------
+-- Category editor (catmgr): hardening + verification columns. Mirror of
+-- migrations/2026-09-03-category-editor-phase6-hardening.sql and
+-- 2026-09-04-category-editor-phase7-verification.sql.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE catmgr.node_store_override
+    ADD COLUMN IF NOT EXISTS previous_slug text
+        CHECK (previous_slug IS NULL OR previous_slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$');
+ALTER TABLE catmgr.wp_term
+    ADD COLUMN IF NOT EXISTS parked_from text NOT NULL DEFAULT '';
+ALTER TABLE catmgr.snapshot
+    ADD COLUMN IF NOT EXISTS fingerprint text NOT NULL DEFAULT '';
+ALTER TABLE catmgr.run_job
+    ADD COLUMN IF NOT EXISTS worker_token text NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS catmgr.wp_uncategorized_product (
+    env              text    NOT NULL CHECK (env IN ('dev', 'prod')),
+    blog_id          integer NOT NULL,
+    product_id       bigint  NOT NULL,
+    sku              text    NOT NULL DEFAULT '',
+    snapshot_version bigint  NOT NULL,
+    PRIMARY KEY (env, blog_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS wp_uncategorized_product_sku
+    ON catmgr.wp_uncategorized_product (env, blog_id, sku);
+
+GRANT SELECT ON catmgr.wp_uncategorized_product TO woo_reader, insights_reader;
+GRANT SELECT, INSERT, UPDATE, DELETE ON catmgr.wp_uncategorized_product TO logo_admin;

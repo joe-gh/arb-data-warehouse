@@ -786,6 +786,7 @@ TABLE_POLICIES = {
     "catmgr.snapshot": CRUD_ALLOWED,
     "catmgr.wp_term": CRUD_ALLOWED,
     "catmgr.wp_term_product": CRUD_ALLOWED,
+    "catmgr.wp_uncategorized_product": CRUD_ALLOWED,
     "catmgr.node": CRUD_ALLOWED,
     "catmgr.node_store_override": CRUD_ALLOWED,
     "catmgr.slug_map": CRUD_ALLOWED,

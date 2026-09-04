@@ -428,6 +428,77 @@ WordPress core performs application-password Basic authentication for the auth
 and sync machine routes. The sync route resolves `fdm4_store` to an owned blog,
 rebuilds `arb_logo_design_map`, and then calls the scoped Phase A reconcile.
 
+#### Category editor: live-state fences, verified applies, checked restores
+
+The 2026-09-04 verification pass closed the holes the adversarial review found.
+What an operator sees:
+
+- **Readiness before a run.** `GET /api/categories/readiness?env=` (shown on
+  the Preview tab) checks the WordPress broker protocol version
+  (`ARB_Category_Apply::BROKER_VERSION` >= 2), durable jobs, the edit freeze
+  (required on prod), the Elasticsearch queue and UNSPSC services, and - when
+  blog 1 is in scope - an enabled Redirection group. Run creation, start,
+  resume and retry all refuse with the exact failures.
+- **Live-state fence.** Every snapshot carries a fingerprint of its normalized
+  export (terms, memberships, uncategorized products). Right before the first
+  mutation the worker re-exports the blog; any difference refuses the apply
+  with a `live_drift` summary (re-import, preview, retry). Every phase names
+  `expected_blog_path`; every membership row names `expected_sku` (exact,
+  blank means blank) and `expected_term_ids`, so a product edited after the
+  snapshot is skipped and reported instead of overwritten.
+- **Identity.** A parked term keeps its original slug in `_arb_catmgr_parked`
+  term meta and is planned under it (`parked_from`), so a replan keeps its
+  merge destination. One live term per node per blog survives in place -
+  explicit primary if live there, else the term already carrying the final
+  slug, else the lowest term id - so a second re-slug, or a store that never
+  had the global primary slug, keeps its term. Store extras converge in place
+  (name, parent, sort, slug) and their lineage is read from the live snapshot.
+  Creates refuse a slug an unplanned term owns (only this run's own artifacts,
+  `_arb_catmgr_created`, converge); an unresolved parent fails the phase.
+- **Product universe.** Products with no category are exported
+  (`uncategorized`) and planned, so rules and assignments reach them.
+  Blank-SKU products block and are acknowledged by `PID:<blog>:<product_id>`.
+- **Derived data.** apply-terms queues every product of a changed term for
+  Elasticsearch and re-keys blog 1's UNSPSC mapping (renames AND merges)
+  before any product is re-derived.
+- **Finalize.** Redirects are created or corrected to the exact 301
+  destination and verified; a missing plugin/group or any failed redirect
+  fails the job. Exclusions get redirects too. A refused finalize is never
+  marked done: a retry is a new attempt (`j<job>a<attempt>:<phase>` keys) and
+  finalize runs again.
+- **Verification.** After finalize a fresh export must match the plan exactly
+  or the job fails with the mismatches; if the export cannot be fetched the
+  job is done-but-unverified and the run ends `completed_unverified`. A run
+  with skipped blogs ends `completed_with_skips`. Recovery adopts a WordPress
+  job that is still running under the same key instead of posting a second
+  one; a reclaimed worker cannot overwrite a newer worker's progress
+  (`worker_token`).
+- **Restore.** Every WordPress result is checked; term and product counts
+  must match the snapshot per phase; blog 1's UNSPSC mapping and term meta
+  (thumbnail, sort, lock) go back exactly; a fresh export is compared with
+  the snapshot before the restore is marked done. One restore at a time per
+  environment, no restore while a run is active, and a restore orphaned by an
+  app restart is marked failed with a reason (request it again).
+- **Snapshots.** Exports page by keyset and repeat the membership count; a
+  torn read is re-pulled. Imports for blogs an active run still has to
+  converge are refused. Auto-suggest never maps a name that matches several
+  draft nodes (`ambiguous` lists the candidates).
+- **MCP identity.** `mcp-run.sh` exports the invoking login as
+  `ARB_MCP_OPERATOR`; allowlists and audit rows use that person.
+
+Integration cycle against the dev site (runs on the warehouse box, in-process):
+
+```bash
+# each step prints a JSON verdict; run them in this order
+sudo bash -c 'set -a; source /etc/arb-logo-admin.env; set +a; cd /opt/arb-logo-admin && \
+  runuser -u arb-logo-admin -- /opt/arb-logo-admin-venv/bin/python tests/integration/dev_cycle.py prepare --blog 9 --solo'
+# ... apply, replay, fence-arm  (prints the product + category to change in WordPress)
+# on the dev web box:  wp post term add <product_id> product_cat <slug> --url=<blog url>
+# ... fence-check      (the run must be refused before any mutation)
+# on the dev web box:  wp post term remove <product_id> product_cat <slug> --url=<blog url>
+# ... fence-recover, restore, cleanup
+```
+
 ### 4. Install the application service
 
 ```bash

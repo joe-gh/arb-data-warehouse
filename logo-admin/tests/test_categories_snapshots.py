@@ -48,9 +48,17 @@ def _import(env="dev", blog_id=1, terms=TERMS_A, products=PRODUCTS_A, actor="tes
 
 def test_import_fresh_blog_snapshot():
     result = _import()
-    assert result == {
+    assert {k: result[k] for k in ("blog_id", "version", "term_count", "membership_count")} == {
         "blog_id": 1, "version": 1, "term_count": 2, "membership_count": 3,
     }
+    assert result["uncategorized_count"] == 0
+    assert len(result["fingerprint"]) == 64        # sha256 of the normalized export
+    # The same export hashes identically: the live-state fence compares this
+    # value with the fingerprint of the export captured before an apply.
+    assert result["fingerprint"] == categories_service.export_fingerprint(TERMS_A, PRODUCTS_A)
+    assert categories_service.export_fingerprint(TERMS_A, PRODUCTS_A[:2]) != result["fingerprint"]
+    # junk rows (unknown term) never influence the hash
+    assert categories_service.export_fingerprint(TERMS_A, PRODUCTS_A[:3]) == result["fingerprint"]
     with database.cursor() as cur:
         cur.execute(
             "SELECT slug, name, parent_term_id, name_locked, snapshot_version"

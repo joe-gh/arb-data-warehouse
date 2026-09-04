@@ -129,21 +129,28 @@ def import_snapshots(
     actor = user["user_login"]
     results = []
     seen = set()
+    # A re-import bumps the snapshot version a queued plan was built on and
+    # stops that job at its staleness fence: blogs an active run still has to
+    # converge are refused (the worker's own post-apply refresh does not pass
+    # through here).
+    with database.cursor() as cursor:
+        locked = categories_runs.blogs_locked_by_runs(cursor, body.env)
     for blog_id in body.blog_ids:
         if blog_id in seen:
             continue
         seen.add(blog_id)
+        if blog_id in locked:
+            results.append({
+                "ok": False, "blog_id": int(blog_id),
+                "error": f"blog {blog_id} is part of active run {locked[blog_id]};"
+                         " let it finish (or cancel it) before re-importing",
+            })
+            continue
         try:
             export = categories_service.fetch_export(body.env, blog_id)
             with database.cursor(write=True, actor=actor) as cursor:
-                result = categories_service.import_blog_snapshot(
-                    cursor,
-                    env=body.env,
-                    blog_id=blog_id,
-                    blog_path=str(export.get("blog_path") or ""),
-                    terms=export.get("terms") or [],
-                    products=export.get("products") or [],
-                    actor=actor,
+                result = categories_service.import_export(
+                    cursor, env=body.env, blog_id=blog_id, export=export, actor=actor,
                 )
             results.append({"ok": True, **result})
         except (BrokerError, ValueError) as exc:
@@ -402,7 +409,7 @@ def get_mapping_suggestions(
     del user
     _configured_env(env)
     with database.cursor() as cursor:
-        return {"suggestions": categories_mapping.auto_suggest(cursor, env)}
+        return categories_mapping.auto_suggest(cursor, env)
 
 
 class MappingRow(BaseModel):
@@ -877,14 +884,25 @@ def start_run(
     run_id: int,
     user: Dict[str, str] = Depends(require_apply_user),
 ):
-    try:
-        with database.cursor() as cursor:
-            categories_runs.get_run(cursor, run_id)
-    except (DraftError, DraftConflict) as exc:
-        raise _draft_errors(exc) from exc
+    """Starts a queued run through the atomic transition (environment lock,
+    exclusivity, readiness). Paused/failed runs go through resume/retry."""
+    result = _run_control(run_id, user, categories_runs.start)
     categories_runs.start_run(run_id, actor=user["user_login"])
     with database.cursor() as cursor:
-        return {"run": categories_runs.get_run(cursor, run_id)}
+        result["run"] = categories_runs.get_run(cursor, run_id)
+    return result
+
+
+@router.get("/readiness")
+def get_readiness(
+    env: str = Query(..., min_length=3, max_length=8),
+    user: Dict[str, str] = Depends(require_user),
+    _: None = Depends(require_catmgr),
+):
+    """What an apply on this environment would be refused for right now."""
+    del user
+    _configured_env(env)
+    return {"env": env, **categories_runs.readiness(env)}
 
 
 @router.post("/runs/{run_id}/pause")

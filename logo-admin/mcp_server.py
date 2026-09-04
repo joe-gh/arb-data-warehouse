@@ -3,8 +3,10 @@
 Full admin parity for AI-driven operation: every tool calls the FastAPI app's
 own routes IN-PROCESS (TestClient), so all validation, orphan cascades, and
 audit-trigger attribution behave exactly as they do for a human operator.
-Writes are attributed in logo.audit_log to ARB_MCP_ACTOR (default
-"CLI connection" - deliberately nondescript).
+Writes are attributed in logo.audit_log to the invoking operator
+(ARB_MCP_OPERATOR, exported by mcp-run.sh from the SSH login); with no
+identifiable operator the session is "CLI connection", which no apply or
+agent allowlist contains.
 
 No network surface: transport is stdio, intended to be launched over SSH via
 /opt/arb-logo-admin/mcp-run.sh (root wrapper loads /etc/arb-logo-admin.env).
@@ -14,6 +16,7 @@ Nothing in the web UI references this server.
 import base64
 import binascii
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,11 +27,27 @@ import main as app_main
 from auth import require_csrf, require_user
 from config import get_settings
 
-ACTOR = (os.environ.get("ARB_MCP_ACTOR") or "CLI connection")[:100]
+# The PERSON behind this MCP session. mcp-run.sh exports the invoking Unix
+# login (the SSH user that ran `sudo mcp-run.sh`) as ARB_MCP_OPERATOR; every
+# authorization tier (CATMGR_APPLY_USERS, CATMGR_VIEW_USERS, agent allowlists)
+# and every audit row is evaluated against that login, never against a shared
+# process label. Without an identifiable operator the session runs as the
+# nondescript "CLI connection", which no allowlist ever contains.
+_OPERATOR_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")
+
+
+def _operator_login() -> str:
+    raw = (os.environ.get("ARB_MCP_OPERATOR") or "").strip().lower()
+    if raw and _OPERATOR_RE.match(raw):
+        return raw
+    return (os.environ.get("ARB_MCP_ACTOR") or "CLI connection")[:100]
+
+
+ACTOR = _operator_login()
 
 
 def _identity() -> Dict[str, str]:
-    return {"user_login": ACTOR, "display_name": ACTOR, "csrf": "mcp"}
+    return {"user_login": ACTOR, "display_name": f"{ACTOR} (MCP)", "csrf": "mcp"}
 
 
 app_main.app.dependency_overrides[require_user] = _identity
@@ -793,9 +812,10 @@ def cat_mapping_status(env: str) -> Any:
 
 @mcp.tool()
 def cat_mapping_suggest(env: str) -> Any:
-    """Auto-match proposals for unmapped slugs (exact slug or exact cleaned
-    name against draft nodes). Nothing is persisted - accept via
-    cat_mapping_bulk."""
+    """Auto-match proposals for unmapped slugs whose NAME matches exactly one
+    draft node. Slugs whose name matches several nodes come back under
+    `ambiguous` with every candidate's full path and must be mapped
+    explicitly. Nothing is persisted - accept via cat_mapping_bulk."""
     return _call("GET", "/api/categories/mapping/suggest", params={"env": env})
 
 

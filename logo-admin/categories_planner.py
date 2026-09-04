@@ -26,6 +26,14 @@ from categories_draft import DraftError
 from categories_service import record_audit
 
 
+def zero_category_key(blog_id: int, product_id: int, sku: str) -> str:
+    """Acknowledgement key of a product that would end uncategorized: its SKU,
+    or PID:<blog>:<product_id> for products with no SKU at all (blank-SKU
+    products used to slip past the blocker entirely)."""
+    sku = str(sku or "").strip().upper()
+    return sku if sku else f"PID:{int(blog_id)}:{int(product_id)}"
+
+
 CATEGORY_BASE = "/product-category/"
 DELETED_REDIRECT_PATH = "/store/"
 # The broker parks a changing/doomed term on catmgrtmp-<term_id> during its
@@ -101,6 +109,11 @@ def load_dispositions(cursor) -> Dict[str, Dict[str, Any]]:
     that node (non-primary when the node already has an explicit primary
     elsewhere). Explicit rows always win. This is what makes a freshly
     seeded draft 100% mapped and a converged blog re-plan to zero changes.
+
+    Store extras are implicitly store_custom under their slug and, while a
+    draft re-slug is pending, under the slug their term still carries
+    (previous_slug). Which BLOG the extra belongs to is resolved per blog in
+    build_blog_plan (the same store-local slug may exist on several stores).
     """
 
     cursor.execute(
@@ -128,38 +141,21 @@ def load_dispositions(cursor) -> Dict[str, Dict[str, Any]]:
             "override_id": None,
             "implicit": True,
         }
-    # Store-local extra nodes: a live term carrying an extra's slug is that
-    # extra, materialized - implicitly store_custom (left untouched).
     cursor.execute(
         "SELECT override_id, blog_id, slug, previous_slug"
         " FROM catmgr.node_store_override WHERE kind = 'extra_node'"
     )
     for row in cursor.fetchall():
-        slug = row["slug"]
-        if slug and slug not in dispositions:
-            dispositions[slug] = {
-                "old_slug": slug,
-                "action": "store_custom",
-                "target_node_id": None,
-                "is_primary": False,
-                "override_id": row["override_id"],
-                "implicit": True,
-            }
-        # The slug the extra's live term STILL carries after a draft re-slug:
-        # store_custom everywhere, but on the extra's own blog the planner
-        # converges that term in place to the new slug.
-        previous = row["previous_slug"]
-        if previous and previous not in dispositions:
-            dispositions[previous] = {
-                "old_slug": previous,
-                "action": "store_custom",
-                "target_node_id": None,
-                "is_primary": False,
-                "override_id": row["override_id"],
-                "implicit": True,
-                "extra_reslug": {"blog_id": row["blog_id"], "new_slug": slug,
-                                 "override_id": row["override_id"]},
-            }
+        for slug in (row["slug"], row["previous_slug"]):
+            if slug and slug not in dispositions:
+                dispositions[slug] = {
+                    "old_slug": slug,
+                    "action": "store_custom",
+                    "target_node_id": None,
+                    "is_primary": False,
+                    "override_id": row["override_id"],
+                    "implicit": True,
+                }
     return dispositions
 
 
@@ -192,19 +188,27 @@ def load_extra_memberships(cursor, env: str) -> Dict[int, Dict[str, Set[str]]]:
 def _snapshot_terms(cursor, env: str, blog_id: int) -> List[Dict[str, Any]]:
     cursor.execute(
         """
-        SELECT term_id, slug, name, parent_term_id, description, sort_order
+        SELECT term_id, slug, name, parent_term_id, description, sort_order,
+               parked_from
           FROM catmgr.wp_term WHERE env = %s AND blog_id = %s
          ORDER BY term_id
         """,
         (env, blog_id),
     )
-    return [dict(row) for row in cursor.fetchall()]
+    terms = [dict(row) for row in cursor.fetchall()]
+    for term in terms:
+        # The slug the plan reasons about; the live slug is only the fence.
+        term["logical"] = term["parked_from"] or term["slug"]
+    return terms
 
 
 def _snapshot_products(cursor, env: str, blog_id: int) -> Dict[int, Dict[str, Any]]:
+    """Every product of the blog: categorized ones with their (logical) slugs
+    and term ids, plus the uncategorized ones with empty sets."""
     cursor.execute(
         """
-        SELECT p.product_id, p.sku, t.slug
+        SELECT p.product_id, p.sku, p.term_id,
+               COALESCE(NULLIF(t.parked_from, ''), t.slug) AS slug
           FROM catmgr.wp_term_product p
           JOIN catmgr.wp_term t ON t.env = p.env AND t.blog_id = p.blog_id
                                 AND t.term_id = p.term_id
@@ -216,10 +220,49 @@ def _snapshot_products(cursor, env: str, blog_id: int) -> Dict[int, Dict[str, An
     for row in cursor.fetchall():
         product = products.setdefault(
             row["product_id"], {"product_id": row["product_id"],
-                                "sku": row["sku"], "slugs": set()},
+                                "sku": row["sku"], "slugs": set(),
+                                "term_ids": set()},
         )
         product["slugs"].add(row["slug"])
+        product["term_ids"].add(int(row["term_id"]))
+    cursor.execute(
+        "SELECT product_id, sku FROM catmgr.wp_uncategorized_product"
+        " WHERE env = %s AND blog_id = %s",
+        (env, blog_id),
+    )
+    for row in cursor.fetchall():
+        products.setdefault(
+            row["product_id"], {"product_id": row["product_id"],
+                                "sku": row["sku"], "slugs": set(),
+                                "term_ids": set()},
+        )
     return products
+
+
+def _elect_survivors(terms: List[Dict[str, Any]],
+                     dispositions: Dict[str, Dict[str, Any]],
+                     kept: Dict[int, Dict[str, Any]]) -> Dict[int, int]:
+    """node_id -> term_id of the live term that survives in place on this
+    blog. Deterministic: explicit primary if live here, else the term already
+    carrying the node's final slug, else the lowest term_id."""
+    candidates: Dict[int, List[Dict[str, Any]]] = {}
+    for term in terms:
+        disposition = dispositions.get(term["logical"])
+        if disposition and disposition["action"] == "map":
+            candidates.setdefault(disposition["target_node_id"], []).append(term)
+    survivors: Dict[int, int] = {}
+    for node_id, live in candidates.items():
+        desired = kept.get(node_id)
+        final_slug = desired["slug"] if desired else None
+        explicit = [
+            t for t in live
+            if dispositions[t["logical"]]["is_primary"]
+            and not dispositions[t["logical"]].get("implicit")
+        ]
+        identity = [t for t in live if final_slug and t["logical"] == final_slug]
+        pool = explicit or identity or live
+        survivors[node_id] = min(pool, key=lambda t: t["term_id"])["term_id"]
+    return survivors
 
 
 def build_blog_plan(cursor, env: str, blog_id: int, *,
@@ -229,7 +272,7 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
     """The declarative desired end-state for one blog."""
 
     cursor.execute(
-        "SELECT version, blog_path FROM catmgr.snapshot"
+        "SELECT version, blog_path, fingerprint FROM catmgr.snapshot"
         " WHERE env = %s AND blog_id = %s",
         (env, blog_id),
     )
@@ -245,152 +288,120 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
     kept = target["kept"]                       # node_id -> desired term
     terms = _snapshot_terms(cursor, env, blog_id)
 
-    # A parked slug is always a doomed leftover: its original disposition was
-    # delete or merge, and the products it still carries get explicit rows
-    # below. Implicit delete, so a re-plan converges it without operator
-    # ceremony; a product left with no category at all surfaces as the usual
-    # zero-category blocker.
-    for term in terms:
-        if term["slug"].startswith(TEMP_SLUG_PREFIX) and term["slug"] not in dispositions:
-            dispositions[term["slug"]] = {
-                "old_slug": term["slug"], "action": "delete", "target_node_id": None,
-                "is_primary": False, "override_id": None, "implicit": True, "parked": True,
-            }
-    unmapped = [t["slug"] for t in terms if t["slug"] not in dispositions]
+    unmapped = sorted({t["logical"] for t in terms if t["logical"] not in dispositions})
     if unmapped:
         raise DraftError(
             f"blog {blog_id} has {len(unmapped)} unmapped slugs"
-            f" (e.g. {', '.join(sorted(unmapped)[:5])})"
+            f" (e.g. {', '.join(unmapped[:5])})"
         )
 
     updates: List[Dict[str, Any]] = []
     deletes: List[Dict[str, Any]] = []
-    kept_current: Dict[str, str] = {}   # live slug -> its FINAL slug on this blog
-    merge_target_slug: Dict[str, Optional[str]] = {}  # live slug -> target final slug
+    kept_current: Dict[str, str] = {}   # logical slug -> its FINAL slug on this blog
+    merge_target_slug: Dict[str, Optional[str]] = {}  # logical slug -> target final slug
     nodes_with_primary_here: Set[int] = set()
-    live_by_slug = {t["slug"]: t for t in terms}
+    live_by_logical = {t["logical"]: t for t in terms}
     live_by_id = {t["term_id"]: t for t in terms}
+    survivors = _elect_survivors(terms, dispositions, kept)
 
-    extra_by_override = {e["override_id"]: e for e in target["extras"]}
-    reslugged_extras: Set[int] = set()   # override_ids converged in place here
+    # This blog's own store extras, reachable under their draft slug and,
+    # while a re-slug is pending, under the slug the term still carries.
+    extras_by_slug: Dict[str, Dict[str, Any]] = {}
+    for extra in target["extras"]:
+        extras_by_slug[extra["slug"]] = extra
+        if extra.get("previous_slug"):
+            extras_by_slug.setdefault(extra["previous_slug"], extra)
+    converged_extras: Set[int] = set()
+
+    def live_parent_slug_of(term: Dict[str, Any]) -> str:
+        parent = live_by_id.get(term["parent_term_id"] or 0)
+        return parent["logical"] if parent else ""
+
+    def emit_update(term: Dict[str, Any], desired: Dict[str, Any],
+                    description: Optional[str]) -> None:
+        changes: Dict[str, bool] = {}
+        # A parked term must get its final slug back even when the logical
+        # slug already equals the target.
+        if term["logical"] != desired["slug"] or term["parked_from"]:
+            changes["slug"] = True
+        if normalize_wp_name(term["name"]) != desired["name"]:
+            changes["name"] = True
+        if live_parent_slug_of(term) != desired["parent_slug"]:
+            changes["parent"] = True
+        final_description = term["description"] or "" if description is None else description
+        if (term["description"] or "") != (final_description or ""):
+            changes["description"] = True
+        if int(term["sort_order"] or 0) != int(desired["sort_order"] or 0):
+            changes["sort_order"] = True
+        updates.append({
+            "term_id": term["term_id"],
+            "expected_slug": term["slug"],
+            "public_slug": term["logical"],
+            "set": {
+                "slug": desired["slug"],
+                "name": desired["name"],
+                "parent_slug": desired["parent_slug"],
+                "description": final_description or "",
+                "sort_order": desired["sort_order"],
+            },
+            "changed": changes,
+        })
+
+    def emit_delete(term: Dict[str, Any], reason: str,
+                    target_slug: Optional[str]) -> None:
+        deletes.append({"term_id": term["term_id"],
+                        "expected_slug": term["slug"],
+                        "public_slug": term["logical"],
+                        "reason": reason})
+        merge_target_slug[term["logical"]] = target_slug
+
     for term in terms:
-        disposition = dispositions[term["slug"]]
+        logical = term["logical"]
+        disposition = dispositions[logical]
         action = disposition["action"]
-        reslug = disposition.get("extra_reslug")
-        if (action == "store_custom" and reslug and reslug["blog_id"] == blog_id
-                and reslug["override_id"] in extra_by_override):
-            extra = extra_by_override[reslug["override_id"]]
-            if extra["slug"] in live_by_slug:
-                # The new slug already exists live (converged earlier, or a
-                # collision): the old term merges into it.
-                deletes.append({"term_id": term["term_id"],
-                                "expected_slug": term["slug"],
-                                "reason": "merge"})
-                merge_target_slug[term["slug"]] = extra["slug"]
-                continue
-            reslugged_extras.add(extra["override_id"])
-            kept_current[term["slug"]] = extra["slug"]
-            live_parent = live_by_id.get(term["parent_term_id"] or 0)
-            live_parent_slug = live_parent["slug"] if live_parent else ""
-            changes = {"slug": True}
-            if normalize_wp_name(term["name"]) != extra["name"]:
-                changes["name"] = True
-            if live_parent_slug != extra["parent_slug"]:
-                changes["parent"] = True
-            if int(term["sort_order"] or 0) != int(extra["sort_order"] or 0):
-                changes["sort_order"] = True
-            updates.append({
-                "term_id": term["term_id"],
-                "expected_slug": term["slug"],
-                "set": {
-                    "slug": extra["slug"],
-                    "name": extra["name"],
-                    "parent_slug": extra["parent_slug"],
-                    "description": term["description"] or "",
-                    "sort_order": extra["sort_order"],
-                },
-                "changed": changes,
-            })
-            continue
         if action == "store_custom":
-            kept_current[term["slug"]] = term["slug"]
+            extra = extras_by_slug.get(logical)
+            if extra is None:
+                # Another store's custom category, or an explicit store_custom
+                # slug: untouched here.
+                kept_current[logical] = logical
+                continue
+            if extra["override_id"] in converged_extras:
+                # Two live terms belong to the same extra (old slug + new slug
+                # both live): the first converged in place, this one merges.
+                emit_delete(term, "merge", extra["slug"])
+                continue
+            converged_extras.add(extra["override_id"])
+            kept_current[logical] = extra["slug"]
+            emit_update(term, {
+                "slug": extra["slug"], "name": extra["name"],
+                "parent_slug": extra["parent_slug"],
+                "sort_order": extra["sort_order"],
+            }, description=None)
             continue
         if action == "delete":
-            deletes.append({"term_id": term["term_id"],
-                            "expected_slug": term["slug"],
-                            "reason": "delete"})
-            merge_target_slug[term["slug"]] = None
+            emit_delete(term, "delete", None)
             continue
         node_id = disposition["target_node_id"]
         desired = kept.get(node_id)
-        is_primary_here = disposition["is_primary"]
-        if (not is_primary_here and desired is not None
-                and term["slug"] == desired["slug"]
-                and node_id not in nodes_with_primary_here):
-            # The live term already carries the node's final slug (typically
-            # the post-apply steady state while an explicit primary still
-            # names the pre-migration slug): it IS the node - converge it in
-            # place instead of treating it as a merge source.
-            is_primary_here = True
-        if is_primary_here:
-            if node_id in nodes_with_primary_here:
-                # Two live terms claim the same node on this blog (old primary
-                # slug and final slug coexisting): the first one wins, this
-                # one merges into it.
-                deletes.append({"term_id": term["term_id"],
-                                "expected_slug": term["slug"],
-                                "reason": "merge"})
-                merge_target_slug[term["slug"]] = desired["slug"] if desired else None
-                continue
-            if desired is None:
-                # Node excluded on this store: the term goes away here.
-                deletes.append({"term_id": term["term_id"],
-                                "expected_slug": term["slug"],
-                                "reason": "excluded"})
-                merge_target_slug[term["slug"]] = None
-                continue
-            nodes_with_primary_here.add(node_id)
-            kept_current[term["slug"]] = desired["slug"]
-            changes = {}
-            if term["slug"] != desired["slug"]:
-                changes["slug"] = True
-            if normalize_wp_name(term["name"]) != desired["name"]:
-                changes["name"] = True
-            live_parent = live_by_id.get(term["parent_term_id"] or 0)
-            live_parent_slug = live_parent["slug"] if live_parent else ""
-            if live_parent_slug != desired["parent_slug"]:
-                changes["parent"] = True
-            if (term["description"] or "") != (desired["description"] or ""):
-                changes["description"] = True
-            if int(term["sort_order"] or 0) != int(desired["sort_order"] or 0):
-                changes["sort_order"] = True
-            updates.append({
-                "term_id": term["term_id"],
-                "expected_slug": term["slug"],
-                "set": {
-                    "slug": desired["slug"],
-                    "name": desired["name"],
-                    "parent_slug": desired["parent_slug"],
-                    "description": desired["description"],
-                    "sort_order": desired["sort_order"],
-                },
-                "changed": changes,
-            })
-        else:
-            # Merge source: products carry to the target (if kept here).
-            deletes.append({"term_id": term["term_id"],
-                            "expected_slug": term["slug"],
-                            "reason": "merge"})
-            merge_target_slug[term["slug"]] = (
-                desired["slug"] if desired is not None else None
-            )
+        if survivors.get(node_id) != term["term_id"]:
+            # Merge source: products carry to the survivor (if kept here).
+            emit_delete(term, "merge", desired["slug"] if desired is not None else None)
+            continue
+        if desired is None:
+            # Node excluded on this store: the term goes away here.
+            emit_delete(term, "excluded", None)
+            continue
+        nodes_with_primary_here.add(node_id)
+        kept_current[logical] = desired["slug"]
+        emit_update(term, desired, description=desired["description"])
 
     creates: List[Dict[str, Any]] = []
     absorbed: List[str] = []
     for node_id, desired in kept.items():
         if node_id in nodes_with_primary_here:
             continue
-        if desired["slug"] in live_by_slug and \
+        if desired["slug"] in live_by_logical and \
                 dispositions.get(desired["slug"], {}).get("action") == "store_custom":
             # A store-custom live term already owns this slug here. Creating
             # the node would converge INTO that term (the broker updates an
@@ -407,8 +418,8 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
             "sort_order": desired["sort_order"],
         })
     for extra in target["extras"]:
-        if extra["slug"] in live_by_slug or extra["override_id"] in reslugged_extras:
-            continue  # store_custom live term stays as-is / converged in place
+        if extra["override_id"] in converged_extras:
+            continue  # its live term converged in place above
         creates.append({
             "slug": extra["slug"],
             "name": extra["name"],
@@ -440,7 +451,8 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
     # term. finalize deletes a doomed term only when it is EMPTY (anything
     # still attached there means WordPress drifted), so a product that is
     # already in the merge target - or ends with no category at all - still
-    # needs its explicit row to leave the doomed term first.
+    # needs its explicit row to leave the doomed term first. Every row carries
+    # the product's snapshot identity (sku, term ids) as the broker's fence.
     node_final_slug_here = {n: d["slug"] for n, d in kept.items()}
     sku_extra_add: Dict[str, Set[str]] = {}
     sku_remove: Dict[str, Set[str]] = {}
@@ -456,7 +468,10 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
     memberships: List[Dict[str, Any]] = []
     products = _snapshot_products(cursor, env, blog_id)
     zero_category: List[Dict[str, Any]] = []
+    uncategorized_total = 0
     for product in products.values():
+        if not product["slugs"]:
+            uncategorized_total += 1
         after_term_ops: Set[str] = set()
         final: Set[str] = set()
         for slug in product["slugs"]:
@@ -470,42 +485,63 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
                 final.add(target_slug)
         final |= sku_extra_add.get(product["sku"], set())
         final -= sku_remove.get(product["sku"], set())
-        if not final:
-            zero_category.append({"product_id": product["product_id"],
-                                  "sku": product["sku"]})
+        if not final and (product["slugs"] or product["sku"] in sku_remove):
+            # A product that HAD categories (or was explicitly removed) and
+            # ends with none. Products that were already uncategorized and
+            # nothing rescues stay as they are: no change, no blocker.
+            zero_category.append({
+                "product_id": product["product_id"], "sku": product["sku"],
+                "key": zero_category_key(blog_id, product["product_id"], product["sku"]),
+            })
         touches_doomed = any(slug in merge_target_slug for slug in product["slugs"])
         if final != after_term_ops or touches_doomed:
             memberships.append({
                 "product_id": product["product_id"],
                 "expected_sku": product["sku"],
+                "expected_term_ids": sorted(product["term_ids"]),
                 "final_slugs": sorted(final),
             })
     memberships.sort(key=lambda m: m["product_id"])
 
-    # ----- redirects (blog 1 only; links are flat /product-category/<slug>/)
+    # ----- redirects (blog 1 only; links are flat /product-category/<slug>/).
+    # Every public URL that stops resolving gets one: re-slugs, merges,
+    # deletes AND exclusions. A parked term's public URL is its original slug.
     redirects: List[Dict[str, str]] = []
     if blog_id == 1:
         for update in updates:
-            if update["changed"].get("slug"):
+            if update["changed"].get("slug") and update["public_slug"] != update["set"]["slug"]:
                 redirects.append({
-                    "old_path": f"{CATEGORY_BASE}{update['expected_slug']}/",
+                    "old_path": f"{CATEGORY_BASE}{update['public_slug']}/",
                     "new_path": f"{CATEGORY_BASE}{update['set']['slug']}/",
                 })
         for delete in deletes:
-            if delete["expected_slug"].startswith(TEMP_SLUG_PREFIX):
-                continue  # a parked slug was never a public URL
             if delete["reason"] == "merge":
-                target_slug = merge_target_slug.get(delete["expected_slug"])
+                target_slug = merge_target_slug.get(delete["public_slug"])
                 if target_slug:
                     redirects.append({
-                        "old_path": f"{CATEGORY_BASE}{delete['expected_slug']}/",
+                        "old_path": f"{CATEGORY_BASE}{delete['public_slug']}/",
                         "new_path": f"{CATEGORY_BASE}{target_slug}/",
                     })
-            elif delete["reason"] == "delete":
-                redirects.append({
-                    "old_path": f"{CATEGORY_BASE}{delete['expected_slug']}/",
-                    "new_path": DELETED_REDIRECT_PATH,
-                })
+                    continue
+            redirects.append({
+                "old_path": f"{CATEGORY_BASE}{delete['public_slug']}/",
+                "new_path": DELETED_REDIRECT_PATH,
+            })
+
+    # ----- UNSPSC (blog 1): the network category->UNSPSC mapping is keyed by
+    # slug. Re-slugs re-key their entry; merge sources hand their entry to the
+    # survivor when it has none of its own.
+    unspsc = {"renames": {}, "merges": {}}
+    if blog_id == 1:
+        unspsc["renames"] = {
+            u["public_slug"]: u["set"]["slug"]
+            for u in updates if u["changed"].get("slug") and u["public_slug"] != u["set"]["slug"]
+        }
+        unspsc["merges"] = {
+            d["public_slug"]: merge_target_slug[d["public_slug"]]
+            for d in deletes
+            if d["reason"] == "merge" and merge_target_slug.get(d["public_slug"])
+        }
 
     stats = {
         "terms_total": len(terms),
@@ -517,6 +553,7 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
         "deletes": len(deletes),
         "membership_changes": len(memberships),
         "products_total": len(products),
+        "uncategorized_total": uncategorized_total,
         "zero_category": len(zero_category),
         "redirects": len(redirects),
     }
@@ -525,9 +562,14 @@ def build_blog_plan(cursor, env: str, blog_id: int, *,
         "blog_id": blog_id,
         "blog_path": snapshot["blog_path"],
         "snapshot_version": snapshot["version"],
+        # The live export must still hash to this right before the first
+        # mutation; anything WordPress changed since the import refuses the
+        # apply instead of being silently overwritten.
+        "snapshot_fingerprint": snapshot["fingerprint"] or "",
         "terms": {"update": updates, "create": creates, "delete": deletes},
         "memberships": memberships,
         "redirects": redirects,
+        "unspsc": unspsc,
         "zero_category": zero_category,
         # Live slugs that stay exactly as they are (store customs and
         # unchanged kept terms): a final slug landing on one of these is a
@@ -640,11 +682,13 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
             if row_recreated:
                 recreated[blog_id] = row_recreated
             for zero in plan["zero_category"]:
-                if zero["sku"] and zero["sku"] not in acked:
-                    zero_by_sku[zero["sku"]] = zero_by_sku.get(zero["sku"], 0) + 1
-                    detail = zero_detail.setdefault(zero["sku"], {"sku": zero["sku"], "blogs": []})
-                    if len(detail["blogs"]) < 10:
-                        detail["blogs"].append({"blog_id": blog_id, "product_id": zero["product_id"]})
+                key = zero["key"]
+                if key in acked:
+                    continue
+                zero_by_sku[key] = zero_by_sku.get(key, 0) + 1
+                detail = zero_detail.setdefault(key, {"sku": zero["sku"], "key": key, "blogs": []})
+                if len(detail["blogs"]) < 10:
+                    detail["blogs"].append({"blog_id": blog_id, "product_id": zero["product_id"]})
             if blog_id == 1:
                 changed_blog1_slugs = [
                     {"from": u["expected_slug"], "to": u["set"]["slug"]}
@@ -691,14 +735,15 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
             "kind": "zero_category_skus",
             "count": len(zero_by_sku),
             "sample": [
-                {"sku": sku, "blogs": count}
-                for sku, count in sorted(zero_by_sku.items())[:100]
+                {"sku": zero_detail[key]["sku"], "key": key, "blogs": count}
+                for key, count in sorted(zero_by_sku.items())[:100]
             ],
-            # Enough detail for the UI to acknowledge or rescue each one.
+            # Enough detail for the UI to acknowledge or rescue each one. A
+            # blank-SKU product has sku "" and is keyed PID:<blog>:<product_id>.
             "skus": [
-                {"sku": sku, "blogs": zero_by_sku[sku],
-                 "where": zero_detail[sku]["blogs"]}
-                for sku in sorted(zero_by_sku)[:500]
+                {"sku": zero_detail[key]["sku"], "key": key,
+                 "blogs": zero_by_sku[key], "where": zero_detail[key]["blogs"]}
+                for key in sorted(zero_by_sku)[:500]
             ],
         })
 
@@ -730,7 +775,7 @@ def _plan_recreated_slugs(plan: Dict[str, Any]) -> List[str]:
     the operator mapped the live term away (delete / merge) but left a draft
     node with the same slug, so the run would swap the term's identity. The
     design rule is mutate-in-place, never delete+recreate: a blocker."""
-    doomed = {d["expected_slug"] for d in plan["terms"]["delete"]}
+    doomed = {d.get("public_slug") or d["expected_slug"] for d in plan["terms"]["delete"]}
     return sorted(c["slug"] for c in plan["terms"]["create"] if c["slug"] in doomed)
 
 
@@ -740,7 +785,7 @@ def _plan_slug_collisions(plan: Dict[str, Any]) -> List[str]:
     categories into one. Both are blockers."""
     seen: Set[str] = set()
     collisions: Set[str] = set()
-    changing = {u["expected_slug"] for u in plan["terms"]["update"]}
+    changing = {u.get("public_slug") or u["expected_slug"] for u in plan["terms"]["update"]}
     kept = set(plan.get("kept_slugs") or []) - changing
     finals = (
         [u["set"]["slug"] for u in plan["terms"]["update"]]

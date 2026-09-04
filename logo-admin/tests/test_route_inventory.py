@@ -28,6 +28,7 @@ READ_ROUTES = {
     ("GET", "/api/categories/snapshots"),
     ("GET", "/api/categories/blogs"),
     ("GET", "/api/categories/wp-status"),
+    ("GET", "/api/categories/readiness"),
     ("GET", "/api/categories/tree"),
     ("GET", "/api/categories/tree/effective"),
     ("GET", "/api/categories/overrides"),

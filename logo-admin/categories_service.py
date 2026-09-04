@@ -12,7 +12,9 @@ tests can monkeypatch them; the DB functions take an open cursor and perform
 no commits themselves.
 """
 
-from typing import Any, Dict, List, Optional
+import hashlib
+import json
+from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg2.extras import Json, execute_values
 
@@ -108,38 +110,98 @@ def fetch_wp_status(env: str) -> Dict[str, Any]:
 # client's response cap and the WP request budget even for blog 1.
 _EXPORT_PAGE_LIMIT = 5000
 _EXPORT_MAX_PAGES = 200
+# A membership edit landing between two export pages shifts rows; the export
+# is re-pulled from scratch this many times before giving up.
+_EXPORT_ATTEMPTS = 3
 
 
-def fetch_export(env: str, blog_id: int) -> Dict[str, Any]:
-    """Pull one blog's terms + memberships, following product paging."""
+class ExportInconsistent(BrokerError):
+    """Two pages of one export disagreed (the live data moved underneath)."""
 
+
+def _fetch_export_once(env: str, blog_id: int) -> Dict[str, Any]:
     first = _broker(env, "/export", method="POST", payload={
         "blog_id": int(blog_id),
         "products_offset": 0,
         "products_limit": _EXPORT_PAGE_LIMIT,
+        "include_uncategorized": True,
     })
     if not isinstance(first, dict) or not isinstance(first.get("terms"), list):
         raise BrokerError("WordPress returned an unexpected /export response")
     products = list(first.get("products") or [])
     total = int(first.get("products_total") or len(products))
+    keyset = "next_after" in first          # broker v2: keyset pages + counts
+    cursor = first.get("next_after")
     pages = 1
     while len(products) < total:
         if pages >= _EXPORT_MAX_PAGES:
             raise BrokerError(
                 f"blog {blog_id}: /export paging exceeded {_EXPORT_MAX_PAGES} pages"
             )
-        page = _broker(env, "/export", method="POST", payload={
-            "blog_id": int(blog_id),
-            "products_offset": len(products),
-            "products_limit": _EXPORT_PAGE_LIMIT,
-        })
+        if keyset:
+            if not isinstance(cursor, dict):
+                raise ExportInconsistent(
+                    f"blog {blog_id}: /export ended after {len(products)} of {total} rows"
+                )
+            payload = {
+                "blog_id": int(blog_id),
+                "after_term_id": int(cursor.get("term_id") or 0),
+                "after_product_id": int(cursor.get("product_id") or 0),
+                "products_limit": _EXPORT_PAGE_LIMIT,
+            }
+        else:
+            payload = {
+                "blog_id": int(blog_id),
+                "products_offset": len(products),
+                "products_limit": _EXPORT_PAGE_LIMIT,
+            }
+        page = _broker(env, "/export", method="POST", payload=payload)
+        if not isinstance(page, dict):
+            raise BrokerError("WordPress returned an unexpected /export page")
+        if keyset and int(page.get("products_total") or 0) != total:
+            raise ExportInconsistent(
+                f"blog {blog_id}: membership count changed mid-export"
+                f" ({total} -> {page.get('products_total')})"
+            )
         chunk = list(page.get("products") or [])
         if not chunk:
-            break
+            raise ExportInconsistent(
+                f"blog {blog_id}: /export returned an empty page after"
+                f" {len(products)} of {total} rows"
+            )
         products.extend(chunk)
+        cursor = page.get("next_after")
         pages += 1
+    unique = {(int(r.get("term_id") or 0), int(r.get("product_id") or 0))
+              for r in products if isinstance(r, dict)}
+    if len(products) != total or len(unique) != total:
+        raise ExportInconsistent(
+            f"blog {blog_id}: /export delivered {len(products)} rows"
+            f" ({len(unique)} unique) but declared {total}"
+        )
     first["products"] = products
+    first.setdefault("uncategorized", [])
     return first
+
+
+def fetch_export(env: str, blog_id: int) -> Dict[str, Any]:
+    """Pull one blog's terms + memberships (+ uncategorized products).
+
+    Pages are keyset-ordered by (term_id, product_id) and every page repeats
+    the membership count: a change underneath the export is detected and the
+    whole export is re-pulled, so an imported snapshot is never a torn read.
+    The final unique row count must equal the declared count."""
+
+    last: Optional[Exception] = None
+    for _ in range(_EXPORT_ATTEMPTS):
+        try:
+            return _fetch_export_once(env, blog_id)
+        except ExportInconsistent as exc:
+            last = exc
+    raise BrokerError(
+        f"{last} - the live memberships kept changing during {_EXPORT_ATTEMPTS}"
+        " export attempts; try again once product saves have settled"
+    )
 
 
 # ---------------------------------------------------------------- snapshots
@@ -164,7 +226,76 @@ def _clean_term(row: Any) -> Dict[str, Any]:
         "sort_order": int(row.get("sort_order") or 0),
         "thumbnail_id": int(row.get("thumbnail_id") or 0),
         "name_locked": bool(row.get("name_locked")),
+        # The original slug of a term the broker parked on catmgrtmp-<id>
+        # (from its _arb_catmgr_parked term meta); '' for every other term.
+        "parked_from": str(row.get("parked_from") or ""),
     }
+
+
+def normalize_export(terms: List[Dict[str, Any]], products: List[Dict[str, Any]],
+                     uncategorized: Optional[List[Dict[str, Any]]] = None,
+                     ) -> Tuple[List[Dict[str, Any]], List[Tuple[int, int, str]],
+                                List[Tuple[int, str]]]:
+    """The exact rows an import stores: cleaned terms, (term_id, product_id,
+    sku) memberships of known terms, (product_id, sku) uncategorized products.
+    Shared by the import and the live fingerprint so both see one shape."""
+
+    clean_terms = [_clean_term(t) for t in terms]
+    known_term_ids = {t["term_id"] for t in clean_terms}
+    clean_products: List[Tuple[int, int, str]] = []
+    for row in products:
+        if not isinstance(row, dict):
+            raise ValueError(f"malformed product row: {row!r}")
+        term_id = int(row.get("term_id") or 0)
+        product_id = int(row.get("product_id") or 0)
+        if term_id not in known_term_ids or product_id <= 0:
+            continue  # membership of an unknown term (or junk) is dropped
+        clean_products.append(
+            (term_id, product_id, str(row.get("sku") or "").strip().upper())
+        )
+    categorized = {p for _, p, _ in clean_products}
+    clean_uncategorized: List[Tuple[int, str]] = []
+    for row in uncategorized or []:
+        if not isinstance(row, dict):
+            raise ValueError(f"malformed uncategorized row: {row!r}")
+        product_id = int(row.get("product_id") or 0)
+        if product_id <= 0 or product_id in categorized:
+            continue
+        clean_uncategorized.append(
+            (product_id, str(row.get("sku") or "").strip().upper())
+        )
+    return clean_terms, clean_products, clean_uncategorized
+
+
+# Fields of a term that a plan reads or an apply writes; everything the
+# fingerprint must notice. Counts are derived and change with product saves
+# that do not touch categories, so they stay out.
+_FINGERPRINT_TERM_FIELDS = ("term_id", "slug", "name", "parent", "description",
+                            "sort_order", "thumbnail_id", "name_locked",
+                            "parked_from")
+
+
+def export_fingerprint(terms: List[Dict[str, Any]], products: List[Dict[str, Any]],
+                       uncategorized: Optional[List[Dict[str, Any]]] = None) -> str:
+    """sha256 of the normalized export. Equal fingerprints = identical
+    category state (terms, their attributes, every membership, every
+    uncategorized product)."""
+
+    clean_terms, clean_products, clean_uncategorized = normalize_export(
+        terms, products, uncategorized,
+    )
+    body = {
+        "terms": sorted(
+            [[t[f] for f in _FINGERPRINT_TERM_FIELDS] for t in clean_terms],
+            key=lambda row: row[0],
+        ),
+        "memberships": sorted(set(clean_products)),
+        "uncategorized": sorted(set(clean_uncategorized)),
+    }
+    digest = hashlib.sha256(
+        json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return digest
 
 
 def snapshot_status(cursor, env: str) -> List[Dict[str, Any]]:
@@ -172,7 +303,7 @@ def snapshot_status(cursor, env: str) -> List[Dict[str, Any]]:
     cursor.execute(
         """
         SELECT blog_id, blog_path, version, imported_at, imported_by,
-               term_count, membership_count
+               term_count, membership_count, fingerprint
           FROM catmgr.snapshot
          WHERE env = %s
          ORDER BY blog_id
@@ -185,24 +316,17 @@ def snapshot_status(cursor, env: str) -> List[Dict[str, Any]]:
 def import_blog_snapshot(cursor, *, env: str, blog_id: int, blog_path: str,
                          terms: List[Dict[str, Any]],
                          products: List[Dict[str, Any]],
-                         actor: str) -> Dict[str, Any]:
+                         actor: str,
+                         uncategorized: Optional[List[Dict[str, Any]]] = None,
+                         ) -> Dict[str, Any]:
     """Full-replace one (env, blog) snapshot. Caller owns the transaction."""
 
     _require_env(env)
     blog_id = int(blog_id)
-    clean_terms = [_clean_term(t) for t in terms]
-    known_term_ids = {t["term_id"] for t in clean_terms}
-    clean_products = []
-    for row in products:
-        if not isinstance(row, dict):
-            raise ValueError(f"malformed product row: {row!r}")
-        term_id = int(row.get("term_id") or 0)
-        product_id = int(row.get("product_id") or 0)
-        if term_id not in known_term_ids or product_id <= 0:
-            continue  # membership of an unknown term (or junk) is dropped
-        clean_products.append(
-            (term_id, product_id, str(row.get("sku") or "").strip().upper())
-        )
+    clean_terms, clean_products, clean_uncategorized = normalize_export(
+        terms, products, uncategorized,
+    )
+    fingerprint = export_fingerprint(terms, products, uncategorized)
 
     cursor.execute(
         "SELECT version FROM catmgr.snapshot WHERE env=%s AND blog_id=%s FOR UPDATE",
@@ -216,6 +340,10 @@ def import_blog_snapshot(cursor, *, env: str, blog_id: int, blog_path: str,
         (env, blog_id),
     )
     cursor.execute(
+        "DELETE FROM catmgr.wp_uncategorized_product WHERE env=%s AND blog_id=%s",
+        (env, blog_id),
+    )
+    cursor.execute(
         "DELETE FROM catmgr.wp_term WHERE env=%s AND blog_id=%s",
         (env, blog_id),
     )
@@ -225,15 +353,26 @@ def import_blog_snapshot(cursor, *, env: str, blog_id: int, blog_path: str,
             """
             INSERT INTO catmgr.wp_term
                 (env, blog_id, term_id, slug, name, parent_term_id, description,
-                 count, sort_order, thumbnail_id, name_locked, snapshot_version)
+                 count, sort_order, thumbnail_id, name_locked, parked_from,
+                 snapshot_version)
             VALUES %s
             """,
             [
                 (env, blog_id, t["term_id"], t["slug"], t["name"], t["parent"],
                  t["description"], t["count"], t["sort_order"],
-                 t["thumbnail_id"], t["name_locked"], version)
+                 t["thumbnail_id"], t["name_locked"], t["parked_from"], version)
                 for t in clean_terms
             ],
+        )
+    if clean_uncategorized:
+        execute_values(
+            cursor,
+            """
+            INSERT INTO catmgr.wp_uncategorized_product
+                (env, blog_id, product_id, sku, snapshot_version)
+            VALUES %s
+            """,
+            [(env, blog_id, p, sku, version) for p, sku in clean_uncategorized],
         )
     if clean_products:
         execute_values(
@@ -250,18 +389,19 @@ def import_blog_snapshot(cursor, *, env: str, blog_id: int, blog_path: str,
         """
         INSERT INTO catmgr.snapshot AS snapshot
             (env, blog_id, version, blog_path, imported_at, imported_by,
-             term_count, membership_count)
-        VALUES (%s, %s, %s, %s, now(), %s, %s, %s)
+             term_count, membership_count, fingerprint)
+        VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s)
         ON CONFLICT (env, blog_id) DO UPDATE
            SET version = EXCLUDED.version,
                blog_path = EXCLUDED.blog_path,
                imported_at = EXCLUDED.imported_at,
                imported_by = EXCLUDED.imported_by,
                term_count = EXCLUDED.term_count,
-               membership_count = EXCLUDED.membership_count
+               membership_count = EXCLUDED.membership_count,
+               fingerprint = EXCLUDED.fingerprint
         """,
         (env, blog_id, version, str(blog_path or ""), actor[:100],
-         len(clean_terms), len(clean_products)),
+         len(clean_terms), len(clean_products), fingerprint),
     )
     record_audit(
         cursor,
@@ -274,6 +414,8 @@ def import_blog_snapshot(cursor, *, env: str, blog_id: int, blog_path: str,
             "blog_path": str(blog_path or ""),
             "term_count": len(clean_terms),
             "membership_count": len(clean_products),
+            "uncategorized_count": len(clean_uncategorized),
+            "fingerprint": fingerprint,
         },
     )
     return {
@@ -281,4 +423,20 @@ def import_blog_snapshot(cursor, *, env: str, blog_id: int, blog_path: str,
         "version": version,
         "term_count": len(clean_terms),
         "membership_count": len(clean_products),
+        "uncategorized_count": len(clean_uncategorized),
+        "fingerprint": fingerprint,
     }
+
+
+def import_export(cursor, *, env: str, blog_id: int, export: Dict[str, Any],
+                  actor: str) -> Dict[str, Any]:
+    """import_blog_snapshot() straight from a fetch_export() payload."""
+
+    return import_blog_snapshot(
+        cursor, env=env, blog_id=blog_id,
+        blog_path=str(export.get("blog_path") or ""),
+        terms=export.get("terms") or [],
+        products=export.get("products") or [],
+        uncategorized=export.get("uncategorized") or [],
+        actor=actor,
+    )
