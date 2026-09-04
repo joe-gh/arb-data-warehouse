@@ -1020,3 +1020,19 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 .name-save:disabled { opacity: .45; cursor: not-allowed; }
 .cat-action-bar .field { flex: 0 1 auto; }
 .cat-action-bar #cat-map-target { width: 22rem; max-width: 100%; }
+
+/* Header reorganisation (2026-09-04): four calm menus on the left, help and
+   health as quiet utility links on the right. */
+.main-nav__menu--wide { min-width: 17rem; }
+.utility-nav { display: flex; gap: .1rem; }
+.main-nav__link--quiet { padding: .45rem .6rem; color: #a9bbb2; font-weight: 600; }
+.main-nav__link--quiet:hover, .main-nav__link--quiet.is-active { color: #fff; }
+.main-nav__link, .main-nav__trigger, .brand strong, .brand small { white-space: nowrap; }
+@media (max-width: 1500px) {
+  .combobox--header { flex: 1 1 220px; max-width: 260px; }
+  .main-nav { margin-left: .6rem; }
+  .main-nav__link, .main-nav__trigger { padding-inline: .55rem; }
+  .header-actions { gap: .55rem; }
+}
+.main-nav__menu--wide .main-nav__item { display: flex; flex-wrap: wrap; align-items: center; gap: .15rem .45rem; }
+.main-nav__menu--wide .main-nav__item small { flex-basis: 100%; }

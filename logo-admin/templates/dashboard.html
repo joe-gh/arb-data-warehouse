@@ -30,41 +30,51 @@
     </a>
     <nav class="main-nav" aria-label="Sections">
       <button class="main-nav__link" type="button" data-view="dashboard">Dashboard</button>
-      <button class="main-nav__link" type="button" data-view="health">Health</button>
-      <button class="main-nav__link" type="button" data-view="help">Help</button>
       <div class="main-nav__group" data-group="logo,names,colors,bulk">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-logos">Logos<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu" id="nav-menu-logos" role="menu" aria-label="Logos" hidden>
           <button class="main-nav__item" type="button" role="menuitem" data-view="logo">Logo Configuration</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="bulk">Bulk Operations<small>Multi-style jobs: fill missing colors, paste, activate, bulk apply</small></button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="bulk">Bulk Operations</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="names">Logo Names</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="colors">Logo Colors</button>
-          <div class="main-nav__divider" role="separator"></div>
-          <p class="main-nav__section" role="presentation">Logo tools</p>
-          <button id="ownership-button" class="main-nav__item" type="button" role="menuitem">Logo Sync Stores <span class="badge badge--writes">Makes changes</span><small>Turn warehouse logo sync on or off per store</small></button>
-          <button id="audit-button" class="main-nav__item" type="button" role="menuitem" title="Change history - who changed what, and when">Activity Log<small>Who changed what, and when</small></button>
-          <a id="export-link" class="main-nav__item" role="menuitem" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
-          <button id="import-button" class="main-nav__item" type="button" role="menuitem">Import Assignments <span class="badge badge--writes">Makes changes</span><small>Overwrites the assignments listed in the CSV</small></button>
-          <button id="reports-button" class="main-nav__item" type="button" role="menuitem">Import Punch List<small>Review unresolved rows (read-only)</small></button>
-          <button id="legacy-import-button" class="main-nav__item" type="button" role="menuitem">Import Legacy Sheets <span class="badge badge--writes">Makes changes</span><small>Updates every store included in the export file</small></button>
-          <button id="legacy-images-button" class="main-nav__item" type="button" role="menuitem">Mirror Legacy Images <span class="badge badge--global">All stores</span><small>Rewrites every store&rsquo;s logo image links (asks first)</small></button>
+        </div>
+      </div>
+      <div class="main-nav__group" data-group="pricing,prices,blocks,mix,stock">
+        <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-store">Stores<span class="main-nav__caret" aria-hidden="true"></span></button>
+        <div class="main-nav__menu" id="nav-menu-store" role="menu" aria-label="Store setup" hidden>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="pricing">Pricing Levels</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="prices">Price Rules</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="mix">Product Mix</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="blocks">Sync Blocks</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Fake Inventory</button>
         </div>
       </div>
       {% if categories_enabled %}
       <button class="main-nav__link" type="button" data-view="categories">Categories</button>
       {% endif %}
-      <div class="main-nav__group" data-group="pricing,prices,blocks,mix,stock">
-        <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-store">Store Setup<span class="main-nav__caret" aria-hidden="true"></span></button>
-        <div class="main-nav__menu" id="nav-menu-store" role="menu" aria-label="Store setup" hidden>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="pricing">Store Pricing Levels</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="prices">Price Rules</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="blocks">Sync Blocks</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="mix">Product Mix</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Fake Inventory<small>Show styles as always in stock, or use real stock</small></button>
+      <div class="main-nav__group" data-group="">
+        <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-tools">Tools<span class="main-nav__caret" aria-hidden="true"></span></button>
+        <div class="main-nav__menu main-nav__menu--wide" id="nav-menu-tools" role="menu" aria-label="Tools" hidden>
+          <p class="main-nav__section" role="presentation">Logo data</p>
+          <button id="import-button" class="main-nav__item" type="button" role="menuitem">Import Assignments <span class="badge badge--writes">Makes changes</span></button>
+          <a id="export-link" class="main-nav__item" role="menuitem" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
+          <button id="reports-button" class="main-nav__item" type="button" role="menuitem">Import Punch List</button>
+          <div class="main-nav__divider" role="separator"></div>
+          <p class="main-nav__section" role="presentation">Legacy migration</p>
+          <button id="legacy-import-button" class="main-nav__item" type="button" role="menuitem">Import Legacy Sheets <span class="badge badge--writes">Makes changes</span></button>
+          <button id="legacy-images-button" class="main-nav__item" type="button" role="menuitem">Mirror Legacy Images <span class="badge badge--global">All stores</span></button>
+          <div class="main-nav__divider" role="separator"></div>
+          <p class="main-nav__section" role="presentation">Administration</p>
+          <button id="ownership-button" class="main-nav__item" type="button" role="menuitem">Logo Sync Stores <span class="badge badge--writes">Makes changes</span></button>
+          <button id="audit-button" class="main-nav__item" type="button" role="menuitem" title="Change history - who changed what, and when">Activity Log</button>
         </div>
       </div>
     </nav>
     <div class="header-actions">
+      <nav class="utility-nav" aria-label="Help and status">
+        <button class="main-nav__link main-nav__link--quiet" type="button" data-view="health">Health</button>
+        <button class="main-nav__link main-nav__link--quiet" type="button" data-view="help">Help</button>
+      </nav>
       <div class="combobox combobox--header" id="header-store-box">
         <input id="header-store-search" type="search" placeholder="Active store..." autocomplete="off" aria-autocomplete="list" aria-controls="header-store-options" aria-expanded="false" title="Active store - Logo Configuration, Logo Names, and Product Mix follow this selection">
         <input type="hidden" id="header-store-value">
