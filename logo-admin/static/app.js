@@ -6138,7 +6138,7 @@
               }
               return String(cell.getValue() ?? "");
             } },
-          { title: "Products", field: "products", hozAlign: "right", width: 118, headerTooltip: "Products in this category, added up across the stores",
+          { title: "Products", field: "products", hozAlign: "right", width: 118, headerTooltip: "Products attached to this category in the store copies, added up across the stores (any status)",
             formatter: (cell) => {
               const value = Number(cell.getValue() || 0);
               return value ? String(value) : '0 <span class="cat-badge cat-badge--empty" title="No products on any store">empty</span>';

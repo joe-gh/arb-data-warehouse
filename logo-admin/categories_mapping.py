@@ -36,7 +36,15 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
 
     cursor.execute(
         f"""
-        WITH live AS (
+        WITH links AS (
+            -- Products actually attached to each term in the snapshots. The
+            -- WordPress count column is not used: it goes stale and counts
+            -- published products only, while the planner acts on links.
+            SELECT p.blog_id, p.term_id, count(*) AS n
+              FROM catmgr.wp_term_product p
+             WHERE p.env = %s
+             GROUP BY p.blog_id, p.term_id
+        ), live AS (
             -- A term the broker parked on catmgrtmp-<id> is grouped under its
             -- ORIGINAL slug (parked_from): the disposition the operator gave
             -- that slug still applies, so a replan after a refused or crashed
@@ -44,11 +52,12 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
             SELECT {LOGICAL_SLUG_SQL}                   AS slug,
                    count(DISTINCT t.blog_id)             AS blogs,
                    array_agg(DISTINCT t.blog_id ORDER BY t.blog_id) AS blog_ids,
-                   sum(t.count)                          AS products,
+                   COALESCE(sum(l.n), 0)                 AS products,
                    bool_or(t.blog_id = 1)                AS blog1,
                    bool_or(t.parked_from <> '')          AS parked,
                    max(t.name)                           AS sample_name
               FROM catmgr.wp_term t
+              LEFT JOIN links l ON l.blog_id = t.blog_id AND l.term_id = t.term_id
              WHERE t.env = %s
              GROUP BY {LOGICAL_SLUG_SQL}
         )
@@ -90,7 +99,7 @@ def mapping_status(cursor, env: str) -> Dict[str, Any]:
                    AND implicit_extra.override_id IS NULL) DESC,
                   live.blog1 DESC, live.products DESC NULLS LAST, live.slug
         """,
-        (env,),
+        (env, env),
     )
     slugs = [dict(row) for row in cursor.fetchall()]
     summary = {

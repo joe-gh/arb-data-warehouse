@@ -110,17 +110,26 @@ def slug_stats(cursor, env: str, blog_id: Optional[int] = None) -> Dict[str, Dic
     holds (summed over every store, or on one store when blog_id is given).
     Feeds the "N stores · N products" counts and the empty/new badges in the
     Tree tab."""
-    params: List[Any] = [env]
+    params: List[Any] = [env, env]
     where = "t.env = %s"
     if blog_id is not None:
         where += " AND t.blog_id = %s"
         params.append(blog_id)
+    # Products = links actually attached in the snapshots (same source the
+    # planner acts on), not the stale, published-only WordPress count column.
     cursor.execute(
         f"""
+        WITH links AS (
+            SELECT p.blog_id, p.term_id, count(*) AS n
+              FROM catmgr.wp_term_product p
+             WHERE p.env = %s
+             GROUP BY p.blog_id, p.term_id
+        )
         SELECT {LOGICAL_SLUG_SQL} AS slug,
                count(DISTINCT t.blog_id) AS stores,
-               COALESCE(sum(t.count), 0) AS products
+               COALESCE(sum(l.n), 0) AS products
           FROM catmgr.wp_term t
+          LEFT JOIN links l ON l.blog_id = t.blog_id AND l.term_id = t.term_id
          WHERE {where}
          GROUP BY {LOGICAL_SLUG_SQL}
         """,
