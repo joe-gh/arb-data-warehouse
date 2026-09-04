@@ -5915,12 +5915,19 @@
     box.indeterminate = selected > 0 && selected < shown.length;
   }
 
-  function catMapDropHiddenSelection() {
+  function catMapDropHiddenSelection(shownRows) {
     const table = catMapState.table;
     if (!table) return;
-    const shownIds = new Set(catMapShownRows().map((row) => row.getIndex()));
+    // dataFiltered fires before the table's "active" row set is swapped, so
+    // use the rows the event hands over; refresh the counter once it has.
+    const shown = Array.isArray(shownRows) ? shownRows : catMapShownRows();
+    const shownIds = new Set(shown.map((row) => row.getIndex()));
     table.getSelectedRows().forEach((row) => { if (!shownIds.has(row.getIndex())) row.deselect(); });
-    catMapSyncHeaderBox();
+    setTimeout(() => {
+      if (!catMapState.table) return;
+      catMappingSelectionChanged(catMapState.table.getSelectedRows().length);
+      catMapSyncHeaderBox();
+    }, 0);
   }
 
   function catBlogLabel(blogId) {
@@ -6058,7 +6065,7 @@
         ],
       });
       catMapState.table.on("rowSelectionChanged", (data) => { catMappingSelectionChanged(data.length); catMapSyncHeaderBox(); });
-      catMapState.table.on("dataFiltered", () => catMapDropHiddenSelection());
+      catMapState.table.on("dataFiltered", (filters, rows) => catMapDropHiddenSelection(rows));
       $$("#cat-map-quick [data-quick]").forEach((button) => {
         button.addEventListener("click", () => catMapQuickApply(button.dataset.quick));
       });
