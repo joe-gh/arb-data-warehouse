@@ -470,8 +470,16 @@ def _get_product_state(cursor, command, settings):
     return queries.get_product_state(cursor, **_model_arguments(command))
 
 
+def _category_read_allowed(context, settings) -> bool:
+    """The editor's own visibility rule: category data is readable when the
+    feature is on and the login is on CATMGR_VIEW_USERS, or that list is empty."""
+    login = context.user_login.strip().lower()
+    allowed = getattr(settings, "catmgr_view_users", frozenset())
+    return bool(getattr(settings, "catmgr_enabled", False)) and (not allowed or login in allowed)
+
+
 def _get_change_history(cursor, command, settings, *, context):
-    return queries.get_change_history(cursor, **_model_arguments(command), user_login=context.user_login, category_access=context.user_login in settings.catmgr_view_users)
+    return queries.get_change_history(cursor, **_model_arguments(command), user_login=context.user_login, category_access=_category_read_allowed(context, settings))
 
 
 def _get_stock(cursor, command, settings):
@@ -500,7 +508,7 @@ def _get_order_status(cursor, command, settings):
 
 
 def _find_issues(cursor, command, settings, *, context):
-    return queries.find_issues(cursor, **_model_arguments(command), category_access=context.user_login in settings.catmgr_view_users)
+    return queries.find_issues(cursor, **_model_arguments(command), category_access=_category_read_allowed(context, settings))
 
 
 def _explain_product(cursor, command, settings):
@@ -1391,7 +1399,19 @@ def _write_allowed(spec: ToolSpec, write_tools) -> bool:
     return not allowed or spec.name in allowed
 
 
-def agent_tool_schemas(writes_enabled: bool = False, write_tools=None) -> list[dict]:
+def _offered_to(spec: ToolSpec, context, settings) -> bool:
+    """Category tools are listed only for a caller the gate would accept, so
+    the model is never offered a tool that can only answer "Not found"."""
+    if context is None or settings is None or not spec.name.startswith("cat_"):
+        return True
+    try:
+        _assert_read_access(spec.name, context, settings)
+    except UnknownTool:
+        return False
+    return True
+
+
+def agent_tool_schemas(writes_enabled: bool = False, write_tools=None, *, context=None, settings=None) -> list[dict]:
     validate_registry(TOOL_SPECS, writes_enabled=writes_enabled)
     return [
         openai_schema(spec)
@@ -1399,6 +1419,7 @@ def agent_tool_schemas(writes_enabled: bool = False, write_tools=None) -> list[d
         if spec.agent_enabled
         and (spec.kind == "read" or writes_enabled)
         and _write_allowed(spec, write_tools)
+        and _offered_to(spec, context, settings)
     ]
 
 

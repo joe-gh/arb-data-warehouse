@@ -112,8 +112,10 @@ def test_history_merges_actors_sources_filters_and_own_cards(mapped_store):
     assert len(result['rows'])==1 and result['rows'][0]['source']=='logo.audit_log'
     result = _read('get_change_history',{'rule_id':_rule()})
     assert 'woo.price_rule' in {r['source'] for r in result['rows']}
-    result = execute_read_tool('get_change_history',{},AccessContext(USER,USER),SimpleNamespace(catmgr_view_users=frozenset()))
+    result = execute_read_tool('get_change_history',{},AccessContext(USER,USER),SimpleNamespace(catmgr_enabled=True,catmgr_view_users=frozenset({'someone-else'})))
     assert 'catmgr.audit_log' not in {r['source'] for r in result['rows']}
+    result = execute_read_tool('get_change_history',{},AccessContext(USER,USER),SimpleNamespace(catmgr_enabled=True,catmgr_view_users=frozenset()))
+    assert 'catmgr.audit_log' in {r['source'] for r in result['rows']}, 'an empty allow-list means everyone who can see the editor'
     assert _read('get_change_history',{'limit':1})['truncated']
     with pytest.raises(ValidationError):
         _read('get_change_history',{'user_login':'admin-two'})
@@ -210,7 +212,8 @@ def test_category_issues_latest_snapshot_access_and_clean(mapped_store):
     args={'store':'S_TEST','checks':['uncategorized_products']}
     result=_read('find_issues',args)['checks'][0]
     assert result['available'] and result['count']==1
-    assert not execute_read_tool('find_issues',args,AccessContext(USER,USER),SimpleNamespace(catmgr_view_users=frozenset()))['checks'][0]['available']
+    assert not execute_read_tool('find_issues',args,AccessContext(USER,USER),SimpleNamespace(catmgr_enabled=True,catmgr_view_users=frozenset({'someone-else'})))['checks'][0]['available']
+    assert execute_read_tool('find_issues',args,AccessContext(USER,USER),SimpleNamespace(catmgr_enabled=True,catmgr_view_users=frozenset()))['checks'][0]['available']
     _admin("UPDATE catmgr.snapshot SET version=3 WHERE blog_id=%s",(mapped_store,))
     assert _read('find_issues',args)['checks'][0]['count']==0
 

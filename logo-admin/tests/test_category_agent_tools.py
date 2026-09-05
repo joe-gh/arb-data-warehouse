@@ -485,3 +485,16 @@ def test_category_read_routes_validate_inputs_and_permissions(client_as, monkeyp
     monkeypatch.setenv('CATMGR_VIEW_USERS','other');get_settings.cache_clear()
     assert client.get('/api/categories/node-lookup',params={'env':'prod','slug':'x'}).status_code==404
     assert client.get('/api/categories/mapping-rows',params={'env':'prod'}).status_code==404
+
+
+def test_category_tools_are_offered_only_to_callers_the_gate_accepts(monkeypatch):
+    def offered(login):
+        return {s['name'] for s in agent_tool_schemas(writes_enabled=True, context=AccessContext(login, login), settings=get_settings())}
+    names = offered(USER)
+    assert set(TOOLS) <= names and {'cat_tree', 'cat_node_lookup', 'cat_mapping_rows'} <= names
+    outsider = offered('someone-else')
+    assert not any(n.startswith('cat_') for n in outsider) and 'set_logo_name' in outsider
+    monkeypatch.setenv('CATMGR_VIEW_USERS', ''); get_settings.cache_clear()
+    everyone = offered('someone-else')
+    assert 'cat_tree' in everyone and not (set(TOOLS) & everyone), 'an empty allow-list offers category reads but no category writes'
+    assert {s['name'] for s in agent_tool_schemas(writes_enabled=True)} >= set(TOOLS), 'no caller means no filtering (registry checks)'

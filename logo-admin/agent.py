@@ -257,6 +257,8 @@ async def run_turn(
     tools = agent_tool_schemas(
         writes_enabled=writes_enabled,
         write_tools=getattr(settings, "agent_write_tools", None),
+        context=context,
+        settings=settings,
     )
 
     async with (
