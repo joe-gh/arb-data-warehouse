@@ -1079,3 +1079,19 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 .cat-move-item .cat-node__stats { margin-left: 0; }
 .cat-move-empty { padding: .8rem; }
 .cat-move-note { margin: .6rem 0 0; font-size: .85rem; }
+
+/* Assistant replies rendered from markdown */
+.assistant-markdown { display: inline; }
+.assistant-markdown > p { margin: 0 0 .5rem; }
+.assistant-markdown > p:last-child, .assistant-markdown > ul:last-child, .assistant-markdown > ol:last-child { margin-bottom: 0; }
+.assistant-markdown ul, .assistant-markdown ol { margin: .15rem 0 .5rem 1.25rem; padding: 0; }
+.assistant-markdown li { margin: .12rem 0; }
+.assistant-markdown h3, .assistant-markdown h4, .assistant-markdown h5, .assistant-markdown h6 { margin: .5rem 0 .3rem; font-size: .95rem; }
+.assistant-markdown code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; padding: .05rem .3rem; border-radius: 4px; background: rgba(0, 0, 0, .06); }
+.assistant-markdown pre { margin: .4rem 0; padding: .55rem .7rem; border-radius: 6px; background: rgba(0, 0, 0, .06); overflow-x: auto; }
+.assistant-markdown pre code { padding: 0; background: transparent; }
+.assistant-markdown__table { overflow-x: auto; margin: .4rem 0; }
+.assistant-markdown table { border-collapse: collapse; font-size: .85rem; }
+.assistant-markdown th, .assistant-markdown td { padding: .2rem .5rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.assistant-markdown th { background: rgba(0, 0, 0, .04); font-weight: 650; }
+.assistant-markdown a { color: var(--forest-800); text-decoration: underline; }

@@ -2116,11 +2116,152 @@
     return node;
   }
 
+  // Assistant replies arrive as markdown (bold, lists, code, tables). They
+  // are rebuilt from an accumulated buffer so streamed deltas re-render the
+  // whole message. Everything is built with createElement/textContent - no
+  // HTML strings, no URL sinks: links are shown as their label plus address.
+  const assistantMarkdownBuffers = new WeakMap();
+
+  function markdownInline(text) {
+    const fragment = document.createDocumentFragment();
+    const source = String(text ?? "").replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)");
+    const pattern = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*/g;
+    let cursor = 0;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      const [whole, code, bold, italic] = match;
+      if (italic !== undefined) {
+        const before = source[match.index - 1] || " ";
+        const after = source[match.index + whole.length] || " ";
+        if (!/[\s(]/.test(before) || !/[\s.,;:!?)]/.test(after)) {
+          pattern.lastIndex = match.index + 1;
+          continue;
+        }
+      }
+      if (match.index > cursor) fragment.append(document.createTextNode(source.slice(cursor, match.index)));
+      const node = document.createElement(code !== undefined ? "code" : bold !== undefined ? "strong" : "em");
+      node.textContent = code ?? bold ?? italic;
+      fragment.append(node);
+      cursor = match.index + whole.length;
+    }
+    if (cursor < source.length) fragment.append(document.createTextNode(source.slice(cursor)));
+    return fragment;
+  }
+
+  function markdownBlocks(text) {
+    const root = document.createDocumentFragment();
+    const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+    let paragraph = [];
+    let list = null;   // { tag, items }
+    let table = null;  // { header, rows }
+    const isRule = (cells) => cells.every((cell) => /^:?-{2,}:?$/.test(cell));
+    const splitRow = (line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      const node = document.createElement("p");
+      paragraph.forEach((line, index) => {
+        if (index) node.append(document.createElement("br"));
+        node.append(markdownInline(line));
+      });
+      root.append(node);
+      paragraph = [];
+    };
+    const flushList = () => {
+      if (!list) return;
+      const node = document.createElement(list.tag);
+      list.items.forEach((item) => {
+        const li = document.createElement("li");
+        li.append(markdownInline(item));
+        node.append(li);
+      });
+      root.append(node);
+      list = null;
+    };
+    const flushTable = () => {
+      if (!table) return;
+      const wrap = document.createElement("div");
+      wrap.className = "assistant-markdown__table";
+      const node = document.createElement("table");
+      const rowNode = (cells, tag) => {
+        const tr = document.createElement("tr");
+        cells.forEach((cell) => { const td = document.createElement(tag); td.append(markdownInline(cell)); tr.append(td); });
+        return tr;
+      };
+      if (table.header) { const head = document.createElement("thead"); head.append(rowNode(table.header, "th")); node.append(head); }
+      const body = document.createElement("tbody");
+      table.rows.forEach((row) => body.append(rowNode(row, "td")));
+      node.append(body);
+      wrap.append(node);
+      root.append(wrap);
+      table = null;
+    };
+    const flushAll = () => { flushParagraph(); flushList(); flushTable(); };
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (/^\s*```/.test(line)) {
+        flushAll();
+        const block = [];
+        i += 1;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) { block.push(lines[i]); i += 1; }
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = block.join("\n");
+        pre.append(code);
+        root.append(pre);
+        continue;
+      }
+      if (!line.trim()) { flushAll(); continue; }
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+      if (heading) {
+        flushAll();
+        const node = document.createElement(`h${Math.min(6, heading[1].length + 2)}`);
+        node.append(markdownInline(heading[2].trim()));
+        root.append(node);
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(line)) {
+        flushParagraph(); flushList();
+        const cells = splitRow(line);
+        if (!table) table = { header: null, rows: [] };
+        if (isRule(cells)) { if (table.rows.length && !table.header) table.header = table.rows.shift(); continue; }
+        table.rows.push(cells);
+        continue;
+      }
+      flushTable();
+      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+      const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (bullet || numbered) {
+        flushParagraph();
+        const tag = bullet ? "ul" : "ol";
+        if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+        list.items.push((bullet || numbered)[1]);
+        continue;
+      }
+      if (list && /^\s{2,}\S/.test(line)) { list.items[list.items.length - 1] += " " + line.trim(); continue; }
+      flushList();
+      paragraph.push(line.replace(/\s{2,}$/, ""));
+    }
+    flushAll();
+    return root;
+  }
+
   function appendAgentText(container, value) {
-    const node = document.createElement("span");
-    node.textContent = String(value ?? "");
-    container.append(node);
-    return node;
+    if (container.dataset.role !== "assistant") {
+      const node = document.createElement("span");
+      node.textContent = String(value ?? "");
+      container.append(node);
+      return node;
+    }
+    let buffer = assistantMarkdownBuffers.get(container);
+    if (!buffer) {
+      buffer = { text: "", node: document.createElement("div") };
+      buffer.node.className = "assistant-markdown";
+      container.append(buffer.node);
+      assistantMarkdownBuffers.set(container, buffer);
+    }
+    buffer.text += String(value ?? "");
+    buffer.node.replaceChildren(markdownBlocks(buffer.text));
+    return buffer.node;
   }
 
   function appendToolChip(container, toolName) {
@@ -2145,6 +2286,7 @@
     const message = agentNode("div", `assistant-message assistant-message--${role === "user" ? "user" : "assistant"}`);
     const label = agentNode("strong", "assistant-message__label", role === "user" ? "You" : "Assistant");
     const content = agentNode("div", "assistant-message__content");
+    content.dataset.role = role === "user" ? "user" : "assistant";
     if (value) appendAgentText(content, value);
     message.append(label, content);
     container.append(message);
