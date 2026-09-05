@@ -1450,16 +1450,14 @@ def _run_read_handler(spec, cursor, command, settings, context):
 
 
 def _assert_read_access(name, context, settings):
-    """Category reads follow the editor's own visibility rule (an empty
-    CATMGR_VIEW_USERS means everyone who can see the editor). Category writes
-    are stricter: the login must be on a non-empty allow-list."""
+    """Category tools, reads and writes alike, follow the editor's own
+    visibility rule: everyone who can open the app when CATMGR_VIEW_USERS is
+    empty, otherwise only the logins listed."""
     if not name.startswith("cat_"):
         return
     login = context.user_login.strip().lower()
     allowed = settings.catmgr_view_users
     if not settings.catmgr_enabled or (allowed and login not in allowed):
-        raise UnknownTool("Not found")
-    if name in APPROVED_AGENT_WRITE_NAMES and not allowed:
         raise UnknownTool("Not found")
 
 

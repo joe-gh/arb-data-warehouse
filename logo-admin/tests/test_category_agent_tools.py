@@ -189,17 +189,19 @@ def test_finished_runs_do_not_block_and_the_fence_message_names_the_run():
         stage('cat_create_category', {'name':'Another'})
 
 
-def test_empty_view_allowlist_denies_writes_but_keeps_reads(monkeypatch):
+def test_empty_view_allowlist_means_everyone_for_reads_and_writes(monkeypatch):
     monkeypatch.setenv('CATMGR_VIEW_USERS', '')
     get_settings.cache_clear()
     node('Root')
     before = state()
+    staged = stage('cat_create_category', {'name':'New'})
+    assert staged['preview_diff']['count'] > 0 and state() == before
+    assert execute_read_tool('cat_tree', {'env':'prod'}, AccessContext('anyone-else','anyone-else'), get_settings())
+    monkeypatch.setenv('CATMGR_VIEW_USERS', 'someone-else')
+    get_settings.cache_clear()
     with pytest.raises(UnknownTool):
-        stage('cat_create_category', {'name':'New'})
-    with pytest.raises(UnknownTool):
-        execute_agent_tool('cat_create_category', {'env':'prod','name':'New'}, AccessContext(USER,USER), get_settings(), session_id=_session(), call_id='empty-list')
+        stage('cat_create_category', {'name':'Another'})
     assert state() == before
-    assert execute_read_tool('cat_tree', {'env':'prod'}, AccessContext(USER,USER), get_settings())
 
 
 @pytest.mark.parametrize('kind,table,key', [
@@ -496,5 +498,5 @@ def test_category_tools_are_offered_only_to_callers_the_gate_accepts(monkeypatch
     assert not any(n.startswith('cat_') for n in outsider) and 'set_logo_name' in outsider
     monkeypatch.setenv('CATMGR_VIEW_USERS', ''); get_settings.cache_clear()
     everyone = offered('someone-else')
-    assert 'cat_tree' in everyone and not (set(TOOLS) & everyone), 'an empty allow-list offers category reads but no category writes'
+    assert 'cat_tree' in everyone and set(TOOLS) <= everyone, 'an empty allow-list offers every category tool to everyone'
     assert {s['name'] for s in agent_tool_schemas(writes_enabled=True)} >= set(TOOLS), 'no caller means no filtering (registry checks)'
