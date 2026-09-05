@@ -122,5 +122,5 @@ def test_chat_request_sanitizes_context_instead_of_rejecting():
 def test_write_mode_explains_spreadsheet_attachments():
     staged = agent_prompt.build_instructions(writes_enabled=True)
     read_only = agent_prompt.build_instructions(writes_enabled=False)
-    assert "Attach\nCSV/XLSX" in staged and "mapping" in staged and "up to 500 rows" in staged
+    assert "Attach\nCSV/XLSX" in staged and "mapping" in staged and "Up to 2,000 rows" in staged
     assert "Attach\nCSV/XLSX" not in read_only     # uploads are refused while writes are off

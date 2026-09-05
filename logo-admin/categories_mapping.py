@@ -385,7 +385,7 @@ def list_rules(cursor, node_id: Optional[int] = None) -> List[Dict[str, Any]]:
 
 def set_rule(cursor, *, node_id: int, spec: Any, priority: int = 0,
              note: str = "", rule_id: Optional[int] = None,
-             actor: str) -> Dict[str, Any]:
+             actor: str, reserved_id: Optional[int] = None) -> Dict[str, Any]:
     from psycopg2.extras import Json
 
     lock_draft(cursor)
@@ -397,10 +397,11 @@ def set_rule(cursor, *, node_id: int, spec: Any, priority: int = 0,
         cursor.execute(
             """
             INSERT INTO catmgr.assignment_rule
-                (node_id, spec, priority, note, updated_by)
-            VALUES (%s, %s, %s, %s, %s) RETURNING rule_id
+                (rule_id, node_id, spec, priority, note, updated_by)
+            OVERRIDING SYSTEM VALUE
+            VALUES (COALESCE(%s, nextval('catmgr.assignment_rule_rule_id_seq')), %s, %s, %s, %s, %s) RETURNING rule_id
             """,
-            (node_id, Json(clean), int(priority), str(note or ""), actor[:100]),
+            (reserved_id, node_id, Json(clean), int(priority), str(note or ""), actor[:100]),
         )
         rule_id = cursor.fetchone()["rule_id"]
     else:
@@ -510,7 +511,7 @@ def list_assignments(cursor, node_id: int) -> List[Dict[str, Any]]:
 
 def set_assignments(cursor, *, node_id: int, skus: List[str], mode: str,
                     source: str = "manual", note: str = "",
-                    actor: str) -> Dict[str, Any]:
+                    actor: str, reserved_ids: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     lock_draft(cursor)
     if mode not in ("add", "remove"):
         raise DraftError("mode must be add or remove")
@@ -533,14 +534,16 @@ def set_assignments(cursor, *, node_id: int, skus: List[str], mode: str,
         cursor,
         """
         INSERT INTO catmgr.product_assignment
-            (node_id, sku, mode, source, note, added_by)
+            (id, node_id, sku, mode, source, note, added_by)
+        OVERRIDING SYSTEM VALUE
         VALUES %s
         ON CONFLICT (node_id, sku, mode) DO UPDATE
            SET source = EXCLUDED.source, note = EXCLUDED.note,
                added_by = EXCLUDED.added_by, added_at = now()
         """,
-        [(node_id, sku, mode, source, str(note or ""), actor[:100])
+        [(None if reserved_ids is None else reserved_ids[sku], node_id, sku, mode, source, str(note or ""), actor[:100])
          for sku in clean],
+        template="(COALESCE(%s, nextval('catmgr.product_assignment_id_seq')), %s, %s, %s, %s, %s, %s)",
     )
     record_audit(cursor, actor=actor, action="assignments_set",
                  entity="assignment", entity_key=str(node_id),

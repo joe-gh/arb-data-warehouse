@@ -4,9 +4,9 @@ Field descriptions are part of the JSON schema the model sees, so they double
 as the parameter documentation for every read tool.
 """
 
-from typing import Optional, Annotated
+from typing import List, Union, Optional, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 STORE = "Store code such as S_032813 (resolve a store NAME with list_stores first)."
 STYLE = "Product style code exactly as the catalog uses it, e.g. 246, 460510 or IS-WS203HV."
@@ -202,6 +202,31 @@ class GetHealthOverviewCommand(ReadCommand):
     pass
 
 
+class CatNodeLookupCommand(ReadCommand):
+    env: str = Field(min_length=3, max_length=8, description="Configured environment of the copy of live categories.")
+    slug: Optional[str] = Field(default=None, min_length=1, max_length=200, description="Exact category web address; supply either slug or path.")
+    path: Optional[str] = Field(default=None, min_length=1, max_length=2048, description="Exact full category path, separated with / or ›; supply either slug or path.")
+
+    @model_validator(mode="after")
+    def one_target(self):
+        if (self.slug is None) == (self.path is None):
+            raise ValueError("Supply exactly one category slug or path")
+        return self
+
+
+class CatMappingRowsCommand(ReadCommand):
+    env: str = Field(min_length=3, max_length=8, description="Configured environment of the copy of live categories.")
+    filter: Union[Literal["undecided", "empty", "store_only"], List[Annotated[str, Field(min_length=1, max_length=200)]]] = Field(description="Which decisions to inspect: undecided, empty, store_only, or 1-200 exact old slugs.")
+    limit: int = Field(default=100, ge=1, le=200, description="Maximum decision rows returned, at most 200.")
+    offset: int = Field(default=0, ge=0, le=100000, description="Number of matching decision rows to skip for bounded paging.")
+
+    @model_validator(mode="after")
+    def bounded_slugs(self):
+        if isinstance(self.filter, list) and not 1 <= len(self.filter) <= 200:
+            raise ValueError("Supply 1-200 old slugs")
+        return self
+
+
 class CatTreeCommand(ReadCommand):
     env: str = Field(min_length=3, max_length=8, description="Configured category snapshot environment.")
     limit: int = Field(default=200, ge=1, le=500, description="Maximum paths returned.")
@@ -222,3 +247,76 @@ class CatRunsCommand(ReadCommand):
     env: Optional[str] = Field(default=None, min_length=3, max_length=8, description="Optional category environment filter.")
     run_id: Optional[int] = Field(default=None, ge=1, description="Optional run id whose jobs to summarize.")
     limit: int = Field(default=50, ge=1, le=200, description="Maximum runs and per-store jobs returned.")
+
+
+class GetProductStateCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    style: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Style code; supply either style or SKU.")
+    sku: Optional[str] = Field(default=None, min_length=1, max_length=100, description="SKU whose parent and sibling variations to return; supply either SKU or style.")
+    limit: int = Field(default=500, ge=1, le=500, description="Maximum product rows, including parents.")
+
+    @model_validator(mode="after")
+    def one_product(self):
+        if (self.style is None) == (self.sku is None):
+            raise ValueError("Supply exactly one of style or sku")
+        return self
+
+
+class GetChangeHistoryCommand(ReadCommand):
+    store: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional store code.")
+    style: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional style code.")
+    logo_code: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional logo code.")
+    rule_id: Optional[int] = Field(default=None, ge=1, description="Optional price rule id.")
+    since_days: int = Field(default=7, ge=1, le=90, description="Days of history to search, up to 90.")
+    actor: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional actor login, including an agent: prefix where recorded.")
+    limit: int = Field(default=100, ge=1, le=300, description="Maximum changes, newest first.")
+
+
+class GetStockCommand(ReadCommand):
+    style: str = Field(min_length=1, max_length=100, description=STYLE)
+    color_code: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional garment color code.")
+    size_code: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional size code.")
+
+
+class AuditStorePricesCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum changes, ordered by absolute price difference.")
+
+
+class WpProductCheckCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    style: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Style code; supply either style or SKU.")
+    sku: Optional[str] = Field(default=None, min_length=1, max_length=100, description="WordPress SKU; supply either SKU or style.")
+
+    @model_validator(mode="after")
+    def one_product(self):
+        if (self.style is None) == (self.sku is None):
+            raise ValueError("Supply exactly one of style or sku")
+        return self
+
+
+class WpStoreCheckCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+
+
+class GetOrderStatusCommand(ReadCommand):
+    store: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Store code; supply either store or blog_id.")
+    blog_id: Optional[int] = Field(default=None, ge=1, description="WordPress site number; supply either blog_id or store.")
+    order_id: int = Field(ge=1, description="Order number within the selected WordPress site.")
+
+    @model_validator(mode="after")
+    def one_store(self):
+        if (self.store is None) == (self.blog_id is None):
+            raise ValueError("Supply exactly one of store or blog_id")
+        return self
+
+
+class FindIssuesCommand(ReadCommand):
+    store: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional store code; required for WordPress comparisons.")
+    checks: Optional[list[Annotated[str, Field(pattern="^(no_logos|colors_unclassified|rules_expiring|stores_frozen|stock_overrides_stale|uncategorized_products|wordpress_mismatch)$")]]] = Field(default=None, min_length=1, max_length=7, description="Checks to run; null runs all checks. Category data requires category access.")
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum examples per check.")
+
+
+class ExplainProductCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    style: str = Field(min_length=1, max_length=100, description=STYLE)

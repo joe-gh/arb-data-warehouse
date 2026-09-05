@@ -81,3 +81,38 @@ def sync_status_report(cursor, store: Optional[str] = None) -> Dict[str, Any]:
     if result.get("store"):
         result["logo_sync_ownership"] = store_ownership(result["store"])
     return result
+
+
+def wp_diag_product(blog_id, *, style=None, sku=None):
+    """Read bounded WordPress product diagnostics using the sync account."""
+    params = {"blog_id": blog_id, "style": style, "sku": sku}
+    query = urlencode({key: value for key, value in params.items() if value is not None})
+    return wp_admin_call(f"/diag/product?{query}", method="GET", timeout=min(get_settings().wp_http_timeout, 10))
+
+
+def wp_diag_category(blog_id, *, slug):
+    """Read bounded WordPress category diagnostics using the sync account."""
+    params = {"blog_id": blog_id, "slug": slug}
+    query = urlencode({key: value for key, value in params.items() if value is not None})
+    return wp_admin_call(f"/diag/category?{query}", method="GET", timeout=min(get_settings().wp_http_timeout, 10))
+
+
+def wp_diag_store(blog_id):
+    """Read bounded WordPress store diagnostics using the sync account."""
+    params = {"blog_id": blog_id}
+    query = urlencode({key: value for key, value in params.items() if value is not None})
+    return wp_admin_call(f"/diag/store?{query}", method="GET", timeout=min(get_settings().wp_http_timeout, 10))
+
+
+def wp_diag_sync_log(blog_id, *, limit=20):
+    """Read the store's most recent product-sync summary; the site keeps no per-store history."""
+    params = {"blog_id": blog_id, "limit": limit}
+    query = urlencode({key: value for key, value in params.items() if value is not None})
+    return wp_admin_call(f"/diag/sync-log?{query}", method="GET", timeout=min(get_settings().wp_http_timeout, 10))
+
+
+def wp_diag_order(blog_id, *, order_id):
+    """Read bounded WordPress order diagnostics using the sync account."""
+    params = {"blog_id": blog_id, "order_id": order_id}
+    query = urlencode({key: value for key, value in params.items() if value is not None})
+    return wp_admin_call(f"/diag/order?{query}", method="GET", timeout=min(get_settings().wp_http_timeout, 10))

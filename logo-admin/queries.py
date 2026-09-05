@@ -3,6 +3,7 @@
 import datetime
 import mix_service
 import html
+import logging
 import re
 import threading
 import time
@@ -130,6 +131,31 @@ def _optional(value: Any, field: str, maximum: int = 100) -> str:
 
 def _like(value: str) -> str:
     return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+_log = logging.getLogger(__name__)
+
+_TIMEOUT_UNITS = {"us": 0.000001, "ms": 0.001, "s": 1.0, "min": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def _timeout_seconds(setting) -> Optional[float]:
+    """Seconds for a statement_timeout setting; None when it is off or unreadable."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([a-z]*)", str(setting or "").strip().lower())
+    if not match:
+        return None
+    value, unit = float(match.group(1)), match.group(2) or "ms"
+    if value == 0 or unit not in _TIMEOUT_UNITS:
+        return None
+    return value * _TIMEOUT_UNITS[unit]
+
+
+def _bound_statement_timeout(cursor, seconds: int) -> None:
+    """Cap the transaction's statement timeout at `seconds`, never loosening a
+    tighter bound an enclosing section (explain_product, find_issues) set."""
+    cursor.execute("SELECT current_setting('statement_timeout') AS timeout")
+    current = _timeout_seconds(cursor.fetchone()["timeout"])
+    if current is None or current > seconds:
+        cursor.execute("SELECT set_config('statement_timeout', %s, true)", (f"{int(seconds)}s",))
 
 
 def _catalog_for_store(cursor, store: str) -> Optional[str]:
@@ -2269,7 +2295,7 @@ def list_price_rule_dimensions(cursor) -> dict:
 def check_price_rules(cursor, *, store: str, style: str) -> dict:
     store_v = _clean(store, "store").upper()
     style_v = _clean(style, "style").upper()
-    cursor.execute("SET LOCAL statement_timeout = '30s'")
+    _bound_statement_timeout(cursor, 30)
     cursor.execute(
         """
         SELECT s.sku, s.color, s.size,
@@ -2521,6 +2547,51 @@ def _bounded_category_value(value, limit):
     return value
 
 
+def cat_node_lookup(cursor, *, env: str, slug: Optional[str] = None, path: Optional[str] = None) -> dict:
+    import categories_draft
+    from commands import CatCategoryTarget
+    from mutations import _category_target
+    _category_env(env)
+    node_id = _category_target(cursor, CatCategoryTarget(slug=slug, path=path))
+    node = categories_draft._node(cursor, node_id)
+    parts, seen, current = [], set(), node
+    while current and current['node_id'] not in seen:
+        seen.add(current['node_id'])
+        parts.append(current['name'])
+        current = categories_draft._node(cursor, current['parent_id']) if current['parent_id'] else None
+    stats = categories_draft.slug_stats(cursor, env).get(node['slug'], {'stores': 0, 'products': 0})
+    result = {**node, 'path': ' / '.join(reversed(parts)), **stats}
+    bounded = _bounded_category_value(result, 200)
+    return {'env': env, 'node': bounded, 'truncated': bounded != result}
+
+
+def cat_mapping_rows(cursor, *, env: str, filter, limit: int = 100, offset: int = 0) -> dict:
+    import categories_mapping
+    _category_env(env)
+    if not 1 <= limit <= 200 or not 0 <= offset <= 100000:
+        raise QueryValidationError('Category decision paging is out of bounds')
+    if isinstance(filter, list):
+        if not 1 <= len(filter) <= 200 or any(not isinstance(s, str) or not s.strip() or len(s) > 200 for s in filter):
+            raise QueryValidationError('Supply 1-200 exact old slugs')
+        selected = {s.strip() for s in filter}
+        accept = lambda r: r['old_slug'] in selected
+    elif filter == 'undecided':
+        accept = lambda r: not r['action']
+    elif filter == 'empty':
+        accept = lambda r: not r['products']
+    elif filter == 'store_only':
+        accept = lambda r: r['action'] == 'store_custom'
+    else:
+        raise QueryValidationError('Unknown category decision filter')
+    rows = [r for r in categories_mapping.mapping_status(cursor, env)['slugs'] if accept(r)]
+    page = rows[offset:offset + limit]
+    bounded = _bounded_category_value(page, 200)
+    more = offset + len(page) < len(rows)
+    return {'env': env, 'rows': bounded, 'total': len(rows), 'offset': offset,
+            'next_offset': offset + len(page) if more else None,
+            'truncated': more or bounded != page}
+
+
 def cat_tree(cursor, *, env: str, limit: int = 200) -> dict:
     import categories_draft
     _category_env(env)
@@ -2590,3 +2661,489 @@ def cat_runs(cursor, *, env: Optional[str] = None, run_id: Optional[int] = None,
         result["run"]["job_count"] = len(jobs)
         result["truncated"] = result["truncated"] or len(jobs) > limit
     return _bounded_category_value(result, limit)
+
+
+def _ops_result(rows, truncated=False, byte_truncated=False, **values):
+    return {**values, "rows": rows, "truncated": truncated or byte_truncated,
+            "truncation": {"rows": truncated, "bytes": byte_truncated}}
+
+
+def get_product_state(cursor, *, store, style=None, sku=None, limit=500):
+    """Projected parent and sibling variations, including inactive rows."""
+    store = _clean(store, "store").upper()
+    if (style is None) == (sku is None):
+        raise QueryValidationError("Supply exactly one of style or sku")
+    limit = max(1, min(int(limit), 500))
+    catalog = _catalog_for_store(cursor, store)
+    if catalog is None:
+        raise QueryNotFound("Store not found")
+    _bound_statement_timeout(cursor, 15)
+    if sku is not None:
+        cursor.execute("SELECT style_code FROM woo.store_product_state WHERE fdm4_store=%s AND catalog_id=%s AND sku=%s LIMIT 1",
+                       (store, catalog, _clean(sku, "sku")))
+        matched = cursor.fetchone()
+        if not matched:
+            raise QueryNotFound("Product not found")
+        style = matched["style_code"]
+    style = _clean(style, "style").upper()
+    where = "fdm4_store=%s AND catalog_id=%s AND upper(btrim(style_code))=%s"
+    cursor.execute(f"""SELECT count(*) AS total,
+        count(*) FILTER (WHERE kind='variation') AS variations,
+        count(*) FILTER (WHERE kind='variation' AND stock>0) AS in_stock,
+        count(*) FILTER (WHERE kind='variation' AND is_active) AS active
+        FROM woo.store_product_state WHERE {where}""", (store, catalog, style))
+    totals = dict(cursor.fetchone())
+    if not totals["total"]:
+        raise QueryNotFound("Product not found")
+    text_fields = ("sku", "kind", "style_code", "name", "status", "color_code", "color", "size_code", "size",
+                   "web_active", "item_status", "brand", "category", "design_id", "mill_code")
+    projection = ", ".join(f"left({field}, 1024) AS {field}" for field in text_fields)
+    rows, truncated, byte_truncated = _bounded_query(cursor, f"""
+        SELECT {projection}, price, base_price, price_levels, stock, is_active, refreshed_at, changed_at
+        FROM woo.store_product_state WHERE {where}
+        ORDER BY CASE WHEN kind='parent' THEN 0 ELSE 1 END, color, size, sku LIMIT %s
+    """, (store, catalog, style, limit + 1), limit)
+    rows = _bounded_category_value(rows, 500)
+    return _ops_result(rows, truncated, byte_truncated, found=True, store=store, style=style, totals=totals,
+                       parent=next((r for r in rows if r["kind"] == "parent"), None),
+                       variations=[r for r in rows if r["kind"] == "variation"])
+
+
+def get_change_history(cursor, *, user_login, category_access=False, store=None, style=None,
+                       logo_code=None, rule_id=None, since_days=7, actor=None, limit=100):
+    """Audit actors are public to operators; change-set cards remain owner scoped."""
+    login = _clean(user_login, "user_login").lower()
+    limit = max(1, min(int(limit), 300))
+    _bound_statement_timeout(cursor, 20)
+    params = {"login": login, "store": _optional(store, "store").upper(),
+              "style": _optional(style, "style").upper(), "logo": _optional(logo_code, "logo_code").upper(),
+              "rule": str(rule_id) if rule_id is not None else "", "actor": _optional(actor, "actor"),
+              "days": max(1, min(int(since_days), 90)), "lim": limit + 1}
+    # The payload is used only for exact scope filters; it is never returned.
+    sources = """
+        SELECT at, 'logo.audit_log' AS source, actor, action, fdm4_store AS store,
+               product_style AS style, NULL::text AS change_set_id, NULL::bigint AS batch_id,
+               to_jsonb(a) AS payload, id::text AS source_id, action AS label FROM logo.audit_log a
+        UNION ALL
+        SELECT created_at, 'logo.bulk_batch', created_by, 'bulk_applied',
+               fdm4_store, '', NULL, batch_id, to_jsonb(b), batch_id::text || ':applied',
+               'Bulk logo applied' || coalesce(' ' || logo_code,'') FROM logo.bulk_batch b
+        UNION ALL
+        SELECT undone_at, 'logo.bulk_batch', created_by, 'bulk_undone',
+               fdm4_store, '', NULL, batch_id, to_jsonb(b), batch_id::text || ':undone',
+               'Bulk logo undone' || coalesce(' ' || logo_code,'') FROM logo.bulk_batch b WHERE undone_at IS NOT NULL
+        UNION ALL
+        SELECT c.updated_at, 'logo.agent_change_set', c.user_login, c.status,
+               coalesce(i.arguments->>'store', i.arguments->>'fdm4_store',''),
+               coalesce(i.arguments->>'style',i.arguments->>'product_style',i.arguments->>'style_code',''),
+               c.id::text, NULL, i.arguments, c.id::text || ':' || coalesce(i.sort_order::text,''), c.status || ' ' || coalesce(replace(i.tool_name,'_',' '),'change set')
+          FROM logo.agent_change_set c LEFT JOIN logo.agent_change_set_item i
+            ON i.change_set_id=c.id AND i.user_login=c.user_login
+         WHERE c.user_login=%(login)s
+        UNION ALL
+        SELECT updated_at, 'woo.price_rule', updated_by, 'price_rule_updated', '', '',
+               NULL, NULL, to_jsonb(p), rule_id::text, 'Price rule updated: ' || name FROM woo.price_rule p
+        UNION ALL
+        SELECT updated_at, 'woo.sync_exclusion', updated_by, 'sync_block_updated',
+               fdm4_store, style_code, NULL, NULL, to_jsonb(e), fdm4_store || ':' || style_code, CASE WHEN active THEN 'Sync freeze set: ' ELSE 'Sync freeze disabled: ' END || scope
+          FROM woo.sync_exclusion e
+    """
+    if category_access:
+        sources += """ UNION ALL SELECT at, 'catmgr.audit_log', actor, action,
+            coalesce(detail->>'fdm4_store',detail->>'store',''), coalesce(detail->>'style',''),
+            NULL, NULL, to_jsonb(a), id::text, action || ' ' || entity || ' ' || entity_key FROM catmgr.audit_log a"""
+    def json_match(keys, param):
+        return " OR ".join(
+            f"jsonb_path_exists(payload, '$.**.{key} ? (@ == $value)', jsonb_build_object('value', %({param})s::text))"
+            for key in keys)
+    filters = ["at >= now() - %(days)s * interval '1 day'", "(%(actor)s='' OR actor=%(actor)s)",
+        "(%(store)s='' OR store=%(store)s OR " + json_match(("store", "fdm4_store", "stores[*]"), "store") + " OR (source='catmgr.audit_log' AND EXISTS (SELECT 1 FROM woo.store_blog_map m WHERE m.fdm4_store=%(store)s AND (payload->'detail'->>'blog_id'=m.blog_id::text OR (payload->>'entity' IN ('snapshot','draft') AND split_part(payload->>'entity_key',':',1) IN ('dev','prod') AND split_part(payload->>'entity_key',':',2)=m.blog_id::text)))))",
+        "(%(style)s='' OR style=%(style)s OR " + json_match(("style", "style_code", "product_style", "styles[*]", "style_codes[*]"), "style") + " OR (source='logo.bulk_batch' AND EXISTS (SELECT 1 FROM logo.bulk_batch_row r WHERE r.batch_id=history.batch_id AND r.product_style=%(style)s)))",
+        "(%(logo)s='' OR " + json_match(("logo_code", "logo_code.from", "logo_code.to"), "logo") + ")",
+        "(%(rule)s='' OR payload->>'rule_id'=%(rule)s OR payload->'detail'->>'rule_id'=%(rule)s)"]
+    filters[2] = filters[2][:-1] + """ OR (source='woo.price_rule'
+        AND ((coalesce(payload->'stores','null'::jsonb) IN ('null'::jsonb,'[]'::jsonb)
+              AND coalesce(payload->'store_tiers','null'::jsonb) IN ('null'::jsonb,'[]'::jsonb))
+             OR EXISTS(SELECT 1 FROM woo.store_pricing_tier t WHERE t.fdm4_store=%(store)s AND payload->'store_tiers' ? t.tier_name))
+        AND NOT coalesce(payload->'excl_stores' ? %(store)s,false)))"""
+    filters[3] = filters[3][:-1] + """ OR (source='woo.price_rule'
+        AND coalesce(payload->'styles','null'::jsonb) IN ('null'::jsonb,'[]'::jsonb)
+        AND NOT coalesce(payload->'excl_styles' ? %(style)s,false)))"""
+    filters.append("(%(store)s='' OR source<>'woo.price_rule' OR NOT coalesce(payload->'excl_stores' ? %(store)s,false))")
+    filters.append("(%(style)s='' OR source<>'woo.price_rule' OR NOT coalesce(payload->'excl_styles' ? %(style)s,false))")
+    cte = "WITH history AS (" + sources + "), matched AS (SELECT * FROM history WHERE " + " AND ".join(filters) + ") "
+    rows, truncated, byte_truncated = _bounded_query(cursor, cte + """
+        SELECT at, source, left(coalesce(actor,''),100) AS actor, left(action,100) AS action,
+               left(store,100) AS store, left(style,100) AS style, change_set_id, batch_id,
+               left(replace(label,'_',' ') || CASE WHEN store<>'' THEN ' on ' || store ELSE '' END
+                    || CASE WHEN style<>'' THEN ' / ' || style ELSE '' END, 1024) AS what
+          FROM matched ORDER BY at DESC, source, source_id DESC LIMIT %(lim)s
+    """, params, limit)
+    actors, actor_truncated, actor_bytes = _bounded_query(cursor, cte + """
+        SELECT left(coalesce(actor,''),100) AS actor, count(*) AS count
+          FROM matched GROUP BY actor ORDER BY count(*) DESC, actor LIMIT 301
+    """, params, 300)
+    return _ops_result(rows, truncated or actor_truncated, byte_truncated or actor_bytes,
+                       actors=actors, since_days=params["days"])
+
+
+def get_stock(cursor, *, style, color_code=None, size_code=None):
+    style = _clean(style, "style").upper()
+    _bound_statement_timeout(cursor, 15)
+    rows, truncated, byte_truncated = _bounded_query(cursor, """
+        SELECT left(i."item-number",100) AS item_number, left(i."upc-code",100) AS sku,
+               left(i."style-code",100) AS style, left(i."color-code",100) AS color_code,
+               left(i."size-code",100) AS size_code, left(b.warehouse,100) AS warehouse,
+               left(b."web-active",100) AS web_active,
+               coalesce(nullif(b."inv-bal",'')::numeric,0) AS inv_bal,
+               coalesce(nullif(b.committed,'')::numeric,0) AS committed,
+               left(b.allocated,100) AS allocated, left(b."on-order",100) AS on_order,
+               left(b.backordered,100) AS backordered,
+               greatest(0,coalesce(nullif(b."inv-bal",'')::numeric,0)
+                         - coalesce(nullif(b.committed,'')::numeric,0)) AS warehouse_available,
+               sum(greatest(0,coalesce(nullif(b."inv-bal",'')::numeric,0)
+                         - coalesce(nullif(b.committed,'')::numeric,0)))
+                   OVER (PARTITION BY i."item-number") AS available
+          FROM fdm4.item i JOIN fdm4."inv-balance" b ON b."item-number"=i."item-number"
+         WHERE upper(btrim(i."style-code"))=%s AND nullif(i."upc-code",'') IS NOT NULL
+           AND (%s='' OR i."color-code"=%s) AND (%s='' OR i."size-code"=%s)
+         ORDER BY i."color-code", i."size-code", i."item-number", b.warehouse LIMIT 201
+    """, (style, _optional(color_code,"color_code"), _optional(color_code,"color_code"),
+           _optional(size_code,"size_code"), _optional(size_code,"size_code")), 200)
+    if not rows and not byte_truncated:
+        raise QueryNotFound("Stock not found")
+    return _ops_result(rows, truncated, byte_truncated, found=True, style=style)
+
+
+def audit_store_prices(cursor, *, store, limit=50):
+    store = _clean(store, "store").upper()
+    limit = max(1, min(int(limit),200))
+    if _catalog_for_store(cursor,store) is None:
+        raise QueryNotFound("Store not found")
+    cursor.execute("SET LOCAL statement_timeout = '120s'")
+    cte = """WITH cand AS MATERIALIZED (
+        SELECT s.sku, s.style_code, s.color, s.size, s.fdm4_store, s.brand, s.category,
+               coalesce(s.base_price,s.price) AS before_price, s.price_levels, s.def_cost
+          FROM woo.store_product_state s WHERE s.fdm4_store=%s
+           AND s.is_active AND s.kind='variation' AND s.price IS NOT NULL
+         ORDER BY s.fdm4_store,s.style_code,s.sku LIMIT 50001
+        ), hits AS MATERIALIZED (
+        SELECT c.*, rp.final_price AS after_price, rp.applied_rule_ids
+          FROM cand c CROSS JOIN LATERAL woo.eval_price_rules(
+               c.fdm4_store,c.style_code,c.brand,c.category,c.before_price,
+               c.price_levels,c.def_cost,current_date,NULL,NULL) rp)
+    """
+    cursor.execute(cte + """SELECT count(*) AS evaluated,
+        count(*) FILTER (WHERE after_price<>before_price) AS changed FROM hits""", (store,))
+    summary = dict(cursor.fetchone())
+    sample, truncated, byte_truncated = _bounded_query(cursor, cte + """
+        SELECT left(sku,100) AS sku, left(style_code,100) AS style_code,
+               left(color,100) AS color, left(size,100) AS size, before_price, after_price,
+               after_price-before_price AS delta, applied_rule_ids
+          FROM hits WHERE after_price<>before_price
+         ORDER BY abs(after_price-before_price) DESC,sku LIMIT %s
+    """, (store,limit+1),limit)
+    per_rule, rule_truncated, rule_bytes = _bounded_query(cursor, cte + """
+        SELECT rid AS rule_id,left(p.name,1024) AS name,count(*) AS affected
+          FROM hits CROSS JOIN LATERAL unnest(applied_rule_ids) rid
+          JOIN woo.price_rule p ON p.rule_id=rid
+         GROUP BY rid,p.name ORDER BY rid LIMIT 501
+    """,(store,),500)
+    cursor.execute("SELECT 1 FROM woo.sync_exclusion WHERE fdm4_store=%s AND style_code='' AND active LIMIT 1",(store,))
+    frozen = cursor.fetchone() is not None
+    summary["truncated"] = summary["evaluated"] >= 50001
+    return _ops_result(sample, truncated or rule_truncated or summary["truncated"], byte_truncated or rule_bytes,
+                       store=store, summary=summary, per_rule=per_rule, sample=sample, frozen=frozen,
+                       rule_names={str(r["rule_id"]):r["name"] for r in per_rule})
+
+
+def _wp_blog(cursor, store):
+    store = _clean(store,"store").upper()
+    cursor.execute("SELECT blog_id FROM woo.store_blog_map WHERE fdm4_store=%s ORDER BY blog_id LIMIT 2",(store,))
+    rows = cursor.fetchall()
+    if len(rows) != 1:
+        raise QueryNotFound("Store must map to exactly one WordPress site")
+    return int(rows[0]["blog_id"])
+
+
+def _wp_mapped_blog(cursor, blog_id):
+    """A blog id is accepted only when it belongs to a mapped store, the same
+    population a store code can reach; the public site is never one."""
+    blog = int(blog_id)
+    if blog < 1:
+        raise QueryValidationError("Invalid blog_id")
+    cursor.execute("SELECT 1 FROM woo.store_blog_map WHERE blog_id=%s LIMIT 1", (blog,))
+    if cursor.fetchone() is None:
+        raise QueryNotFound("WordPress site is not a mapped store")
+    return blog
+
+
+def _wp_read(callback):
+    import wp_bridge
+    settings = wp_bridge.get_settings()
+    if not (settings.wp_sync_url and settings.wp_sync_user and settings.wp_sync_app_password):
+        return {"available": False, "reason": "WordPress bridge is not configured"}
+    try:
+        result = callback()
+        if not isinstance(result, dict):
+            raise ValueError("Invalid WordPress response")
+        # Bound every nested string/collection before it reaches a caller.
+        import json
+        if len(json.dumps(result, default=str).encode()) > READ_MAX_RESULT_BYTES:
+            raise ValueError("WordPress response exceeds the byte limit")
+        bounded = _bounded_category_value(result,200)
+        bounded["truncated"] = bool(result.get("truncated")) or bounded != result
+        bounded["available"] = result.get("available", True) is True
+        return bounded
+    except Exception as exc:
+        # The reason stays fixed so no URL, credential or order data can leak;
+        # the exception type goes to the log so a code defect is not silent.
+        _log.warning("WordPress diagnostic read failed: %s", type(exc).__name__)
+        return {"available": False, "reason": "WordPress diagnostics could not be read"}
+
+
+def wp_product_check(cursor, *, store, style=None, sku=None):
+    import wp_bridge
+    if (style is None) == (sku is None):
+        raise QueryValidationError("Supply exactly one of style or sku")
+    style = _clean(style,"style") if style is not None else None
+    sku = _clean(sku,"sku") if sku is not None else None
+    try:
+        blog = _wp_blog(cursor,store)
+    except QueryNotFound as exc:
+        return {"available": False, "reason": str(exc)}
+    return {**_wp_read(lambda: wp_bridge.wp_diag_product(blog,style=style,sku=sku)), "blog_id": blog}
+
+
+def wp_store_check(cursor, *, store):
+    import wp_bridge
+    try:
+        blog = _wp_blog(cursor,store)
+    except QueryNotFound as exc:
+        return {"available": False, "reason": str(exc)}
+    result = _wp_read(lambda: wp_bridge.wp_diag_store(blog))
+    result["sync_log"] = _wp_read(lambda: wp_bridge.wp_diag_sync_log(blog,limit=20))
+    result["blog_id"] = blog
+    return result
+
+
+# Scalars only at leaves: even an allowed key cannot smuggle a nested object.
+ORDER_DIAGNOSTIC_KEYS = {
+    "found": None, "order_id": None, "blog_id": None, "status": None,
+    "created_gmt": None, "modified_gmt": None, "currency": None, "total": None,
+    "item_count": None, "truncated": None,
+    "items": [{"sku": None, "qty": None, "line_total": None,
+               "embellishment": {"logo_codes": [None], "placements": [None]}}],
+    "payment": {"method_code": None, "gateway_id": None, "punchout": None},
+    "fdm4": {"found": None, "status": None, "last_error": None, "created_at": None,
+             "updated_at": None, "in_vn": None, "vn_attempts": None, "vn_so_id": None},
+}
+
+
+def _order_allowlist(value, schema):
+    if isinstance(schema, dict):
+        value = value if isinstance(value, dict) else {}
+        return {key: _order_allowlist(value[key], child) for key, child in schema.items() if key in value}
+    if isinstance(schema,list):
+        return [_order_allowlist(row,schema[0]) for row in value[:100]] if isinstance(value,list) else []
+    if isinstance(value,str):
+        return value[:1024]
+    return value if value is None or isinstance(value,(bool,int,float)) else None
+
+
+def get_order_status(cursor, *, order_id, store=None, blog_id=None):
+    import wp_bridge
+    if (store is None) == (blog_id is None) or int(order_id)<1:
+        raise QueryValidationError("Supply an order id and exactly one store or blog_id")
+    try:
+        blog = _wp_blog(cursor,store) if store is not None else _wp_mapped_blog(cursor, blog_id)
+    except QueryNotFound as exc:
+        return {"available": False, "reason": str(exc)}
+    result = _wp_read(lambda: wp_bridge.wp_diag_order(blog,order_id=int(order_id)))
+    if not result.get("available"):
+        # Never relay an arbitrary bridge reason that may include order data.
+        return {"available": False, "reason": "WordPress order diagnostics are unavailable"}
+    return {**_order_allowlist(result,ORDER_DIAGNOSTIC_KEYS), "available": True}
+
+
+def _ops_section(cursor, callback, *, timeout="3s"):
+    """A failed SQL section must not poison the caller's remaining reads."""
+    cursor.execute("SAVEPOINT ops_read_section")
+    try:
+        cursor.execute("SELECT current_setting('statement_timeout') AS timeout")
+        previous = cursor.fetchone()["timeout"]
+        cursor.execute("SELECT set_config('statement_timeout', %s, true)",(timeout,))
+        result = _bounded_category_value(callback(),500)
+        cursor.execute("SELECT set_config('statement_timeout', %s, true)",(previous,))
+        cursor.execute("RELEASE SAVEPOINT ops_read_section")
+        return result
+    except Exception as exc:
+        cursor.execute("ROLLBACK TO SAVEPOINT ops_read_section")
+        cursor.execute("RELEASE SAVEPOINT ops_read_section")
+        reason = str(exc)[:200] if isinstance(exc,QueryServiceError) else "This section could not be read"
+        return {"available": False, "reason": reason}
+
+
+def _product_disagreements(state, wordpress):
+    findings = []
+    if not wordpress.get("available") or state.get("available") is False or not state.get("found"):
+        # A missing warehouse side is reported as an unavailable section,
+        # never as a disagreement about visibility.
+        return findings
+    expected = any(r.get("is_active") for r in state.get("rows",[]))
+    if expected and not wordpress.get("found"):
+        return ["WordPress is missing the product; the warehouse expects it visible."]
+    if not wordpress.get("found"):
+        return findings
+    if expected and wordpress.get("status") != "publish":
+        findings.append(f"WordPress has the product as {str(wordpress.get('status'))[:100]}; the warehouse expects it visible.")
+    if not expected and wordpress.get("status") == "publish":
+        findings.append("WordPress has the product published; the warehouse expects it hidden.")
+    by_sku = {r.get("sku"):r for r in wordpress.get("variations",[]) if isinstance(r,dict)}
+    if wordpress.get("sku"):
+        by_sku.setdefault(wordpress["sku"],wordpress)
+    from decimal import Decimal, InvalidOperation
+    for row in state.get("variations",[])[:200]:
+        live = by_sku.get(row["sku"])
+        if live is None:
+            if row.get("is_active") and not wordpress.get("truncated"):
+                findings.append(f"WordPress is missing active SKU {row['sku']}.")
+            continue
+        if bool(row.get("is_active")) != (live.get("status")=="publish"):
+            findings.append(f"SKU {row['sku']} has a different active status in WordPress.")
+        if row.get("stock") is not None and live.get("stock_status") in {"instock", "outofstock"}:
+            expected_status = "instock" if Decimal(str(row["stock"])) > 0 else "outofstock"
+            if live["stock_status"] != expected_status:
+                findings.append(f"SKU {row['sku']} has stock status {live['stock_status']} in WordPress; the warehouse expects {expected_status}.")
+        for expected_key,live_key,label in (("price","price","price"),("stock","stock_quantity","stock")):
+            if row.get(expected_key) is None or live.get(live_key) in (None,""):
+                continue
+            try:
+                differs = Decimal(str(row[expected_key])) != Decimal(str(live[live_key]))
+            except InvalidOperation:
+                continue
+            if differs:
+                findings.append(f"SKU {row['sku']} has {label} {live[live_key]} in WordPress; the warehouse expects {row[expected_key]}.")
+    return findings[:200]
+
+
+def find_issues(cursor, *, store=None, checks=None, limit=50, category_access=False):
+    store = _optional(store,"store").upper()
+    limit = max(1,min(int(limit),200))
+    catalog = ""
+    if store:
+        catalog = _catalog_for_store(cursor, store)
+        if catalog is None:
+            raise QueryNotFound("Store not found")
+    # Only rows of a store's current catalog count, as get_product_state does.
+    current_any = ("AND EXISTS (SELECT 1 FROM woo.store_catalog c WHERE c.fdm4_store=s.fdm4_store"
+                   " AND c.catalog_id=s.catalog_id AND c.suggested)")
+    current = "AND ((%(catalog)s<>'' AND s.catalog_id=%(catalog)s) OR (%(catalog)s='' " + current_any + "))"
+    definitions = {
+        "no_logos": ("""SELECT s.fdm4_store AS store,s.style_code AS style FROM woo.store_product_state s
+            WHERE s.is_active AND (%(store)s='' OR s.fdm4_store=%(store)s) """ + current + """
+            AND NOT EXISTS (SELECT 1 FROM logo.assignment a WHERE a.fdm4_store=s.fdm4_store AND a.product_style=s.style_code AND a.active)
+            GROUP BY s.fdm4_store,s.style_code""", "Configure logos for these styles in Logo Configuration."),
+        "colors_unclassified": ("""SELECT DISTINCT s.color_code,s.color FROM woo.store_product_state s
+            WHERE s.is_active AND s.kind='variation' AND nullif(s.color_code,'') IS NOT NULL
+            AND (%(store)s='' OR s.fdm4_store=%(store)s) """ + current + """
+            AND NOT EXISTS (SELECT 1 FROM logo.color_class c WHERE c.color_code=s.color_code)""", "Classify the garment colors in Logo Colors."),
+        "rules_expiring": ("""SELECT rule_id,name,effective_until FROM woo.price_rule p WHERE active
+            AND effective_until<=current_date+7 AND (%(store)s='' OR
+            (coalesce(cardinality(stores),0)=0 AND coalesce(cardinality(store_tiers),0)=0)
+             OR %(store)s=ANY(stores) OR EXISTS(SELECT 1 FROM woo.store_pricing_tier t WHERE t.fdm4_store=%(store)s AND t.tier_name=ANY(p.store_tiers)))
+            AND (%(store)s='' OR NOT coalesce(%(store)s=ANY(excl_stores),false))""", "Review the expiry date or switch off the rule in Price Rules."),
+        "stores_frozen": ("""SELECT fdm4_store AS store,scope,note,updated_by,updated_at FROM woo.sync_exclusion
+            WHERE active AND style_code='' AND created_at<now()-interval '7 days'
+            AND (%(store)s='' OR fdm4_store=%(store)s)""", "Review the note and remove the freeze in Sync Blocks when ready."),
+        "stock_overrides_stale": ("""SELECT style_code,mode,note,updated_by FROM woo.stock_override o
+            WHERE NOT EXISTS (SELECT 1 FROM woo.store_product_state s WHERE s.style_code=o.style_code AND s.is_active """ + current_any + """)
+            AND (%(store)s='' OR EXISTS(SELECT 1 FROM woo.store_product_state s WHERE s.fdm4_store=%(store)s AND s.style_code=o.style_code """ + current + """))""", "Remove obsolete style exceptions in Fake Inventory."),
+        "uncategorized_products": ("""SELECT u.env,u.blog_id,u.product_id,u.sku FROM catmgr.wp_uncategorized_product u
+            JOIN catmgr.snapshot s ON s.env=u.env AND s.blog_id=u.blog_id AND s.version=u.snapshot_version
+            WHERE (%(store)s='' OR EXISTS(SELECT 1 FROM woo.store_blog_map m WHERE m.blog_id=u.blog_id AND m.fdm4_store=%(store)s))""", "Review the latest category snapshot and assign product categories."),
+    }
+    names = list(dict.fromkeys(checks or [*definitions,"wordpress_mismatch"]))
+    if set(names)-set(definitions)-{"wordpress_mismatch"}:
+        raise QueryValidationError("Unknown issue check")
+    deadline = time.monotonic()+8
+    output = []
+    for name in names:
+        fix = definitions.get(name,(None,"Review the product and sync diagnostics before changing it."))[1]
+        if name=="uncategorized_products" and not category_access:
+            result = {"available":False,"reason":"Category access is required"}
+        elif time.monotonic()>=deadline:
+            result = {"available":False,"reason":"Check time budget reached"}
+        elif name=="wordpress_mismatch":
+            def compare():
+                if not store:
+                    return {"available":False,"reason":"Select one store for WordPress comparisons"}
+                cursor.execute("SELECT DISTINCT style_code FROM woo.store_product_state WHERE fdm4_store=%s AND catalog_id=%s AND is_active ORDER BY style_code LIMIT 26",(store,catalog))
+                styles = cursor.fetchall()
+                sample, failures, checked = [], [], 0
+                for row in styles[:25]:
+                    if time.monotonic()>=deadline-2:
+                        failures.append({"available":False,"reason":"Comparison time budget reached"})
+                        break
+                    state = get_product_state(cursor,store=store,style=row["style_code"])
+                    live = wp_product_check(cursor,store=store,style=row["style_code"])
+                    if not live.get("available"):
+                        failures.append({"style":row["style_code"],**live})
+                        break
+                    checked += 1
+                    findings = _product_disagreements(state,live)
+                    if findings:
+                        sample.append({"style":row["style_code"],"findings":findings[:10]})
+                return {"available":not failures,"count":len(sample),"sample":sample[:limit],
+                        "checked":checked,"failures":failures,"truncated":checked<len(styles)}
+            result = _ops_section(cursor,compare,timeout="1s")
+        else:
+            sql = definitions[name][0]
+            def check(sql=sql):
+                rows,truncated,byte_truncated = _bounded_query(cursor,
+                    "SELECT q.*,count(*) OVER() AS issue_count FROM ("+sql+") q ORDER BY to_jsonb(q)::text LIMIT %(limit)s",
+                    {"store":store,"catalog":catalog,"limit":limit+1},limit)
+                count = int(rows[0]["issue_count"]) if rows else 0
+                for row in rows:
+                    row.pop("issue_count",None)
+                return {"available":True,"count":count,"sample":rows,"truncated":truncated or byte_truncated}
+            result = _ops_section(cursor,check,timeout="1s")
+        output.append({"check":name,"count":None,"sample":[],"how_to_fix":fix,**result})
+    return {"store":store or None,"checks":output,"truncated":any(r.get("truncated",False) for r in output)}
+
+
+def explain_product(cursor, *, store, style):
+    store,style = _clean(store,"store").upper(),_clean(style,"style").upper()
+    state = _ops_section(cursor,lambda:get_product_state(cursor,store=store,style=style))
+    prices = _ops_section(cursor,lambda:check_price_rules(cursor,store=store,style=style))
+    stock = _ops_section(cursor,lambda:get_stock_rules(cursor,store=store))
+    mills = {r.get("mill_code") for r in state.get("rows",[])}
+    if "brand_rules" in stock:
+        stock["brand_rules"] = [r for r in stock["brand_rules"] if r["mill_code"] in mills]
+        stock["style_exceptions"] = [r for r in stock.get("style_exceptions",[]) if r["style_code"]==style]
+    blocks = _ops_section(cursor,lambda:list_sync_blocks(cursor,store=store))
+    if "blocks" in blocks:
+        blocks["blocks"] = [r for r in blocks["blocks"] if r["active"] and r["style_code"] in ("",style)]
+    def mix_section():
+        registry = mix_service.registry(cursor,store,required=False)
+        if not registry or not registry["active"]:
+            return {"mode":"fdm4","in_mix":any(r.get("is_active") for r in state.get("rows",[])),
+                    "reason":"Not using a custom product list"}
+        return get_style_mix(cursor,store=store,style=style)
+    mix = _ops_section(cursor,mix_section)
+    wordpress = _ops_section(cursor,lambda:wp_product_check(cursor,store=store,style=style))
+    findings = _product_disagreements(state,wordpress)
+    for block in blocks.get("blocks",[]):
+        findings.append(f"The {'store' if not block['style_code'] else 'style'} has a {block['scope']} sync freeze since {block['updated_at']}; warehouse changes in that scope will not reach the site.")
+    if mix.get("mode")=="list" and not mix.get("in_mix"):
+        findings.append("The style is excluded from the store's custom product list.")
+    sections = {"state":state,"prices":prices,"stock_rules":stock,"blocks":blocks,"mix":mix}
+    for name,section in {**sections,"wordpress":wordpress}.items():
+        if section.get("available") is False:
+            findings.append(f"{name.replace('_',' ').capitalize()}: {section.get('reason','unavailable')}.")
+    visible = any(r.get("is_active") for r in state.get("rows",[])) if state.get("found") else None
+    modes = [r["mode"] for r in stock.get("style_exceptions",[]) if r.get("active")]
+    modes += [r["mode"] for r in stock.get("brand_rules",[]) if r.get("mode")]
+    stock_mode = modes[0] if modes else ("automatic" if stock.get("available") is not False else None)
+    return {"store":store,"style":style,"intent":{"visible":visible,"stock_mode":stock_mode,**sections},
+            "wordpress":wordpress,"findings":findings[:200]}

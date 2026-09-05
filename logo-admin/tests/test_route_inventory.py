@@ -4,6 +4,18 @@ from main import app
 
 
 READ_ROUTES = {
+    ("GET", "/api/categories/node-lookup"),
+    ("GET", "/api/categories/mapping-rows"),
+    ("GET", "/api/product-state"),
+    ("GET", "/api/change-history"),
+    ("GET", "/api/stock"),
+    ("GET", "/api/store-price-audit"),
+    ("GET", "/api/wordpress/product-check"),
+    ("GET", "/api/wordpress/store-check"),
+    ("GET", "/api/order-status"),
+    ("GET", "/api/issues"),
+    ("GET", "/api/product-explanation"),
+
     ("GET", "/api/stores"),
     ("GET", "/api/styles"),
     ("GET", "/api/style"),

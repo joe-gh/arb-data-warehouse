@@ -1,3 +1,4 @@
+import inspect
 import re
 """Capability registry for the in-app agent's bounded tool surface."""
 
@@ -14,6 +15,24 @@ from authorization import (
     required_tier,
 )
 from commands import (
+    CatDecideCommand,
+    CatUndoDecisionCommand,
+    CatMakeSurvivingCommand,
+    CatCreateCategoryCommand,
+    CatRenameCategoryCommand,
+    CatMoveCategoryCommand,
+    CatDeleteCategoryCommand,
+    CatSetStoreOverrideCommand,
+    CatDeleteStoreOverrideCommand,
+    CatAcceptUncategorizedCommand,
+    CatUnacceptUncategorizedCommand,
+    CatSetRuleCommand,
+    CatDeleteRuleCommand,
+    CatAssignStylesCommand,
+    CatDeleteAssignmentCommand,
+
+    SetExternalMixStoreCommand,
+    RemoveExternalMixStoreCommand,
     SavePriceRuleCommand,
     FillMissingColorsCommand,
     COMMAND_MODELS,
@@ -59,6 +78,17 @@ import queries
 import mutations
 import snapshots
 from read_commands import (
+    CatNodeLookupCommand, CatMappingRowsCommand,
+    GetProductStateCommand,
+    GetChangeHistoryCommand,
+    GetStockCommand,
+    AuditStorePricesCommand,
+    WpProductCheckCommand,
+    WpStoreCheckCommand,
+    GetOrderStatusCommand,
+    FindIssuesCommand,
+    ExplainProductCommand,
+
     PreviewPriceRuleCommand,
     CheckPriceRulesCommand,
     ListPriceRuleDimensionsCommand,
@@ -135,6 +165,24 @@ class AgentWriteContract:
 
 
 APPROVED_AGENT_WRITE_NAMES = frozenset({
+    'cat_decide',
+    'cat_undo_decision',
+    'cat_make_surviving',
+    'cat_create_category',
+    'cat_rename_category',
+    'cat_move_category',
+    'cat_delete_category',
+    'cat_set_store_override',
+    'cat_delete_store_override',
+    'cat_accept_uncategorized',
+    'cat_unaccept_uncategorized',
+    'cat_set_rule',
+    'cat_delete_rule',
+    'cat_assign_styles',
+    'cat_delete_assignment',
+
+    "set_external_mix_store",
+    "remove_external_mix_store",
     "save_price_rule",
     "fill_missing_colors",
     "save_assignment",
@@ -175,6 +223,17 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
+    "cat_node_lookup", "cat_mapping_rows",
+    "get_product_state",
+    "get_change_history",
+    "get_stock",
+    "audit_store_prices",
+    "wp_product_check",
+    "wp_store_check",
+    "get_order_status",
+    "find_issues",
+    "explain_product",
+
     "preview_price_rule",
     "check_price_rules",
     "list_price_rule_dimensions",
@@ -376,6 +435,16 @@ def _get_health_overview(cursor, command, settings):
     return queries.get_health_overview(cursor, **_model_arguments(command))
 
 
+def _cat_node_lookup(cursor, command, settings):
+    del settings
+    return queries.cat_node_lookup(cursor, **_model_arguments(command))
+
+
+def _cat_mapping_rows(cursor, command, settings):
+    del settings
+    return queries.cat_mapping_rows(cursor, **_model_arguments(command))
+
+
 def _cat_tree(cursor, command, settings):
     del settings
     return queries.cat_tree(cursor, **_model_arguments(command))
@@ -396,13 +465,68 @@ def _cat_runs(cursor, command, settings):
     return queries.cat_runs(cursor, **_model_arguments(command))
 
 
+def _get_product_state(cursor, command, settings):
+    del settings
+    return queries.get_product_state(cursor, **_model_arguments(command))
+
+
+def _get_change_history(cursor, command, settings, *, context):
+    return queries.get_change_history(cursor, **_model_arguments(command), user_login=context.user_login, category_access=context.user_login in settings.catmgr_view_users)
+
+
+def _get_stock(cursor, command, settings):
+    del settings
+    return queries.get_stock(cursor, **_model_arguments(command))
+
+
+def _audit_store_prices(cursor, command, settings):
+    del settings
+    return queries.audit_store_prices(cursor, **_model_arguments(command))
+
+
+def _wp_product_check(cursor, command, settings):
+    del settings
+    return queries.wp_product_check(cursor, **_model_arguments(command))
+
+
+def _wp_store_check(cursor, command, settings):
+    del settings
+    return queries.wp_store_check(cursor, **_model_arguments(command))
+
+
+def _get_order_status(cursor, command, settings):
+    del settings
+    return queries.get_order_status(cursor, **_model_arguments(command))
+
+
+def _find_issues(cursor, command, settings, *, context):
+    return queries.find_issues(cursor, **_model_arguments(command), category_access=context.user_login in settings.catmgr_view_users)
+
+
+def _explain_product(cursor, command, settings):
+    del settings
+    return queries.explain_product(cursor, **_model_arguments(command))
+
+
 CANONICAL_AGENT_READ_CONTRACTS = {
+    "get_product_state": (GetProductStateCommand, _get_product_state),
+    "get_change_history": (GetChangeHistoryCommand, _get_change_history),
+    "get_stock": (GetStockCommand, _get_stock),
+    "audit_store_prices": (AuditStorePricesCommand, _audit_store_prices),
+    "wp_product_check": (WpProductCheckCommand, _wp_product_check),
+    "wp_store_check": (WpStoreCheckCommand, _wp_store_check),
+    "get_order_status": (GetOrderStatusCommand, _get_order_status),
+    "find_issues": (FindIssuesCommand, _find_issues),
+    "explain_product": (ExplainProductCommand, _explain_product),
+
     "preview_price_rule": (PreviewPriceRuleCommand, _preview_price_rule),
     "check_price_rules": (CheckPriceRulesCommand, _check_price_rules),
     "list_price_rule_dimensions": (ListPriceRuleDimensionsCommand, _list_price_rule_dimensions),
     "preview_fill_missing_colors": (PreviewFillMissingColorsCommand, _preview_fill_missing_colors),
     "get_style_mix": (GetStyleMixCommand, _get_style_mix),
     "get_health_overview": (GetHealthOverviewCommand, _get_health_overview),
+    "cat_node_lookup": (CatNodeLookupCommand, _cat_node_lookup),
+    "cat_mapping_rows": (CatMappingRowsCommand, _cat_mapping_rows),
     "cat_tree": (CatTreeCommand, _cat_tree),
     "cat_mapping_status": (CatMappingStatusCommand, _cat_mapping_status),
     "cat_plan_check": (CatPlanCheckCommand, _cat_plan_check),
@@ -462,6 +586,23 @@ def _canonical_write_contract(
 # cannot silently widen or rewire the model-facing write surface.
 CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
     MappingProxyType({
+        'cat_decide': _canonical_write_contract(CatDecideCommand, mutations.cat_decide, 'catmgr_slug_map_row'),
+        'cat_undo_decision': _canonical_write_contract(CatUndoDecisionCommand, mutations.cat_undo_decision, 'catmgr_slug_map_row'),
+        'cat_make_surviving': _canonical_write_contract(CatMakeSurvivingCommand, mutations.cat_make_surviving, 'catmgr_slug_map_row'),
+        'cat_create_category': _canonical_write_contract(CatCreateCategoryCommand, mutations.cat_create_category, 'catmgr_draft'),
+        'cat_rename_category': _canonical_write_contract(CatRenameCategoryCommand, mutations.cat_rename_category, 'catmgr_draft'),
+        'cat_move_category': _canonical_write_contract(CatMoveCategoryCommand, mutations.cat_move_category, 'catmgr_draft'),
+        'cat_delete_category': _canonical_write_contract(CatDeleteCategoryCommand, mutations.cat_delete_category, 'catmgr_draft', 'catmgr_rule_row', 'catmgr_assignment_row'),
+        'cat_set_store_override': _canonical_write_contract(CatSetStoreOverrideCommand, mutations.cat_set_store_override, 'catmgr_override_row', 'catmgr_slug_map_row', 'catmgr_draft'),
+        'cat_delete_store_override': _canonical_write_contract(CatDeleteStoreOverrideCommand, mutations.cat_delete_store_override, 'catmgr_override_row', 'catmgr_slug_map_row'),
+        'cat_accept_uncategorized': _canonical_write_contract(CatAcceptUncategorizedCommand, mutations.cat_accept_uncategorized, 'catmgr_ack_row'),
+        'cat_unaccept_uncategorized': _canonical_write_contract(CatUnacceptUncategorizedCommand, mutations.cat_unaccept_uncategorized, 'catmgr_ack_row'),
+        'cat_set_rule': _canonical_write_contract(CatSetRuleCommand, mutations.cat_set_rule, 'catmgr_rule_row'),
+        'cat_delete_rule': _canonical_write_contract(CatDeleteRuleCommand, mutations.cat_delete_rule, 'catmgr_rule_row'),
+        'cat_assign_styles': _canonical_write_contract(CatAssignStylesCommand, mutations.cat_assign_styles, 'catmgr_assignment_row'),
+        'cat_delete_assignment': _canonical_write_contract(CatDeleteAssignmentCommand, mutations.cat_delete_assignment, 'catmgr_assignment_row'),
+        "set_external_mix_store": _canonical_write_contract(SetExternalMixStoreCommand, mutations.set_external_mix_store, "virtual_catalog_store_row", "store_mix_store_row"),
+        "remove_external_mix_store": _canonical_write_contract(RemoveExternalMixStoreCommand, mutations.remove_external_mix_store, "virtual_catalog_store_row"),
         "save_price_rule": _canonical_write_contract(SavePriceRuleCommand, mutations.save_price_rule, "price_rule_row"),
         "fill_missing_colors": _canonical_write_contract(FillMissingColorsCommand, mutations.fill_missing_colors, "assignment_store"),
         "save_assignment": _canonical_write_contract(
@@ -994,12 +1135,40 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     _read_spec("preview_fill_missing_colors", 'Plan filling missing garment colors for up to 50 styles from their own logos. When configured colors differ, a person must choose a source; no logos are changed.', PreviewFillMissingColorsCommand, _preview_fill_missing_colors),
     _read_spec("get_style_mix", 'Show which stores carry a style and whether it follows FDM4 or a curated list. With a store, show its color and size settings. Does not change the mix.', GetStyleMixCommand, _get_style_mix),
     _read_spec("get_health_overview", 'Show a bounded overview of warehouse pipeline runs, product state, pricing, freezes and feed consumers. Does not start any work.', GetHealthOverviewCommand, _get_health_overview),
+    _read_spec("cat_node_lookup", "Confirm a draft category by exact path or web address, returning its store and product counts. Never guess a target; missing or ambiguous targets are refused.", CatNodeLookupCommand, _cat_node_lookup),
+    _read_spec("cat_mapping_rows", "Inspect up to 200 full decision rows, including stores and product counts, filtered by undecided, empty, store_only or exact old slugs. Use before deciding rows.", CatMappingRowsCommand, _cat_mapping_rows),
     _read_spec("cat_tree", 'Read category draft paths with per-slug store and product counts from an environment snapshot. Capped; requires category-view access. Never changes the draft.', CatTreeCommand, _cat_tree),
     _read_spec("cat_mapping_status", 'Read category mapping totals and capped lists of undecided and empty rows. Requires category-view access; never changes mappings.', CatMappingStatusCommand, _cat_mapping_status),
     _read_spec("cat_plan_check", 'Check the category plan for blockers, warnings, totals and per-store changes. Capped; requires category-view access. Never creates or starts a run.', CatPlanCheckCommand, _cat_plan_check),
     _read_spec("cat_runs", 'Read recent category runs and optionally one run’s capped per-store job summary. Requires category-view access. Never starts, retries or changes a run.', CatRunsCommand, _cat_runs),
     _write_spec("save_price_rule", "Create or edit a price rule; rejects invalid effects, targeting, dates and price bounds. With active=true, includes the evaluated impact in human confirmation and stamps the preview while activating in the apply transaction. Material edits saved inactive clear the prior preview stamp.", SavePriceRuleCommand, mutations.save_price_rule),
     _write_spec("fill_missing_colors", "Copy each style's own source-color logos onto missing garment colors, up to 50 styles. Requires an explicit source color, refuses unknown styles and oversized store snapshots, and records an undoable fill-gaps batch in the editor history.", FillMissingColorsCommand, mutations.fill_missing_colors),
+    _read_spec("get_product_state", 'Show a store product parent and its variations with prices, projected stock and active flags. Refuses unknown stores and products.', GetProductStateCommand, _get_product_state),
+    _read_spec("get_change_history", 'Show recent changes by every recorded actor, newest first, with source and actor counts. Change-set cards are limited to your own; category history requires category access.', GetChangeHistoryCommand, _get_change_history),
+    _read_spec("get_stock", 'Show live inventory by item and warehouse, with available stock calculated as on-hand minus committed, floored at zero per warehouse. Refuses unknown stock.', GetStockCommand, _get_stock),
+    _read_spec("audit_store_prices", 'Evaluate the active price-rule chain for a store, showing counts per rule, the biggest price changes and freezes. Evaluates at most 50,001 candidates.', AuditStorePricesCommand, _audit_store_prices),
+    _read_spec("wp_product_check", 'Read the WordPress product status, price, stock, categories and sync timestamp for a store product. Returns an unavailable reason when the site cannot be read.', WpProductCheckCommand, _wp_product_check),
+    _read_spec("wp_store_check", 'Read a WordPress store: the network category freeze flag, product counts and the most recent product-sync summary (the site keeps only its last run, not a history). Returns an unavailable reason for each failed WordPress section.', WpStoreCheckCommand, _wp_store_check),
+    _read_spec("get_order_status", 'Read order status, totals, item SKUs, embellishment codes, payment method code and sync state. Excludes customer information, addresses and notes.', GetOrderStatusCommand, _get_order_status),
+    _read_spec("find_issues", 'Check logo gaps, colors, expiring rules, old freezes, stale inventory exceptions, categories and WordPress disagreements. Each check reports its own failure.', FindIssuesCommand, _find_issues),
+    _read_spec("explain_product", 'Explain the expected visibility, pricing, inventory rules and blockers for a store product, and compare WordPress when available. Each section can fail independently.', ExplainProductCommand, _explain_product),
+    _write_spec('cat_decide', 'Stage up to 200 decisions from cat_mapping_rows: move into a confirmed target_slug, keep for this store only, or delete. Refuses delete when a row still holds products unless allow_products=true. make_surviving=true refuses an existing survivor; use cat_make_surviving to replace it. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatDecideCommand, mutations.cat_decide),
+    _write_spec('cat_undo_decision', 'Undo an explicit decision for one old slug in the draft. Automatic decisions have no explicit row to clear. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatUndoDecisionCommand, mutations.cat_undo_decision),
+    _write_spec('cat_make_surviving', 'Make this old slug the surviving category for the confirmed target web address, demoting the previous explicit survivor. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatMakeSurvivingCommand, mutations.cat_make_surviving),
+    _write_spec('cat_create_category', 'Create a category in the draft, under a confirmed parent or at the top level. Omit slug for an automatic web address. Refuses drafts over 2,000 total structural rows. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatCreateCategoryCommand, mutations.cat_create_category),
+    _write_spec('cat_rename_category', 'Rename a draft category, change its web address or description. A web address change carries the live identity mapping for redirect planning; a person checks the plan before apply. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatRenameCategoryCommand, mutations.cat_rename_category),
+    _write_spec('cat_move_category', 'Move a draft category into a confirmed parent or to the top level; position is zero-based. Sibling order is included in exact undo. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatMoveCategoryCommand, mutations.cat_move_category),
+    _write_spec('cat_delete_category', 'Delete a draft category; cascade must explicitly allow deleting its children. Related mapping rows become undecided; rules and style assignments also disappear and are included in undo. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatDeleteCategoryCommand, mutations.cat_delete_category),
+    _write_spec('cat_set_store_override', 'Rename or hide a category on one store, or add a store-only category. Confirm category and parent targets first. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatSetStoreOverrideCommand, mutations.cat_set_store_override),
+    _write_spec('cat_delete_store_override', 'Delete a store override from the draft, including any decisions linked to that override. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatDeleteStoreOverrideCommand, mutations.cat_delete_store_override),
+    _write_spec('cat_accept_uncategorized', 'Accept up to 200 products having no category in the draft plan, with an optional note. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatAcceptUncategorizedCommand, mutations.cat_accept_uncategorized),
+    _write_spec('cat_unaccept_uncategorized', 'Remove acceptance for up to 200 products with no category so Check the plan can block again. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatUnacceptUncategorizedCommand, mutations.cat_unaccept_uncategorized),
+    _write_spec('cat_set_rule', 'Create or edit a product rule for a confirmed category. Validates the filter and includes evaluate_rule match count and a bounded sample in review. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatSetRuleCommand, mutations.cat_set_rule),
+    _write_spec('cat_delete_rule', 'Delete a product rule from the draft with exact undo. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatDeleteRuleCommand, mutations.cat_delete_rule),
+    _write_spec('cat_assign_styles', 'Add up to 200 styles to a confirmed draft category, or keep them out. Replaces the opposite decision and includes both row identities in undo. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatAssignStylesCommand, mutations.cat_assign_styles),
+    _write_spec('cat_delete_assignment', 'Delete one explicit style assignment from a draft category with exact undo. Draft only; stages a proposal for human review. After confirmation suggest Check the plan.', CatDeleteAssignmentCommand, mutations.cat_delete_assignment),
+    _write_spec("set_external_mix_store", "Enrol a known store as an external all-products store with stock 9999 on the next refresh. Refuses existing external stores and active curated lists; stages a review with exact undo.", SetExternalMixStoreCommand, mutations.set_external_mix_store),
+    _write_spec("remove_external_mix_store", "Return an external store to its regular FDM4 catalog on the next refresh, which may hide many products. Keeps its product-mix registry; stages a review with exact undo.", RemoveExternalMixStoreCommand, mutations.remove_external_mix_store),
 )
 
 
@@ -1244,11 +1413,33 @@ def get_agent_tool(name: str, writes_enabled: bool = False, write_tools=None) ->
     raise UnknownTool("Unknown or unavailable tool")
 
 
+def _handler_wants_context(handler) -> bool:
+    """Reads that scope by the caller (change history, issue checks) declare a
+    keyword-only `context`; every dispatcher must pass it the same way."""
+    try:
+        return "context" in inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _run_read_handler(spec, cursor, command, settings, context):
+    if _handler_wants_context(spec.handler):
+        return spec.handler(cursor, command, settings, context=context)
+    return spec.handler(cursor, command, settings)
+
+
 def _assert_read_access(name, context, settings):
-    if name in {"cat_tree", "cat_mapping_status", "cat_plan_check", "cat_runs"}:
-        login = context.user_login.strip().lower()
-        if not settings.catmgr_enabled or (settings.catmgr_view_users and login not in settings.catmgr_view_users):
-            raise UnknownTool("Not found")
+    """Category reads follow the editor's own visibility rule (an empty
+    CATMGR_VIEW_USERS means everyone who can see the editor). Category writes
+    are stricter: the login must be on a non-empty allow-list."""
+    if not name.startswith("cat_"):
+        return
+    login = context.user_login.strip().lower()
+    allowed = settings.catmgr_view_users
+    if not settings.catmgr_enabled or (allowed and login not in allowed):
+        raise UnknownTool("Not found")
+    if name in APPROVED_AGENT_WRITE_NAMES and not allowed:
+        raise UnknownTool("Not found")
 
 
 def execute_read_tool(
@@ -1265,7 +1456,7 @@ def execute_read_tool(
         raise UnknownTool("Unknown or unavailable tool")
     command = spec.command_model.model_validate(arguments)
     with database.cursor() as cursor:
-        result = spec.handler(cursor, command, settings)
+        result = _run_read_handler(spec, cursor, command, settings, context)
     return jsonable_encoder(result)
 
 
@@ -1285,6 +1476,7 @@ def execute_agent_tool(
     apply/discard/undo remain separate human HTTP routes.
     """
 
+    _assert_read_access(name, context, settings)
     spec = get_agent_tool(
         name,
         writes_enabled=settings.agent_writes_enabled,
@@ -1297,7 +1489,7 @@ def execute_agent_tool(
         if spec.handler is None:
             raise UnknownTool("Unknown or unavailable tool")
         with database.cursor() as cursor:
-            result = spec.handler(cursor, command, settings)
+            result = _run_read_handler(spec, cursor, command, settings, context)
         return jsonable_encoder(result)
 
     if not settings.agent_writes_enabled or session_id is None or not call_id:

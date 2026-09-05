@@ -976,7 +976,7 @@ async def confirm_spreadsheet_mapping_route(
                 context.user_login,
                 body.mapping_revision,
                 body.mapping_hash,
-                settings.agent_max_spreadsheet_rows,
+                settings.agent_max_change_set_items,
                 settings,
             )
         finally:

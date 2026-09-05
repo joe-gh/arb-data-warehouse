@@ -19,6 +19,24 @@ from tool_registry import (
 
 EXPECTED_WRITES = set(COMMAND_MODELS)
 EXPECTED_SCOPES = {
+    'cat_create_category': frozenset(['catmgr_draft']),
+    'cat_rename_category': frozenset(['catmgr_draft']),
+    'cat_move_category': frozenset(['catmgr_draft']),
+    'cat_decide': frozenset(['catmgr_slug_map_row']),
+    'cat_undo_decision': frozenset(['catmgr_slug_map_row']),
+    'cat_make_surviving': frozenset(['catmgr_slug_map_row']),
+    'cat_delete_category': frozenset(['catmgr_draft', 'catmgr_rule_row', 'catmgr_assignment_row']),
+    'cat_set_store_override': frozenset(['catmgr_override_row', 'catmgr_slug_map_row', 'catmgr_draft']),
+    'cat_delete_store_override': frozenset(['catmgr_override_row', 'catmgr_slug_map_row']),
+    'cat_accept_uncategorized': frozenset(['catmgr_ack_row']),
+    'cat_unaccept_uncategorized': frozenset(['catmgr_ack_row']),
+    'cat_set_rule': frozenset(['catmgr_rule_row']),
+    'cat_delete_rule': frozenset(['catmgr_rule_row']),
+    'cat_assign_styles': frozenset(['catmgr_assignment_row']),
+    'cat_delete_assignment': frozenset(['catmgr_assignment_row']),
+
+    "set_external_mix_store": frozenset({"virtual_catalog_store_row", "store_mix_store_row"}),
+    "remove_external_mix_store": frozenset({"virtual_catalog_store_row"}),
     "save_price_rule": frozenset({"price_rule_row"}),
     "fill_missing_colors": frozenset({"assignment_store"}),
     "save_assignment": frozenset({"assignment_option_row"}),

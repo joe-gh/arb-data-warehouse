@@ -116,3 +116,31 @@ def test_design_scheme_name_resolves_even_when_search_displays_another_name(name
     with database.cursor() as cursor:
         values, report = SpreadsheetNameResolver(cursor).resolve({"fdm4_store": "S_TEST", "design_id": "Alternate crew logo"}, 2)
     assert values["design_id"] == "DESIGN-1" and report[0]["status"] == "resolved from name"
+
+
+@pytest.mark.parametrize("command,values",[
+    ("deactivate_assignment",{"fdm4_store":"Test Crew","product_style":"Style One","garment_color_code":"Red","position":"1"}),
+    ("remove_stock_override",{"style_code":"STYLE-1"}),
+    ("remove_sync_block",{"store":"Test Crew","styles":"Style One"}),
+    ("delete_price_rule",{"rule_id":"1"}),
+    ("remove_mix_styles",{"store":"Test Crew","styles":"Style One"}),
+])
+def test_sheet_delete_commands_use_exact_models_and_names(names,command,values):
+    from commands import COMMAND_MODELS
+    from spreadsheet_mapping import MappingProposal
+    row={"command":command,**values}
+    parsed=spreadsheet.ParsedSpreadsheet("csv",tuple(row), (row,))
+    proposal=spreadsheet.known_mapping(parsed)
+    with database.cursor() as cursor:
+        numbered,rejected=spreadsheet._translate_rows_with_numbers(parsed,proposal,resolver=SpreadsheetNameResolver(cursor))
+    assert not rejected,rejected
+    assert type(numbered[0][1]) is COMMAND_MODELS[command]
+    result=numbered[0][1].model_dump()
+    if "store" in result: assert result["store"]=="S_TEST"
+    if "styles" in result: assert result["styles"]==["STYLE-1"]
+
+
+def test_mixed_sheet_rejects_unknown_commands_and_does_not_infer_deletes():
+    parsed=spreadsheet.ParsedSpreadsheet("csv",("command","rule_id"), ({"command":"hard_delete_assignment","rule_id":"1"},{"command":"","rule_id":"2"}))
+    numbered,rejected=spreadsheet._translate_rows_with_numbers(parsed,spreadsheet.known_mapping(parsed))
+    assert not numbered and [r["row"] for r in rejected]==[2,3]

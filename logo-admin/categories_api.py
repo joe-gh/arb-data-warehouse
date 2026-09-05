@@ -1041,3 +1041,42 @@ def run_drift_audit(
         raise _draft_errors(exc) from exc
     except categories_service.BrokerError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+def _category_read_tool(name: str, arguments: dict, user: Dict[str, str]):
+    from authorization import AccessContext
+    from domain import InvalidCommand
+    from pydantic import ValidationError
+    from queries import QueryNotFound, QueryValidationError
+    from tool_registry import execute_read_tool, UnknownTool
+    try:
+        return execute_read_tool(name, arguments, AccessContext.from_session(user), get_settings())
+    except (QueryNotFound, UnknownTool) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ValidationError, QueryValidationError, InvalidCommand) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@router.get("/node-lookup")
+def node_lookup(
+    env: str = Query(..., min_length=3, max_length=8),
+    slug: Optional[str] = Query(default=None, min_length=1, max_length=200),
+    path: Optional[str] = Query(default=None, min_length=1, max_length=2048),
+    user: Dict[str, str] = Depends(require_user),
+    _: None = Depends(require_catmgr),
+):
+    return _category_read_tool("cat_node_lookup", {"env": env, "slug": slug, "path": path}, user)
+
+
+@router.get("/mapping-rows")
+def mapping_rows(
+    env: str = Query(..., min_length=3, max_length=8),
+    filter: str = Query(default="undecided", pattern="^(undecided|empty|store_only)$"),
+    slugs: Optional[List[str]] = Query(default=None, min_length=1, max_length=200),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100000),
+    user: Dict[str, str] = Depends(require_user),
+    _: None = Depends(require_catmgr),
+):
+    return _category_read_tool("cat_mapping_rows", {"env": env, "filter": slugs if slugs is not None else filter,
+                              "limit": limit, "offset": offset}, user)

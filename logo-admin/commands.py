@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List, Literal, Optional, Type, Union
+from typing import Annotated, Dict, List, Literal, Optional, Type, Union
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 
 class Command(BaseModel):
@@ -317,7 +317,185 @@ class FillMissingColorsCommand(Command):
     overwrite: bool = Field(default=False, description="False keeps occupied slots; true replaces slots on explicitly named target colors.")
 
 
+class SetExternalMixStoreCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description="Known store code to enrol as an external all-products store.")
+    source: Literal["external", "square", "brightsites"] = Field(default="external", description="External storefront source, recorded in the enrolment note.")
+
+
+class RemoveExternalMixStoreCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description="External store to return to its regular FDM4 catalog.")
+
+
+class CatCommand(Command):
+    env: Literal["dev", "prod"] = Field(description="Environment of the copy of live categories being edited.")
+    _category_state: dict = PrivateAttr(default_factory=dict)
+
+
+class CatCategoryTarget(Command):
+    slug: Optional[str] = Field(default=None, min_length=1, max_length=200, description="Exact web address confirmed with cat_node_lookup.")
+    path: Optional[str] = Field(default=None, min_length=1, max_length=2048, description="Exact full path confirmed with cat_node_lookup; supply slug or path, never both.")
+
+    @model_validator(mode="after")
+    def one_target(self):
+        if (self.slug is None) == (self.path is None):
+            raise ValueError("Supply exactly one category slug or path")
+        return self
+
+
+class CatDecision(Command):
+    old_slug: str = Field(min_length=1, max_length=200)
+    action: Literal["move", "keep", "delete"]
+    target_slug: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    make_surviving: Optional[bool] = None
+    note: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def valid_action(self):
+        if self.action == "move" and not self.target_slug:
+            raise ValueError("Move requires a confirmed target_slug")
+        if self.action != "move" and (self.target_slug is not None or self.make_surviving):
+            raise ValueError("Only move can have a target or a surviving category")
+        return self
+
+
+class CatDecideCommand(CatCommand):
+    rows: List[CatDecision] = Field(min_length=1, max_length=200)
+    allow_products: bool = Field(default=False, description="Explicit permission to delete a category that still holds products; otherwise deletion is refused.")
+
+
+class CatUndoDecisionCommand(CatCommand):
+    old_slug: str = Field(min_length=1, max_length=200)
+
+
+class CatMakeSurvivingCommand(CatCommand):
+    old_slug: str = Field(min_length=1, max_length=200)
+    target_slug: str = Field(min_length=1, max_length=200)
+
+
+class CatCreateCategoryCommand(CatCommand):
+    name: str = Field(min_length=1, max_length=200)
+    slug: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    parent: Optional[CatCategoryTarget] = Field(default=None, description="Confirmed parent; null creates a top-level category.")
+    description: str = Field(default="", max_length=4000)
+    position: Optional[int] = Field(default=None, ge=0, le=2000)
+
+
+class CatRenameCategoryCommand(CatCommand):
+    category: CatCategoryTarget
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    new_slug: Optional[str] = Field(default=None, min_length=1, max_length=200, description="New web address. A person checks redirects before applying to stores.")
+    description: Optional[str] = Field(default=None, max_length=4000)
+
+
+class CatMoveCategoryCommand(CatCommand):
+    category: CatCategoryTarget
+    parent: Optional[CatCategoryTarget] = Field(default=None, description="Move into this confirmed category; null moves to the top level.")
+    position: Optional[int] = Field(default=None, ge=0, le=2000)
+
+
+class CatDeleteCategoryCommand(CatCommand):
+    category: CatCategoryTarget
+    cascade: bool = Field(description="Explicitly allow deleting the categories below this one. Related decisions become undecided.")
+
+
+class CatSetStoreOverrideCommand(CatCommand):
+    blog_id: int = Field(ge=1)
+    kind: Literal["rename", "hide", "store_only"]
+    override_id: Optional[int] = Field(default=None, ge=1)
+    category: Optional[CatCategoryTarget] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    slug: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    parent: Optional[CatCategoryTarget] = None
+    include_descendants: bool = True
+    sort_order: int = Field(default=0, ge=-2147483648, le=2147483647)
+
+
+    @model_validator(mode="after")
+    def valid_store_override(self):
+        if self.kind == "store_only":
+            if self.category is not None or self.name is None:
+                raise ValueError("A store-only category needs a name, not a global category target")
+        else:
+            if self.category is None or self.slug is not None or self.parent is not None:
+                raise ValueError("Rename/hide needs a category target; web addresses and parents are only for store-only categories")
+            if self.kind == "rename" and self.name is None:
+                raise ValueError("Rename needs the store's category name")
+            if self.kind == "hide" and self.name is not None:
+                raise ValueError("Hide does not rename the category")
+        return self
+
+
+class CatDeleteStoreOverrideCommand(CatCommand):
+    override_id: int = Field(ge=1)
+
+
+class CatAcceptUncategorizedCommand(CatCommand):
+    skus: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(min_length=1, max_length=200)
+    note: str = Field(default="", max_length=1000)
+
+
+class CatUnacceptUncategorizedCommand(CatCommand):
+    skus: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(min_length=1, max_length=200)
+
+
+class CatRuleSpec(Command):
+    source: Union[Literal["all"], List[Annotated[str, Field(min_length=1, max_length=200)]]] = Field(default="all", description="All styles, or 1-200 old category slugs to select from.")
+    field: Literal["name", "brand", "mill_code", "category", "sku"]
+    op: Literal["equals", "prefix", "regex"]
+    value: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def bounded_source(self):
+        if isinstance(self.source, list) and not 1 <= len(self.source) <= 200:
+            raise ValueError("Rule source must contain 1-200 slugs")
+        return self
+
+    def service_spec(self):
+        return {"from": self.source, "field": self.field, "op": self.op, "value": self.value}
+
+
+class CatSetRuleCommand(CatCommand):
+    category: CatCategoryTarget
+    spec: CatRuleSpec
+    rule_id: Optional[int] = Field(default=None, ge=1)
+    priority: int = Field(default=0, ge=-2147483648, le=2147483647)
+    note: str = Field(default="", max_length=1000)
+
+
+class CatDeleteRuleCommand(CatCommand):
+    rule_id: int = Field(ge=1)
+
+
+class CatAssignStylesCommand(CatCommand):
+    category: CatCategoryTarget
+    skus: List[Annotated[str, Field(min_length=1, max_length=200)]] = Field(min_length=1, max_length=200)
+    mode: Literal["add", "keep_out"] = Field(description="Add styles to the category or keep them out.")
+    note: str = Field(default="", max_length=1000)
+
+
+class CatDeleteAssignmentCommand(CatCommand):
+    assignment_id: int = Field(ge=1)
+
+
 MutationCommand = Union[
+    CatDecideCommand,
+    CatUndoDecisionCommand,
+    CatMakeSurvivingCommand,
+    CatCreateCategoryCommand,
+    CatRenameCategoryCommand,
+    CatMoveCategoryCommand,
+    CatDeleteCategoryCommand,
+    CatSetStoreOverrideCommand,
+    CatDeleteStoreOverrideCommand,
+    CatAcceptUncategorizedCommand,
+    CatUnacceptUncategorizedCommand,
+    CatSetRuleCommand,
+    CatDeleteRuleCommand,
+    CatAssignStylesCommand,
+    CatDeleteAssignmentCommand,
+
+    SetExternalMixStoreCommand,
+    RemoveExternalMixStoreCommand,
     SavePriceRuleCommand,
     FillMissingColorsCommand,
     SaveAssignmentCommand,
@@ -359,6 +537,24 @@ MutationCommand = Union[
 
 
 COMMAND_MODELS: Dict[str, Type[Command]] = {
+    'cat_decide': CatDecideCommand,
+    'cat_undo_decision': CatUndoDecisionCommand,
+    'cat_make_surviving': CatMakeSurvivingCommand,
+    'cat_create_category': CatCreateCategoryCommand,
+    'cat_rename_category': CatRenameCategoryCommand,
+    'cat_move_category': CatMoveCategoryCommand,
+    'cat_delete_category': CatDeleteCategoryCommand,
+    'cat_set_store_override': CatSetStoreOverrideCommand,
+    'cat_delete_store_override': CatDeleteStoreOverrideCommand,
+    'cat_accept_uncategorized': CatAcceptUncategorizedCommand,
+    'cat_unaccept_uncategorized': CatUnacceptUncategorizedCommand,
+    'cat_set_rule': CatSetRuleCommand,
+    'cat_delete_rule': CatDeleteRuleCommand,
+    'cat_assign_styles': CatAssignStylesCommand,
+    'cat_delete_assignment': CatDeleteAssignmentCommand,
+
+    "set_external_mix_store": SetExternalMixStoreCommand,
+    "remove_external_mix_store": RemoveExternalMixStoreCommand,
     "save_price_rule": SavePriceRuleCommand,
     "fill_missing_colors": FillMissingColorsCommand,
     "save_assignment": SaveAssignmentCommand,

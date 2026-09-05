@@ -85,6 +85,69 @@ def _call(method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
     return response.text if expect_text else response.json()
 
 
+
+@mcp.tool()
+def get_product_state(store: str, style: Optional[str] = None, sku: Optional[str] = None, limit: int = 500) -> Any:
+    """Read get product state through the shared authenticated route."""
+    params = {"store": store, "style": style, "sku": sku, "limit": limit}
+    return _call("GET", "/api/product-state", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def get_change_history(store: Optional[str] = None, style: Optional[str] = None, logo_code: Optional[str] = None, rule_id: Optional[int] = None, since_days: int = 7, actor: Optional[str] = None, limit: int = 100) -> Any:
+    """Read get change history through the shared authenticated route."""
+    params = {"store": store, "style": style, "logo_code": logo_code, "rule_id": rule_id, "since_days": since_days, "actor": actor, "limit": limit}
+    return _call("GET", "/api/change-history", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def get_stock(style: str, color_code: Optional[str] = None, size_code: Optional[str] = None) -> Any:
+    """Read get stock through the shared authenticated route."""
+    params = {"style": style, "color_code": color_code, "size_code": size_code}
+    return _call("GET", "/api/stock", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def audit_store_prices(store: str, limit: int = 50) -> Any:
+    """Read audit store prices through the shared authenticated route."""
+    params = {"store": store, "limit": limit}
+    return _call("GET", "/api/store-price-audit", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def wp_product_check(store: str, style: Optional[str] = None, sku: Optional[str] = None) -> Any:
+    """Read wp product check through the shared authenticated route."""
+    params = {"store": store, "style": style, "sku": sku}
+    return _call("GET", "/api/wordpress/product-check", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def wp_store_check(store: str) -> Any:
+    """Read wp store check through the shared authenticated route."""
+    params = {"store": store}
+    return _call("GET", "/api/wordpress/store-check", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def get_order_status(order_id: int, store: Optional[str] = None, blog_id: Optional[int] = None) -> Any:
+    """Read get order status through the shared authenticated route."""
+    params = {"order_id": order_id, "store": store, "blog_id": blog_id}
+    return _call("GET", "/api/order-status", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def find_issues(store: Optional[str] = None, checks: Optional[List[str]] = None, limit: int = 50) -> Any:
+    """Read find issues through the shared authenticated route."""
+    params = {"store": store, "checks": checks, "limit": limit}
+    return _call("GET", "/api/issues", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def explain_product(store: str, style: str) -> Any:
+    """Read explain product through the shared authenticated route."""
+    params = {"store": store, "style": style}
+    return _call("GET", "/api/product-explanation", params={k: v for k, v in params.items() if v is not None})
+
 # ---------------------------------------------------------------- read tools
 
 @mcp.tool()
@@ -1238,6 +1301,23 @@ def tool_names() -> List[str]:
                 if attr is not None and attr.attr == "tool":
                     names.append(node.name)
     return names
+
+
+
+
+@mcp.tool()
+def cat_node_lookup(env: str, slug: Optional[str] = None, path: Optional[str] = None) -> Any:
+    """Confirm a draft category by its exact path or web address before proposing a move."""
+    params = {"env": env, "slug": slug, "path": path}
+    return _call("GET", "/api/categories/node-lookup", params={k: v for k, v in params.items() if v is not None})
+
+
+@mcp.tool()
+def cat_mapping_rows(env: str, filter: str = "undecided", slugs: Optional[List[str]] = None,
+                     limit: int = 100, offset: int = 0) -> Any:
+    """Read bounded decision rows: undecided, empty, store_only, or explicit old slugs."""
+    params = {"env": env, "filter": filter, "slugs": slugs, "limit": limit, "offset": offset}
+    return _call("GET", "/api/categories/mapping-rows", params={k: v for k, v in params.items() if v is not None})
 
 
 if __name__ == "__main__":

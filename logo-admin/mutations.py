@@ -9,10 +9,31 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import json
 from typing import Any, Callable, Dict, Literal, Mapping, Optional
+
+import psycopg2
 from urllib.parse import urlsplit
 
 import mix_service
 from commands import (
+    CatCommand, CatCategoryTarget,
+    CatDecideCommand,
+    CatUndoDecisionCommand,
+    CatMakeSurvivingCommand,
+    CatCreateCategoryCommand,
+    CatRenameCategoryCommand,
+    CatMoveCategoryCommand,
+    CatDeleteCategoryCommand,
+    CatSetStoreOverrideCommand,
+    CatDeleteStoreOverrideCommand,
+    CatAcceptUncategorizedCommand,
+    CatUnacceptUncategorizedCommand,
+    CatSetRuleCommand,
+    CatDeleteRuleCommand,
+    CatAssignStylesCommand,
+    CatDeleteAssignmentCommand,
+
+    SetExternalMixStoreCommand,
+    RemoveExternalMixStoreCommand,
     COMMAND_MODELS,
     SavePriceRuleCommand,
     FillMissingColorsCommand,
@@ -64,6 +85,13 @@ from domain import Conflict, InvalidCommand, NotFound
 
 
 ScopeKind = Literal[
+    'catmgr_ack_row',
+    'catmgr_assignment_row',
+    'catmgr_draft',
+    'catmgr_override_row',
+    'catmgr_rule_row',
+    'catmgr_slug_map_row',
+
     "assignment_option_row",
     "assignment_color",
     "assignment_style",
@@ -79,6 +107,7 @@ ScopeKind = Literal[
     "price_rule_row",
     "store_mix_store_row",
     "store_mix_items",
+    "virtual_catalog_store_row",
 ]
 
 # Exact preview/undo materializes every affected row. These hard service caps
@@ -95,6 +124,24 @@ MAX_BULK_STYLES = 50
 # validation cross-checks this map against the command/handler registries and
 # the snapshot and restore implementations before exposing agent writes.
 COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
+    'cat_create_category': frozenset(['catmgr_draft']),
+    'cat_rename_category': frozenset(['catmgr_draft']),
+    'cat_move_category': frozenset(['catmgr_draft']),
+    'cat_decide': frozenset(['catmgr_slug_map_row']),
+    'cat_undo_decision': frozenset(['catmgr_slug_map_row']),
+    'cat_make_surviving': frozenset(['catmgr_slug_map_row']),
+    'cat_delete_category': frozenset(['catmgr_draft', 'catmgr_rule_row', 'catmgr_assignment_row']),
+    'cat_set_store_override': frozenset(['catmgr_override_row', 'catmgr_slug_map_row', 'catmgr_draft']),
+    'cat_delete_store_override': frozenset(['catmgr_override_row', 'catmgr_slug_map_row']),
+    'cat_accept_uncategorized': frozenset(['catmgr_ack_row']),
+    'cat_unaccept_uncategorized': frozenset(['catmgr_ack_row']),
+    'cat_set_rule': frozenset(['catmgr_rule_row']),
+    'cat_delete_rule': frozenset(['catmgr_rule_row']),
+    'cat_assign_styles': frozenset(['catmgr_assignment_row']),
+    'cat_delete_assignment': frozenset(['catmgr_assignment_row']),
+
+    "set_external_mix_store": frozenset({"virtual_catalog_store_row", "store_mix_store_row"}),
+    "remove_external_mix_store": frozenset({"virtual_catalog_store_row"}),
     "save_assignment": frozenset({"assignment_option_row"}),
     "deactivate_assignment": frozenset({"assignment_option_row"}),
     "hard_delete_assignment": frozenset({"assignment_option_row"}),
@@ -560,7 +607,10 @@ def _sync_block_scopes(command) -> tuple:
 
 
 def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
-    if isinstance(command, AssignmentTarget):
+    if isinstance(command, CatCommand):
+        from snapshots import scope_from_dict
+        scopes = tuple(scope_from_dict(s) for s in command._category_state.get("scopes", []))
+    elif isinstance(command, AssignmentTarget):
         scopes = (assignment_option_scope(command),)
     elif isinstance(command, ColorTarget):
         scopes = (assignment_color_scope(command),)
@@ -608,6 +658,10 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = (MutationScope("price_rule_row", {"rule_id": int(rule_id)}),)
     elif isinstance(command, (SetPriceRuleActiveCommand, DeletePriceRuleCommand)):
         scopes = (MutationScope("price_rule_row", {"rule_id": int(command.rule_id)}),)
+    elif isinstance(command, (SetExternalMixStoreCommand, RemoveExternalMixStoreCommand)):
+        scopes = (MutationScope("virtual_catalog_store_row", {"fdm4_store": mix_service.norm(command.store)}),)
+        if isinstance(command, SetExternalMixStoreCommand):
+            scopes += (MutationScope("store_mix_store_row", {"fdm4_store": mix_service.norm(command.store)}),)
     elif isinstance(command, SetProductMixCommand):
         store = mix_service.norm(command.store)
         scopes = (
@@ -648,7 +702,13 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
     )
     declared = COMMAND_SCOPE_KINDS.get(command_name or "")
     actual = frozenset(scope.kind for scope in scopes)
-    if declared is None or not actual or actual != declared:
+    # Category commands discover their scopes from the draft when staged (a
+    # cascade delete may reach no rule rows, a move may resequence no
+    # siblings), so they may use a subset of the declared kinds but never a
+    # kind outside them. Their handlers return exactly the discovered scopes
+    # and _category_begin refuses to apply when a fresh discovery differs, so
+    # the row-level guarantee lives there rather than in this kind check.
+    if declared is None or not actual or (not actual <= declared if isinstance(command, CatCommand) else actual != declared):
         raise InvalidCommand("mutation scope contract mismatch")
     return scopes
 
@@ -1920,7 +1980,430 @@ def fill_missing_colors(cursor, actor: str, command: FillMissingColorsCommand) -
     return MutationResult(outcome, affected_scopes(command))
 
 
+def set_external_mix_store(cursor, actor: str, command: SetExternalMixStoreCommand) -> MutationResult:
+    store = mix_service.norm(command.store)
+    mix_service.known_store(cursor,store)
+    cursor.execute("SELECT catalog_id FROM woo.virtual_catalog_store WHERE fdm4_store=%s",(store,))
+    if cursor.fetchone():
+        raise InvalidCommand(f"{store} is already an external all-products store")
+    registry = mix_service.registry(cursor,store,required=False)
+    if registry and registry["active"] and registry["mode"]=="list":
+        raise InvalidCommand(f"{store} uses a curated list; switch it to 'All products - follow FDM4' before making it external")
+    catalog = f"{store}_Woo_1"
+    note_actor = actor.removeprefix("agent-preview:").removeprefix("agent:")
+    note = f"External all-products store; enrolled via Warehouse Ops by {note_actor}"
+    if command.source != "external":
+        note += f"; source: {command.source}"
+    cursor.execute("INSERT INTO woo.virtual_catalog_store (fdm4_store,catalog_id,note,stock_override) VALUES (%s,%s,%s,9999)",(store,catalog,note[:500]))
+    cursor.execute("""INSERT INTO woo.store_mix_store (fdm4_store,mode,active,note,created_by,updated_by)
+        VALUES (%s,'all',true,%s,%s,%s) ON CONFLICT (fdm4_store) DO UPDATE
+        SET mode='all',active=true,updated_by=EXCLUDED.updated_by,updated_at=now()""",
+        (store,"External store: all products, always in stock",actor,actor))
+    return MutationResult({"ok":True,"catalog_id":catalog,
+        "note":"Supply builds on the next hourly warehouse refresh; the storefront follows on its next sync (within ~1h15 total)."},affected_scopes(command))
+
+
+def remove_external_mix_store(cursor, actor: str, command: RemoveExternalMixStoreCommand) -> MutationResult:
+    del actor
+    store = mix_service.norm(command.store)
+    cursor.execute("DELETE FROM woo.virtual_catalog_store WHERE fdm4_store=%s RETURNING catalog_id",(store,))
+    if not cursor.fetchone():
+        raise NotFound(f"{store} is not an external all-products store")
+    return MutationResult({"ok":True,
+        "note":"The all-products supply retires on the next hourly refresh; the store's blog then re-syncs from its regular FDM4 catalog, which can deactivate most of its products. The product-mix registry entry is kept."},affected_scopes(command))
+
+
+def assert_category_write_access(cursor, actor: str, env: str, tool_name: str = "") -> str:
+    """The draft lock precedes every permission/run check and snapshot."""
+    import categories_draft
+    from authorization import AccessContext
+    from config import get_settings
+    from tool_registry import _assert_read_access, get_agent_tool
+    from queries import _category_env
+    categories_draft.lock_draft(cursor)
+    login = actor.split(":", 1)[-1].strip().lower()
+    settings = get_settings()
+    _assert_read_access("cat_decide", AccessContext(login, login), settings)
+    if tool_name:
+        get_agent_tool(tool_name, writes_enabled=settings.agent_writes_enabled,
+                       write_tools=settings.agent_write_tools)
+    _category_env(env)
+    # A run that is already active answers at once, before any lock a live
+    # worker's heartbeat would otherwise have to wait behind.
+    active = _active_category_run(cursor, env)
+    if not active:
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext('catmgr_run_' || %s))", (env,))
+        # Run/restore creation does not share the draft advisory lock. These locks
+        # close that check-to-write window until preview/apply/undo commits.
+        cursor.execute("LOCK TABLE catmgr.run, catmgr.run_job IN SHARE MODE")
+        active = _active_category_run(cursor, env)
+    if active:
+        raise InvalidCommand(
+            "Category draft writes are unavailable while a run is queued, running, paused or restoring "
+            f"(run #{active['run_id']} is {active['state']}); a person manages it on the Runs tab")
+    return f"agent:{login}"
+
+
+def _active_category_run(cursor, env):
+    """The Runs tab's own definition of active: any run in
+    categories_runs.ACTIVE_STATUSES (queued, running, paused), or a store
+    restore whose job still reports a running restore."""
+    import categories_runs
+    cursor.execute(
+        "SELECT run_id, status FROM catmgr.run WHERE env = %s AND status IN %s ORDER BY run_id LIMIT 1",
+        (env, tuple(categories_runs.ACTIVE_STATUSES)))
+    row = cursor.fetchone()
+    if row:
+        return {"run_id": row["run_id"], "state": row["status"]}
+    cursor.execute(
+        "SELECT r.run_id FROM catmgr.run r JOIN catmgr.run_job j USING (run_id)"
+        " WHERE r.env = %s AND j.progress -> 'restore' ->> 'status' = 'running' ORDER BY r.run_id LIMIT 1",
+        (env,))
+    row = cursor.fetchone()
+    return {"run_id": row["run_id"], "state": "restoring a store"} if row else None
+
+
+def _category_name(command):
+    return next(name for name, model in COMMAND_MODELS.items() if type(command) is model)
+
+
+def _category_target(cursor, target):
+    if target is None:
+        return None
+    # Resolution itself uses no environment facts; counts are only for reads.
+    import categories_draft
+    nodes = categories_draft.list_nodes(cursor)
+    by_id = {n['node_id']: n for n in nodes}
+    matches = []
+    for node in nodes:
+        if target.slug is not None:
+            match = node['slug'] == target.slug.strip()
+        else:
+            parts, seen, current = [], set(), node
+            while current and current['node_id'] not in seen:
+                seen.add(current['node_id'])
+                parts.append(current['name'])
+                current = by_id.get(current['parent_id'])
+            path = " / ".join(reversed(parts))
+            requested = " / ".join(p.strip() for p in target.path.replace('›', '/').replace(' > ', '/').split('/'))
+            match = path == requested
+        if match:
+            matches.append(node)
+    if len(matches) != 1:
+        raise InvalidCommand("Category target is missing or ambiguous; use cat_node_lookup and confirm its exact web address")
+    return int(matches[0]['node_id'])
+
+
+def _category_skus(values):
+    clean = sorted({_clean(v, "SKU", 200).upper() for v in values})
+    if not 1 <= len(clean) <= 200:
+        raise InvalidCommand("Use 1-200 SKUs per call")
+    return clean
+
+
+def _category_scope_state(cursor, command, *, reserve=False):
+    """Discover every side effect under the draft lock; persist only private
+    reservations and exact scopes, never model-supplied SQL or identities."""
+    import categories_draft as draft
+    import categories_mapping as mapping
+    from snapshots import compact_scopes, scope_dict
+    state = command._category_state
+    reserved = dict(state.get("reserved", {}))
+    scopes = []
+    targets = {}
+    name = _category_name(command)
+    def scope(kind, key):
+        scopes.append(MutationScope(kind, key))
+    def identity(label, table, column):
+        if label not in reserved:
+            if not reserve:
+                raise InvalidCommand("Category command is missing its reserved identity")
+            cursor.execute("SELECT nextval(pg_get_serial_sequence(%s, %s)) AS id", (table, column))
+            reserved[label] = int(cursor.fetchone()['id'])
+        value = reserved[label]
+        if type(value) is not int or value < 1:
+            raise InvalidCommand("Invalid category identity reservation")
+        return value
+    if hasattr(command, "category") and command.category is not None:
+        targets['category'] = _category_target(cursor, command.category)
+    if hasattr(command, "parent"):
+        targets['parent'] = _category_target(cursor, command.parent)
+    if name in {"cat_create_category", "cat_rename_category", "cat_move_category", "cat_delete_category"}:
+        scope('catmgr_draft', {})
+        if name == 'cat_create_category':
+            identity('node', 'catmgr.node', 'node_id')
+        if name == 'cat_delete_category':
+            subtree = draft._subtree_ids(cursor, targets['category'])
+            for table, column, kind in [('catmgr.assignment_rule', 'rule_id', 'catmgr_rule_row'), ('catmgr.product_assignment', 'id', 'catmgr_assignment_row')]:
+                cursor.execute(f"SELECT {column} FROM {table} WHERE node_id = ANY(%s) ORDER BY {column} LIMIT 501", (subtree,))
+                rows = cursor.fetchall()
+                if len(rows) > 200:
+                    raise InvalidCommand("Category delete would remove more than 200 rules or style assignments; reduce those first")
+                for row in rows:
+                    scope(kind, {column: row[column]})
+    elif name == 'cat_decide':
+        slugs = [_clean(row.old_slug, 'old_slug', 200) for row in command.rows]
+        if len(set(slugs)) != len(slugs):
+            raise InvalidCommand("Decide each old slug only once per call")
+        for row, slug in zip(command.rows, slugs):
+            scope('catmgr_slug_map_row', {'old_slug': slug})
+            if row.action == 'move':
+                targets[slug] = _category_target(cursor, CatCategoryTarget(slug=row.target_slug))
+    elif name == 'cat_undo_decision':
+        scope('catmgr_slug_map_row', {'old_slug': _clean(command.old_slug, 'old_slug', 200)})
+    elif name == 'cat_make_surviving':
+        node_id = _category_target(cursor, CatCategoryTarget(slug=command.target_slug))
+        targets['category'] = node_id
+        scope('catmgr_slug_map_row', {'old_slug': _clean(command.old_slug, 'old_slug', 200)})
+        cursor.execute("SELECT old_slug FROM catmgr.slug_map WHERE target_node_id = %s AND is_primary", (node_id,))
+        for row in cursor.fetchall():
+            scope('catmgr_slug_map_row', {'old_slug': row['old_slug']})
+    elif name in {'cat_set_store_override', 'cat_delete_store_override'}:
+        oid = command.override_id
+        if oid is None:
+            oid = identity('override', 'catmgr.node_store_override', 'override_id')
+        scope('catmgr_override_row', {'override_id': oid})
+        if name == 'cat_set_store_override' and command.override_id is not None:
+            cursor.execute("SELECT node_id FROM catmgr.node_store_override WHERE override_id = %s", (oid,))
+            current = cursor.fetchone()
+            if current and current['node_id'] != targets.get('category'):
+                raise InvalidCommand("An existing store override cannot change its category target; delete it and create another")
+        cursor.execute("SELECT old_slug FROM catmgr.slug_map WHERE override_id = %s ORDER BY old_slug LIMIT 201", (oid,))
+        linked = cursor.fetchall()
+        if len(linked) > 200:
+            raise InvalidCommand("Override affects more than 200 mapping decisions")
+        # Even an UPDATE must capture children: undo replaces the override row.
+        for row in linked:
+            scope('catmgr_slug_map_row', {'old_slug': row['old_slug']})
+        if name == 'cat_set_store_override' and command.override_id is not None and command.kind == 'store_only':
+            scope('catmgr_draft', {})
+    elif name in {'cat_accept_uncategorized', 'cat_unaccept_uncategorized'}:
+        for sku in _category_skus(command.skus):
+            scope('catmgr_ack_row', {'sku': sku})
+    elif name in {'cat_set_rule', 'cat_delete_rule'}:
+        rid = command.rule_id
+        if rid is None:
+            rid = identity('rule', 'catmgr.assignment_rule', 'rule_id')
+        scope('catmgr_rule_row', {'rule_id': rid})
+    elif name == 'cat_assign_styles':
+        node_id = targets['category']
+        skus = _category_skus(command.skus)
+        mode = 'add' if command.mode == 'add' else 'remove'
+        cursor.execute("SELECT id, sku, mode FROM catmgr.product_assignment WHERE node_id = %s AND sku = ANY(%s) ORDER BY id", (node_id, skus))
+        existing = cursor.fetchall()
+        for row in existing:
+            scope('catmgr_assignment_row', {'id': row['id']})
+        for sku in skus:
+            existing_id = next((r['id'] for r in existing if r['sku'] == sku and r['mode'] == mode), None)
+            if existing_id is None:
+                existing_id = identity(sku, 'catmgr.product_assignment', 'id')
+            else:
+                reserved[sku] = existing_id
+            scope('catmgr_assignment_row', {'id': existing_id})
+    elif name == 'cat_delete_assignment':
+        scope('catmgr_assignment_row', {'id': command.assignment_id})
+    else:
+        raise InvalidCommand("Unsupported category command")
+    return {'reserved': reserved, 'targets': targets,
+            'scopes': [scope_dict(s) for s in compact_scopes(scopes)]}
+
+
+def prepare_category_command(cursor, actor, command):
+    assert_category_write_access(cursor, actor, command.env, _category_name(command))
+    if not command._category_state:
+        command._category_state = _category_scope_state(cursor, command, reserve=True)
+
+
+def _category_begin(cursor, actor, command):
+    actor = assert_category_write_access(cursor, actor, command.env, _category_name(command))
+    actual = _category_scope_state(cursor, command)
+    if actual != command._category_state:
+        raise InvalidCommand("Category targets or related rows changed; discard this proposal and stage it again for review")
+    return actor, actual['targets'], actual['reserved']
+
+
+def _category_result(cursor, actor, command, value):
+    import categories_service
+    categories_service.record_audit(cursor, actor=actor, action=_category_name(command),
+        entity='draft', entity_key=command.env, detail={'tool': _category_name(command)})
+    return MutationResult(value or {}, affected_scopes(command))
+
+
+def cat_decide(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, targets, _ = _category_begin(cursor, actor, command)
+    visible = {r['old_slug']: r for r in mapping.mapping_status(cursor, command.env)['slugs']}
+    rows = []
+    for row in command.rows:
+        slug = row.old_slug.strip()
+        if slug not in visible:
+            raise InvalidCommand(f"Category {slug!r} is missing from this copy of live categories; use cat_mapping_rows")
+        if row.action == 'delete' and visible[slug]['products'] and not command.allow_products:
+            raise InvalidCommand(f"Category {slug!r} still holds {visible[slug]['products']} products; deleting requires allow_products=true")
+        rows.append({'old_slug': slug, 'action': {'move':'map','keep':'store_custom','delete':'delete'}[row.action],
+                     'target_node_id': targets.get(slug), 'is_primary': row.make_surviving, 'note': row.note})
+    result = mapping.bulk_set(cursor, rows, actor=actor)
+    failures = [r['error'] for r in result if not r['ok']]
+    if failures:
+        raise InvalidCommand('; '.join(failures))
+    return _category_result(cursor, actor, command, {'rows': result})
+
+
+def cat_undo_decision(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, _, _ = _category_begin(cursor, actor, command)
+    mapping.clear_mapping(cursor, command.old_slug.strip(), actor=actor)
+    return _category_result(cursor, actor, command, {'old_slug': command.old_slug})
+
+
+def cat_make_surviving(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, targets, _ = _category_begin(cursor, actor, command)
+    node_id = targets['category']
+    cursor.execute("SELECT * FROM catmgr.slug_map WHERE target_node_id = %s AND is_primary AND old_slug <> %s", (node_id, command.old_slug.strip()))
+    for row in cursor.fetchall():
+        mapping.set_mapping(cursor, old_slug=row['old_slug'], action='map', target_node_id=node_id,
+                            is_primary=False, note=row['note'], actor=actor)
+    cursor.execute("SELECT note FROM catmgr.slug_map WHERE old_slug = %s", (command.old_slug.strip(),))
+    previous = cursor.fetchone()
+    value = mapping.set_mapping(cursor, old_slug=command.old_slug.strip(), action='map', target_node_id=node_id,
+                                is_primary=True, note=previous['note'] if previous else '', actor=actor)
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_create_category(cursor, actor, command):
+    import categories_draft as draft
+    actor, targets, reserved = _category_begin(cursor, actor, command)
+    value = draft.create_node(cursor, name=command.name, slug=command.slug, parent_id=targets['parent'],
+                              description=command.description, position=command.position, actor=actor, reserved_id=reserved['node'])
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_rename_category(cursor, actor, command):
+    import categories_draft as draft
+    actor, targets, _ = _category_begin(cursor, actor, command)
+    value = draft.update_node(cursor, targets['category'], name=command.name, slug=command.new_slug,
+                              description=command.description, actor=actor)
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_move_category(cursor, actor, command):
+    import categories_draft as draft
+    actor, targets, _ = _category_begin(cursor, actor, command)
+    value = draft.move_node(cursor, targets['category'], parent_id=targets['parent'], position=command.position, actor=actor)
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_delete_category(cursor, actor, command):
+    import categories_draft as draft
+    actor, targets, _ = _category_begin(cursor, actor, command)
+    value = draft.delete_node(cursor, targets['category'], cascade=command.cascade, actor=actor)
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_set_store_override(cursor, actor, command):
+    import categories_draft as draft
+    actor, targets, reserved = _category_begin(cursor, actor, command)
+    value = draft.set_override(cursor, blog_id=command.blog_id, kind={'rename':'rename','hide':'exclude','store_only':'extra_node'}[command.kind],
+        override_id=command.override_id, node_id=targets.get('category'), name=command.name, slug=command.slug,
+        parent_node_id=targets['parent'], include_descendants=command.include_descendants, sort_order=command.sort_order,
+        actor=actor, reserved_id=reserved.get('override'))
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_delete_store_override(cursor, actor, command):
+    import categories_draft as draft
+    actor, _, _ = _category_begin(cursor, actor, command)
+    draft.delete_override(cursor, command.override_id, actor=actor)
+    return _category_result(cursor, actor, command, {'override_id': command.override_id})
+
+
+def cat_accept_uncategorized(cursor, actor, command):
+    import categories_planner as planner
+    actor, _, _ = _category_begin(cursor, actor, command)
+    count = planner.set_acks(cursor, skus=_category_skus(command.skus), note=command.note, actor=actor)
+    return _category_result(cursor, actor, command, {'count': count})
+
+
+def cat_unaccept_uncategorized(cursor, actor, command):
+    import categories_planner as planner
+    actor, _, _ = _category_begin(cursor, actor, command)
+    skus = _category_skus(command.skus)
+    for sku in skus:
+        planner.delete_ack(cursor, sku, actor=actor)
+    return _category_result(cursor, actor, command, {'count': len(skus)})
+
+
+def _bounded_rule_evaluation(cursor, evaluate):
+    """Python compiles a person's pattern but Postgres executes it; keep its
+    backtracking from holding the draft lock open inside the write."""
+    cursor.execute("SAVEPOINT cat_rule_evaluation")
+    cursor.execute("SELECT current_setting('statement_timeout') AS timeout")
+    previous = cursor.fetchone()["timeout"]
+    cursor.execute("SELECT set_config('statement_timeout', '5s', true)")
+    try:
+        result = evaluate()
+    except psycopg2.errors.QueryCanceled:
+        cursor.execute("ROLLBACK TO SAVEPOINT cat_rule_evaluation")
+        cursor.execute("RELEASE SAVEPOINT cat_rule_evaluation")
+        raise InvalidCommand("The rule pattern took too long to evaluate; simplify it")
+    cursor.execute("SELECT set_config('statement_timeout', %s, true)", (previous,))
+    cursor.execute("RELEASE SAVEPOINT cat_rule_evaluation")
+    return result
+
+
+def cat_set_rule(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, targets, reserved = _category_begin(cursor, actor, command)
+    spec = mapping._validate_spec(command.spec.service_spec())
+    impact = _bounded_rule_evaluation(cursor, lambda: mapping.evaluate_rule(cursor, command.env, spec, limit=50))
+    value = mapping.set_rule(cursor, node_id=targets['category'], spec=spec, priority=command.priority,
+        note=command.note, rule_id=command.rule_id, actor=actor, reserved_id=reserved.get('rule'))
+    value['category_rule_impact'] = {'rule_id': value['rule_id'], 'count': impact['count'], 'skus': impact['skus'], 'spec': spec}
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_delete_rule(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, _, _ = _category_begin(cursor, actor, command)
+    mapping.delete_rule(cursor, command.rule_id, actor=actor)
+    return _category_result(cursor, actor, command, {'rule_id': command.rule_id})
+
+
+def cat_assign_styles(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, targets, reserved = _category_begin(cursor, actor, command)
+    value = mapping.set_assignments(cursor, node_id=targets['category'], skus=_category_skus(command.skus),
+        mode='add' if command.mode == 'add' else 'remove', source='manual', note=command.note, actor=actor, reserved_ids=reserved)
+    return _category_result(cursor, actor, command, value)
+
+
+def cat_delete_assignment(cursor, actor, command):
+    import categories_mapping as mapping
+    actor, _, _ = _category_begin(cursor, actor, command)
+    mapping.delete_assignment(cursor, command.assignment_id, actor=actor)
+    return _category_result(cursor, actor, command, {'assignment_id': command.assignment_id})
+
+
 MUTATION_HANDLERS: Dict[str, Callable] = {
+    'cat_decide': cat_decide,
+    'cat_undo_decision': cat_undo_decision,
+    'cat_make_surviving': cat_make_surviving,
+    'cat_create_category': cat_create_category,
+    'cat_rename_category': cat_rename_category,
+    'cat_move_category': cat_move_category,
+    'cat_delete_category': cat_delete_category,
+    'cat_set_store_override': cat_set_store_override,
+    'cat_delete_store_override': cat_delete_store_override,
+    'cat_accept_uncategorized': cat_accept_uncategorized,
+    'cat_unaccept_uncategorized': cat_unaccept_uncategorized,
+    'cat_set_rule': cat_set_rule,
+    'cat_delete_rule': cat_delete_rule,
+    'cat_assign_styles': cat_assign_styles,
+    'cat_delete_assignment': cat_delete_assignment,
+
+    "set_external_mix_store": set_external_mix_store,
+    "remove_external_mix_store": remove_external_mix_store,
     "save_price_rule": save_price_rule,
     "fill_missing_colors": fill_missing_colors,
     "save_assignment": save_assignment,
@@ -1971,6 +2454,12 @@ def dispatch_mutation(
         if isinstance(command, model):
             if isinstance(command, (SavePriceRuleCommand, SetPriceRuleActiveCommand)):
                 return MUTATION_HANDLERS[name](cursor, actor, command, preview_activation=preview_activation)
+            if isinstance(command, CatCommand):
+                import categories_draft
+                try:
+                    return MUTATION_HANDLERS[name](cursor, actor, command)
+                except (categories_draft.DraftError, categories_draft.DraftConflict) as exc:
+                    raise InvalidCommand(str(exc)) from exc
             return MUTATION_HANDLERS[name](cursor, actor, command)
     raise InvalidCommand("unsupported mutation command")
 

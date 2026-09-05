@@ -2521,6 +2521,8 @@
     disable_product_mix: "Let a store follow FDM4 again",
     add_mix_styles: "Add styles to a store's product list",
     remove_mix_styles: "Drop styles from a store's product list",
+    set_external_mix_store: "Enrol an external all-products store",
+    remove_external_mix_store: "Return an external store to its FDM4 catalog",
   };
   const REVIEW_TABLE_LABELS = {
     "logo.display_name": (key) => `logo name · design ${key[0]} · ${key[1]} · ${key[2] ? `store ${key[2]}` : "shared default"}`,
@@ -2531,6 +2533,13 @@
     "logo.store_settings": (key) => `store settings · ${key[0]}`,
     "logo.default_cost": (key) => `default cost · logo ${key[0]} · ${key[1]}`,
     "woo.price_rule": (key) => `price rule #${key[0]}`,
+    "catmgr.node": (key) => `draft category #${key[0]}`,
+    "catmgr.slug_map": (key) => `decision · ${key[0]}`,
+    "catmgr.node_store_override": (key) => `store override #${key[0]}`,
+    "catmgr.uncategorized_ack": (key) => `accepted product · ${key[0]}`,
+    "catmgr.assignment_rule": (key) => `category rule #${key[0]}`,
+    "catmgr.product_assignment": (key) => `style assignment #${key[0]}`,
+    "woo.virtual_catalog_store": (key) => `external catalog · store ${key[0]}`,
     "woo.store_mix_store": (key) => `product mix · store ${key[0]}`,
     "woo.store_mix_item": (key) => `product list · store ${key[0]} · style ${key[1]}`,
     "woo.store_pricing_tier": (key) => `pricing level · store ${key[0]}`,
@@ -2588,6 +2597,22 @@
     const where = [style ? reviewStyleLabel(style) : "", color ? `color ${reviewColorLabel(style, color)}` : ""].filter(Boolean).join(", ");
     const changesFor = Array.isArray(diff?.changes) ? diff.changes : [];
     switch (tool) {
+      case "cat_decide": return (a.rows || []).map((r) => r.action === "move" ? `Move ${r.old_slug} into ${r.target_slug}${r.make_surviving ? " as the surviving category" : ""}` : r.action === "keep" ? `Keep ${r.old_slug} for this store only` : `Delete ${r.old_slug}${a.allow_products ? " (including its products' category membership)" : " if empty"}`).join("; ") + ".";
+      case "cat_undo_decision": return `Undo the explicit decision for ${a.old_slug}; Check the plan will show whether it is undecided.`;
+      case "cat_make_surviving": return `Make ${a.old_slug} the surviving category for ${a.target_slug}.`;
+      case "cat_create_category": return `Create ${a.name}${a.parent ? ` inside ${a.parent.path || a.parent.slug}` : " at the top level"} in the draft.`;
+      case "cat_rename_category": return `Update ${a.category?.path || a.category?.slug}${a.name ? ` to ${a.name}` : ""}${a.new_slug ? `; change its web address to ${a.new_slug}. The old address is carried for redirect planning; check redirects before applying to stores` : ""}${a.description !== null && a.description !== undefined ? "; update the description" : ""}.`;
+      case "cat_move_category": return `Move ${a.category?.path || a.category?.slug} into ${a.parent?.path || a.parent?.slug || "the top level"}${a.position !== null && a.position !== undefined ? ` at position ${a.position + 1}` : ""}.`;
+      case "cat_delete_category": return `Delete ${a.category?.path || a.category?.slug} from the draft${a.cascade ? " and the categories below it" : ""}. Decisions pointing to deleted categories become undecided.`;
+      case "cat_set_store_override": return `${a.kind === "hide" ? "Hide" : a.kind === "rename" ? "Rename" : "Create a store-only category"} ${a.name || a.category?.path || a.category?.slug || a.slug} for store ${a.blog_id} only.`;
+      case "cat_delete_store_override": return `Delete store override #${a.override_id} from the draft; linked decisions become undecided.`;
+      case "cat_accept_uncategorized": return `Accept ${(a.skus || []).length} products with no category.`;
+      case "cat_unaccept_uncategorized": return `Remove acceptance for ${(a.skus || []).length} products with no category.`;
+      case "cat_set_rule": return `Set a product rule for ${a.category?.path || a.category?.slug}: ${a.spec?.field} ${a.spec?.op} ${a.spec?.value}. Review the matching product count below.`;
+      case "cat_delete_rule": return `Delete product rule #${a.rule_id} from the draft.`;
+      case "cat_assign_styles": return `${a.mode === "add" ? "Add" : "Keep out"} ${(a.skus || []).length} styles ${a.mode === "add" ? "in" : "from"} ${a.category?.path || a.category?.slug}.`;
+      case "cat_delete_assignment": return `Delete style assignment #${a.assignment_id} from the draft.`;
+
       case "save_assignment": {
         const isNew = changesFor.some((c) => c.before === null && c.after && text(c.after.garment_color_code) === color && text(c.after.product_style) === style);
         const logo = [a.name_override, a.logo_code && `${a.logo_code} · ${a.color_scheme_id || ""}`.trim(), a.design_id && `design ${a.design_id}`].filter(Boolean).join(" — ");
@@ -2636,6 +2661,8 @@
       case "set_product_mix": return `Store ${store} product mix: ${a.mode === "list" ? "a curated list decides which products it carries (seeded from its current mix first)" : "follow FDM4 completely, new products included automatically"}${a.note ? ` — note: ${a.note}` : ""}. Products appear or leave on the next hourly update.`;
       case "disable_product_mix": return `Switch off store ${store}'s product-mix override; it follows FDM4 again and its saved list is kept.`;
       case "add_mix_styles": return `Add ${reviewStyleList(a.styles)} to store ${store}'s curated product list (all colors). They appear on the next hourly update.`;
+      case "set_external_mix_store": return `Enrol store ${store} as an external all-products store (${a.source || "external"}). Every priced FDM4 style will show stock 9999 after the next refresh.`;
+      case "remove_external_mix_store": return `Return store ${store} to its regular FDM4 catalog on the next refresh. This can hide many products. Its product-mix registry entry is kept.`;
       case "remove_mix_styles": return `Drop ${reviewStyleList(a.styles)} from store ${store}'s curated product list. Those products leave the store on the next hourly update.`;
       case "set_store_extra_customers": { const list = Array.isArray(a.customers) ? a.customers.filter(Boolean) : []; return `Store ${store} may use designs from ${list.length ? `these FDM4 customers: ${list.join(", ")}` : "no other FDM4 customer"} besides its own.`; }
       case "remove_sync_block": {
@@ -2655,7 +2682,7 @@
       const before = change.before || null; const after = change.after || null;
       const row = agentNode("tr");
       const key = Array.isArray(change.key) ? change.key : [];
-      const isAssignment = text(change.table).endsWith("assignment");
+      const isAssignment = text(change.table) === "logo.assignment";
       let where = key.map(String).join(" · ");
       if (isAssignment && key.length >= 5) {
         where = `${reviewStyleLabel(key[1])} · ${reviewColorLabel(text(key[1]), key[2])} · row ${key[3]} pos ${key[4]}`;
@@ -2688,6 +2715,24 @@
     table.append(body);
     const wrap = agentNode("div", "assistant-change-table-wrap"); wrap.append(table);
     return wrap;
+  }
+
+  function buildCategoryDraftSummary(rows) {
+    const box = agentNode("div", "assistant-review__section");
+    const nodes = rows.filter((c) => c.table === "catmgr.node");
+    const created = nodes.filter((c) => !c.before).length;
+    const deleted = nodes.filter((c) => !c.after).length;
+    const renamed = nodes.filter((c) => c.before && c.after && (c.before.name !== c.after.name || c.before.slug !== c.after.slug)).length;
+    const moved = nodes.filter((c) => c.before && c.after && (c.before.parent_id !== c.after.parent_id || c.before.sort_order !== c.after.sort_order)).length;
+    const descriptions = nodes.filter((c) => c.before && c.after && c.before.description !== c.after.description).length;
+    const mappings = rows.filter((c) => c.table === "catmgr.slug_map");
+    const overrides = rows.filter((c) => c.table === "catmgr.node_store_override").length;
+    box.append(agentNode("h4", "", "Category draft changes"),
+      agentNode("p", "", `Categories created: ${created}; renamed or given a new web address: ${renamed}; moved or reordered: ${moved}; deleted: ${deleted}; descriptions changed: ${descriptions}.`),
+      agentNode("p", "", `Mapping rows affected: ${mappings.length}; store overrides affected: ${overrides}.`));
+    const undecided = mappings.filter((c) => c.before && !c.after).map((c) => c.before.old_slug);
+    if (undecided.length) box.append(agentNode("p", "", `Decisions removed (check which are undecided): ${undecided.join(", ")}.`));
+    return box;
   }
 
   function renderChangeSet(elements, payload, warning = "") {
@@ -2765,13 +2810,23 @@
       wrap.append(table); section.append(wrap); elements.review.append(section);
     }
 
-    const changeRows = Array.isArray(changeSet.diff?.changes) ? changeSet.diff.changes : [];
+    const allChangeRows = Array.isArray(changeSet.diff?.changes) ? changeSet.diff.changes : [];
+    const hasCategoryDraft = Array.isArray(changeSet.scopes) && changeSet.scopes.some((s) => s.kind === "catmgr_draft");
+    const draftTables = ["catmgr.node", "catmgr.slug_map", "catmgr.node_store_override"];
+    if (hasCategoryDraft) elements.review.append(buildCategoryDraftSummary(allChangeRows));
+    const changeRows = hasCategoryDraft ? allChangeRows.filter((c) => !draftTables.includes(c.table)) : allChangeRows;
+    for (const impact of changeSet.diff?.category_rule_impacts || []) {
+      elements.review.append(agentNode("p", "", `Product rule #${impact.rule_id} catches ${impact.count} styles. Sample: ${(impact.skus || []).join(", ") || "none"}.`));
+    }
+    if (changeSet.status === "applied" && changeSet.items.some((item) => text(item.tool_name ?? item.name).startsWith("cat_"))) {
+      elements.review.append(agentNode("p", "notice", "Draft changes saved. Press Check the plan. A person applies the category plan to stores on Preview & Apply."));
+    }
     const changes = agentNode("div", "assistant-review__section");
     changes.append(agentNode("h4", "", changeRows.length === 1 ? "1 row will change" : `${changeRows.length} rows will change`));
     if (changeRows.length) {
       changes.append(buildReviewChangeTable(changeRows));
     } else {
-      changes.append(agentNode("p", "muted", "No net change: the warehouse already matches this request."));
+      changes.append(agentNode("p", "muted", hasCategoryDraft && allChangeRows.length ? "Structural changes are summarized above." : "No net change: the warehouse already matches this request."));
     }
     elements.review.append(changes);
 
@@ -2947,7 +3002,7 @@
 
 
   // ----- Spreadsheet mapping card: readable rendering -----
-  const MAPPING_COMMAND_LABELS = { save_assignment: "Add or update logo rows", set_store_pricing_tier: "Set store pricing levels" };
+  const MAPPING_COMMAND_LABELS = { save_assignment: "Add or update logo rows", set_store_pricing_tier: "Set store pricing levels", mixed: "Run the command named on each row", deactivate_assignment: "Deactivate logo rows", remove_stock_override: "Remove stock exceptions", remove_sync_block: "Remove sync freezes", delete_price_rule: "Delete price rules", remove_mix_styles: "Remove styles from product lists" };
   const MAPPING_STATUS_LABELS = {
     mapping_pending: "needs your confirmation", mapping_confirmed: "staging rows", staged: "rows staged",
     rejected: "rejected", failed: "failed", discarded: "discarded", applied: "applied", undone: "undone",
@@ -2963,6 +3018,10 @@
     const box = agentNode("div", "assistant-review__section");
     const command = text(mapping?.command).trim();
     box.append(agentNode("h4", "", `This sheet will: ${MAPPING_COMMAND_LABELS[command] || command || "(unknown)"}`));
+    const counts = mapping?._command_counts || {};
+    for (const [name, count] of Object.entries(counts)) {
+      box.append(agentNode("p", "", `${MAPPING_COMMAND_LABELS[name] || name}: ${count} row(s)`));
+    }
     const columns = mapping?.columns && typeof mapping.columns === "object" ? mapping.columns : {};
     const constants = mapping?.constants && typeof mapping.constants === "object" ? mapping.constants : {};
     const table = agentNode("table", "assistant-change-table");
@@ -3039,6 +3098,19 @@
     );
 
     elements.mapping.append(buildMappingSummary(job.mapping, job.status));
+    const chunkIds = (job.mapping?._change_set_ids || []).map(strictUuid).filter(Boolean);
+    if (chunkIds.length > 1) {
+      const section = agentNode("div", "assistant-review__section");
+      section.append(agentNode("h4", "", `${chunkIds.length} change sets to review in order`));
+      section.append(agentNode("p", "muted", "Apply each reviewed change set in order. If later rows overlap earlier changes, refresh and review their preview again. Undo applied sets in reverse order."));
+      chunkIds.forEach((id, index) => {
+        const button = agentNode("button", "button", `Review ${index + 1} of ${chunkIds.length}`);
+        button.type = "button";
+        button.addEventListener("click", () => loadChangeSet(elements, id));
+        section.append(button);
+      });
+      elements.mapping.append(section);
+    }
     const resolutions = job.mapping?._resolutions || [];
     if (resolutions.length) {
       const section = agentNode("div", "assistant-review__section");

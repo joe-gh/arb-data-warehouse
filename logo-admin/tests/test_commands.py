@@ -20,6 +20,24 @@ from commands import (
 
 
 EXPECTED_COMMANDS = {
+    'cat_decide',
+    'cat_undo_decision',
+    'cat_make_surviving',
+    'cat_create_category',
+    'cat_rename_category',
+    'cat_move_category',
+    'cat_delete_category',
+    'cat_set_store_override',
+    'cat_delete_store_override',
+    'cat_accept_uncategorized',
+    'cat_unaccept_uncategorized',
+    'cat_set_rule',
+    'cat_delete_rule',
+    'cat_assign_styles',
+    'cat_delete_assignment',
+
+    "set_external_mix_store",
+    "remove_external_mix_store",
     "save_price_rule",
     "fill_missing_colors",
     # assignments

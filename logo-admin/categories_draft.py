@@ -305,7 +305,8 @@ def _resequence_siblings(cursor, parent_id: Optional[int],
 
 def create_node(cursor, *, parent_id: Optional[int], name: str,
                 slug: Optional[str] = None, description: str = "",
-                position: Optional[int] = None, actor: str) -> Dict[str, Any]:
+                position: Optional[int] = None, actor: str,
+                reserved_id: Optional[int] = None) -> Dict[str, Any]:
     lock_draft(cursor)
     name = clean_category_name(name)
     if not name:
@@ -326,11 +327,12 @@ def create_node(cursor, *, parent_id: Optional[int], name: str,
             suffix += 1
     cursor.execute(
         """
-        INSERT INTO catmgr.node (parent_id, name, slug, description, updated_by)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO catmgr.node (node_id, parent_id, name, slug, description, updated_by)
+        OVERRIDING SYSTEM VALUE
+        VALUES (COALESCE(%s, nextval('catmgr.node_node_id_seq')), %s, %s, %s, %s, %s)
         RETURNING node_id
         """,
-        (parent_id, name, slug, str(description or ""), actor[:100]),
+        (reserved_id, parent_id, name, slug, str(description or ""), actor[:100]),
     )
     node_id = cursor.fetchone()["node_id"]
     _resequence_siblings(cursor, parent_id, node_id, position)
@@ -600,7 +602,8 @@ def set_override(cursor, *, blog_id: int, kind: str,
                  slug: Optional[str] = None,
                  parent_node_id: Optional[int] = None,
                  include_descendants: bool = True, sort_order: int = 0,
-                 blog_path: str = "", actor: str) -> Dict[str, Any]:
+                 blog_path: str = "", actor: str,
+                 reserved_id: Optional[int] = None) -> Dict[str, Any]:
     lock_draft(cursor)
     if kind not in ("extra_node", "rename", "exclude"):
         raise DraftError(f"unknown override kind: {kind!r}")
@@ -644,12 +647,13 @@ def set_override(cursor, *, blog_id: int, kind: str,
             cursor.execute(
                 """
                 INSERT INTO catmgr.node_store_override
-                    (blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
+                    (override_id, blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
                      include_descendants, sort_order, updated_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                OVERRIDING SYSTEM VALUE
+                VALUES (COALESCE(%s, nextval('catmgr.node_store_override_override_id_seq')), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING override_id
                 """,
-                (blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
+                (reserved_id, blog_id, blog_path, kind, node_id, name, slug, parent_node_id,
                  include_descendants, sort_order, actor[:100]),
             )
         except pg_errors.UniqueViolation as exc:

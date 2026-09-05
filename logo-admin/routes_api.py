@@ -40,6 +40,8 @@ from auth import (
 )
 from authorization import AccessContext
 from commands import (
+    SetExternalMixStoreCommand,
+    RemoveExternalMixStoreCommand,
     SavePriceRuleCommand,
     ApplyToColorsCommand,
     CopyStyleCommand,
@@ -2642,57 +2644,12 @@ def disable_mix_store(
 
 @router.put("/product-mix/external")
 def enroll_external_store(body: MixExternalBody, user: Dict[str, str] = Depends(require_csrf)):
-    """Enroll a store as an external (BrightSites/POS-fronted) store: the
-    warehouse projects EVERY priced FDM4 style for it, always in stock (9999),
-    via woo.virtual_catalog_store. The transform ranks that catalog as the
-    store's suggested-primary, so the Woo sync engine picks it up on its own -
-    no WP-side sync-map edit needed (a brand-new blog still needs its one-time
-    Store Sync Map row in WP).
-    """
-    store = _mix_norm(body.fdm4_store)
-    with database.cursor(write=True, actor=user["user_login"]) as cursor:
-        _mix_known_store(cursor, store)
-        cursor.execute(
-            "SELECT catalog_id FROM woo.virtual_catalog_store WHERE fdm4_store = %s",
-            (store,))
-        if cursor.fetchone():
-            raise HTTPException(
-                status_code=400,
-                detail=f"{store} is already an external all-products store")
-        registry = _mix_registry(cursor, store, required=False)
-        if registry and registry["active"] and registry["mode"] == "list":
-            raise HTTPException(
-                status_code=400,
-                detail=f"{store} uses a curated list; switch it to "
-                       "'All products - follow FDM4' before making it external")
-        catalog_id = f"{store}_Woo_1"
-        cursor.execute(
-            """
-            INSERT INTO woo.virtual_catalog_store
-                (fdm4_store, catalog_id, note, stock_override)
-            VALUES (%s, %s, %s, 9999)
-            """,
-            (store, catalog_id,
-             f"External all-products store; enrolled via Warehouse Ops by {user['user_login']}"),
-        )
-        cursor.execute(
-            """
-            INSERT INTO woo.store_mix_store
-                (fdm4_store, mode, active, note, created_by, updated_by)
-            VALUES (%s, 'all', true, %s, %s, %s)
-            ON CONFLICT (fdm4_store) DO UPDATE SET
-                mode = 'all', active = true,
-                updated_by = EXCLUDED.updated_by, updated_at = now()
-            """,
-            (store, "External store: all products, always in stock",
-             user["user_login"], user["user_login"]),
-        )
-    return {
-        "ok": True,
-        "catalog_id": catalog_id,
-        "note": ("Supply builds on the next hourly warehouse refresh; the "
-                 "storefront follows on its next sync (within ~1h15 total)."),
-    }
+    try:
+        return _execute_mutation(SetExternalMixStoreCommand(store=body.fdm4_store), user)
+    except HTTPException as exc:
+        if exc.status_code in (404, 422):
+            raise HTTPException(status_code=400, detail=exc.detail) from None
+        raise
 
 
 @router.delete("/product-mix/external")
@@ -2700,22 +2657,7 @@ def unenroll_external_store(
     store: str = Query(min_length=1, max_length=100),
     user: Dict[str, str] = Depends(require_csrf),
 ):
-    store = _mix_norm(store)
-    with database.cursor(write=True, actor=user["user_login"]) as cursor:
-        cursor.execute(
-            "DELETE FROM woo.virtual_catalog_store WHERE fdm4_store = %s RETURNING catalog_id",
-            (store,))
-        if not cursor.fetchone():
-            raise HTTPException(
-                status_code=404,
-                detail=f"{store} is not an external all-products store")
-    return {
-        "ok": True,
-        "note": ("The all-products supply retires on the next hourly refresh; "
-                 "the store's blog then re-syncs from its regular FDM4 catalog, "
-                 "which can deactivate most of its products. The product-mix "
-                 "registry entry is kept."),
-    }
+    return _execute_mutation(RemoveExternalMixStoreCommand(store=store), user)
 
 
 @router.get("/product-mix")
@@ -4043,3 +3985,50 @@ def design_usage(
 ):
     del user
     return _read_service(read_queries.list_design_usage, store=store, design_id=design_id, color_scheme_id=color_scheme_id)
+
+
+@router.get("/product-state")
+def product_state(store: str = Query(min_length=1,max_length=100), style: Optional[str] = Query(None,min_length=1,max_length=100), sku: Optional[str] = Query(None,min_length=1,max_length=100), limit: int = Query(500,ge=1,le=500), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.get_product_state,store=store,style=style,sku=sku,limit=limit)
+
+
+@router.get("/change-history")
+def change_history(store: Optional[str] = Query(None,max_length=100), style: Optional[str] = Query(None,max_length=100), logo_code: Optional[str] = Query(None,max_length=100), rule_id: Optional[int] = Query(None,ge=1), since_days: int = Query(7,ge=1,le=90), actor: Optional[str] = Query(None,max_length=100), limit: int = Query(100,ge=1,le=300), user: Dict[str,str] = Depends(require_user)):
+    login = AccessContext.from_session(user).user_login
+    return _read_service(read_queries.get_change_history,store=store,style=style,logo_code=logo_code,rule_id=rule_id,since_days=since_days,actor=actor,limit=limit,user_login=login,category_access=login in get_settings().catmgr_view_users)
+
+
+@router.get("/stock")
+def stock_lookup(style: str = Query(min_length=1,max_length=100), color_code: Optional[str] = Query(None,max_length=100), size_code: Optional[str] = Query(None,max_length=100), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.get_stock,style=style,color_code=color_code,size_code=size_code)
+
+
+@router.get("/store-price-audit")
+def store_price_audit(store: str = Query(min_length=1,max_length=100), limit: int = Query(50,ge=1,le=200), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.audit_store_prices,store=store,limit=limit)
+
+
+@router.get("/wordpress/product-check")
+def wordpress_product_check(store: str = Query(min_length=1,max_length=100), style: Optional[str] = Query(None,min_length=1,max_length=100), sku: Optional[str] = Query(None,min_length=1,max_length=100), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.wp_product_check,store=store,style=style,sku=sku)
+
+
+@router.get("/wordpress/store-check")
+def wordpress_store_check(store: str = Query(min_length=1,max_length=100), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.wp_store_check,store=store)
+
+
+@router.get("/order-status")
+def order_status(order_id: int = Query(ge=1), store: Optional[str] = Query(None,max_length=100), blog_id: Optional[int] = Query(None,ge=1), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.get_order_status,order_id=order_id,store=store,blog_id=blog_id)
+
+
+@router.get("/issues")
+def issues(store: Optional[str] = Query(None,max_length=100), checks: Optional[List[str]] = Query(None,max_length=7), limit: int = Query(50,ge=1,le=200), user: Dict[str,str] = Depends(require_user)):
+    login = AccessContext.from_session(user).user_login
+    return _read_service(read_queries.find_issues,store=store,checks=checks,limit=limit,category_access=login in get_settings().catmgr_view_users)
+
+
+@router.get("/product-explanation")
+def product_explanation(store: str = Query(min_length=1,max_length=100), style: str = Query(min_length=1,max_length=100), user: Dict[str,str] = Depends(require_user)):
+    return _read_service(read_queries.explain_product,store=store,style=style)

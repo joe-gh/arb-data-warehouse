@@ -15,6 +15,22 @@ AdminTier = Literal["admin"]
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 HUMAN_ONLY_COMMANDS = frozenset({
+    'cat_snapshot_import',
+    'cat_draft_seed',
+    'cat_run_create',
+    'cat_run_start',
+    'cat_run_pause',
+    'cat_run_resume',
+    'cat_run_cancel',
+    'cat_job_retry',
+    'cat_job_skip',
+    'cat_restore_blog',
+    'cat_job_restore',
+    'cat_freeze_set',
+    'cat_lock',
+    'cat_unlock',
+    'cat_drift_audit',
+
     "confirm_change_set",
     "apply_change_set",
     "discard_change_set",

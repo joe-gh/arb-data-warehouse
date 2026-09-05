@@ -22,6 +22,7 @@ import openpyxl
 from psycopg2.extras import Json
 
 from commands import (
+    COMMAND_MODELS,
     MutationCommand,
     SaveAssignmentCommand,
     SetStorePricingTierCommand,
@@ -30,6 +31,8 @@ from db import database
 from domain import Conflict, InvalidCommand, NotFound
 from spreadsheet_mapping import (
     MappingCapacityExceeded,
+    SHEET_COMMAND_NAMES,
+    TARGET_FIELDS,
     MappingProposal,
     propose_mapping,
     SpreadsheetNameResolver,
@@ -371,6 +374,8 @@ def parse_spreadsheet(
 
 def known_mapping(parsed: ParsedSpreadsheet) -> Optional[MappingProposal]:
     headers = set(parsed.headers)
+    if "command" in headers:
+        return MappingProposal(command="mixed", columns={field: field for field in TARGET_FIELDS["mixed"] if field in headers})
     if set(ASSIGNMENT_COLUMNS).issubset(headers):
         return MappingProposal(
             command="save_assignment",
@@ -383,6 +388,17 @@ def known_mapping(parsed: ParsedSpreadsheet) -> Optional[MappingProposal]:
         )
     return None
 
+
+
+def _sheet_command_counts(parsed, proposal):
+    counts = {}
+    for row in parsed.rows:
+        name = proposal.command
+        if name == "mixed":
+            name = str(row.get(proposal.columns.get("command"),proposal.constants.get("command",""))).strip()
+        label = name if name in SHEET_COMMAND_NAMES else "unsupported rows"
+        counts[label] = counts.get(label,0)+1
+    return counts
 
 def mapping_hash(proposal: MappingProposal) -> str:
     raw = json.dumps(
@@ -451,10 +467,25 @@ def _translate_rows_with_numbers(
             for target, source in proposal.columns.items()
         })
         try:
+            tool_name = str(values.pop("command", "")).strip() if proposal.command == "mixed" else proposal.command
+            if tool_name not in SHEET_COMMAND_NAMES:
+                raise ValueError("Unsupported spreadsheet command")
+            if proposal.command == "mixed":
+                values = {k: v for k, v in values.items() if k in TARGET_FIELDS[tool_name] and v not in ("", None)}
             row_resolutions = []
             if resolver is not None:
-                values, row_resolutions = resolver.resolve(values, index)
-            if proposal.command == "save_assignment":
+                # Reuse exact name resolution with the field names its lookups own.
+                aliases = {"store": "fdm4_store", "style_code": "product_style"}
+                adapted = {aliases.get(k,k): v for k,v in values.items() if k != "styles"}
+                # A global stock-override removal needs a code, not a store-dependent name guess.
+                if tool_name == "remove_stock_override":
+                    adapted.pop("product_style",None)
+                adapted, row_resolutions = resolver.resolve(adapted, index)
+                for key in list(values):
+                    target = aliases.get(key,key)
+                    if target in adapted:
+                        values[key] = adapted[target]
+            if tool_name == "save_assignment":
                 values.setdefault("option_row", 1)
                 values.setdefault("location", "")
                 values.setdefault("optional", False)
@@ -470,9 +501,35 @@ def _translate_rows_with_numbers(
                 if values.get("cost_override") in {"", None}:
                     values["cost_override"] = None
                 command: MutationCommand = SaveAssignmentCommand.model_validate(values)
-            else:
+            elif tool_name == "set_store_pricing_tier":
                 values.setdefault("note", "")
                 command = SetStorePricingTierCommand.model_validate(values)
+            else:
+                if tool_name == "deactivate_assignment":
+                    values["option_row"] = _integer(values.get("option_row",1),"option_row")
+                    values["position"] = _integer(values.get("position"),"position")
+                if tool_name == "delete_price_rule":
+                    values["rule_id"] = _integer(values.get("rule_id"),"rule_id")
+                if "styles" in TARGET_FIELDS[tool_name]:
+                    raw_styles = str(values.get("styles","")).strip()
+                    if proposal.command == "mixed" and tool_name == "remove_sync_block":
+                        # In a mixed sheet a blank cell is an omission; the whole store must be asked for.
+                        if raw_styles == "*":
+                            raw_styles = ""
+                        elif not raw_styles:
+                            raise ValueError("Name the styles to unfreeze, or write * for the whole store")
+                    styles = [v.strip() for v in raw_styles.split(",") if v.strip()]
+                    if len(styles)>50:
+                        raise ValueError("At most 50 styles per row")
+                    if resolver is not None:
+                        resolved_styles = []
+                        for style in styles:
+                            resolved, report = resolver.resolve({"fdm4_store":values.get("store"),"product_style":style},index)
+                            resolved_styles.append(resolved["product_style"])
+                            row_resolutions.extend(report)
+                        styles = resolved_styles
+                    values["styles"] = styles
+                command = COMMAND_MODELS[tool_name].model_validate(values)
             commands.append((index, command))
             if resolutions is not None:
                 resolutions.extend(row_resolutions)
@@ -703,7 +760,7 @@ def _finalize_reserved_job(
             (
                 parsed.format_name,
                 mapping_hash(proposal),
-                Json(proposal.model_dump(mode="json")),
+                Json({**proposal.model_dump(mode="json"), "_command_counts": _sheet_command_counts(parsed, proposal)}),
                 job_id,
                 user_login,
             ),
@@ -874,13 +931,38 @@ def _terminal_confirmation_result(
     if job["status"] == "staged":
         if job.get("change_set_id") is None:
             raise Conflict("Completed spreadsheet job has no linked change-set")
-        job["change_set"] = staging.get_change_set(
-            job["change_set_id"],
-            user_login,
-        )
+        _attach_spreadsheet_change_sets(job,user_login)
     job["resolutions"] = (job.get("mapping") or {}).get("_resolutions", [])
     return job
 
+
+
+def _ensure_chunk_links(job_id, user_login, first_id, count, chunk_size):
+    """Persist links before staging so interruption/retry cannot orphan a chunk."""
+    with database.cursor(write=True,actor=user_login) as cursor:
+        job = dict(_owned_job(cursor,job_id,user_login,lock=True))
+        mapping = job["mapping"]
+        existing = mapping.get("_change_set_ids")
+        if existing:
+            if len(existing)!=count or mapping.get("_chunk_size")!=chunk_size:
+                raise Conflict("Spreadsheet chunk size changed during retry")
+            return existing
+        if job["status"] not in {"mapping_pending","mapping_confirmed"}:
+            raise Conflict("Spreadsheet mapping is no longer pending")
+        ids = [str(first_id)]
+        for _ in range(count-1):
+            ids.append(str(staging.insert_change_set(cursor,job["session_id"],user_login,24,origin="spreadsheet")["id"]))
+        cursor.execute("UPDATE logo.agent_spreadsheet_job SET mapping=mapping || %s::jsonb WHERE id=%s AND user_login=%s",
+                       (Json({"_change_set_ids":ids,"_chunk_size":chunk_size}),job_id,user_login))
+        return ids
+
+
+def _attach_spreadsheet_change_sets(job, user_login):
+    ids = (job.get("mapping") or {}).get("_change_set_ids") or [str(job["change_set_id"])]
+    job["change_set_ids"] = ids
+    # Full cards are fetched one at a time by the UI; a large sheet must not return thousands of snapshots.
+    job["change_set"] = staging.get_change_set(ids[0],user_login)
+    return job
 
 def _ensure_linked_change_set(
     job_id,
@@ -1042,7 +1124,7 @@ def confirm_spreadsheet_mapping(
             job["original_name"],
             SpreadsheetLimits.from_settings(settings),
         )
-        proposal = MappingProposal.model_validate(job["mapping"])
+        proposal = MappingProposal.model_validate({k:v for k,v in job["mapping"].items() if not k.startswith("_")})
         resolutions = []
         with database.cursor() as cursor:
             numbered_commands, rejected = _translate_rows_with_numbers(
@@ -1070,15 +1152,7 @@ def confirm_spreadsheet_mapping(
             raise
         raise InvalidCommand(str(exc)) from None
 
-    if len(numbered_commands) > max_items:
-        detail = "Spreadsheet exceeds the change-set item limit"
-        _mark_job_rejected(
-            job["id"],
-            user_login,
-            [{"row": None, "detail": detail}],
-        )
-        _remove_private_file(path)
-        raise InvalidCommand(detail)
+    max_items = max(1,min(int(max_items),int(getattr(settings,"agent_max_change_set_items",max_items)),staging.MAX_PERSISTED_CHANGE_SET_ITEMS))
 
     linked_job, change_set = _ensure_linked_change_set(
         job_id,
@@ -1089,29 +1163,21 @@ def confirm_spreadsheet_mapping(
     if change_set is None:
         _remove_private_file(path)
         raise Conflict("Linked change-set is no longer pending")
-    source_rows_by_call_id = {
-        f"spreadsheet:{linked_job['id']}:{source_row}": source_row
-        for source_row, _command in numbered_commands
-    }
-    batch_result = staging.stage_write_batch(
-        change_set["id"],
-        [
-            (
-                proposal.command,
-                command.model_dump(mode="json"),
-                f"spreadsheet:{linked_job['id']}:{source_row}",
-            )
-            for source_row, command in numbered_commands
-        ],
-        user_login,
-        max_items=max_items,
-    )
-    for rejected_item in batch_result.get("rejected_items", []):
-        rejected.append({
-            "row": source_rows_by_call_id.get(rejected_item.get("call_id")),
-            "detail": str(rejected_item.get("detail", "Invalid row"))[:500],
-        })
-    staged_count = int(batch_result.get("items", 0))
+    chunks = [numbered_commands[i:i+max_items] for i in range(0,len(numbered_commands),max_items)] or [[]]
+    change_set_ids = _ensure_chunk_links(linked_job["id"],user_login,change_set["id"],len(chunks),max_items)
+    staged_count = 0
+    for chunk_id, chunk in zip(change_set_ids,chunks):
+        source_rows_by_call_id = {f"spreadsheet:{linked_job['id']}:{row}": row for row,_command in chunk}
+        batch_result = staging.stage_write_batch(
+            chunk_id,
+            [(next(name for name,model in COMMAND_MODELS.items() if type(command) is model),
+              command.model_dump(mode="json"),f"spreadsheet:{linked_job['id']}:{row}") for row,command in chunk],
+            user_login,max_items=max_items,
+        )
+        for rejected_item in batch_result.get("rejected_items",[]):
+            rejected.append({"row":source_rows_by_call_id.get(rejected_item.get("call_id")),
+                             "detail":str(rejected_item.get("detail","Invalid row"))[:500]})
+        staged_count += int(batch_result.get("items",0))
 
     final_status = "staged" if staged_count else "rejected"
     with database.cursor(write=True, actor=user_login) as job_cursor:
@@ -1157,8 +1223,4 @@ def confirm_spreadsheet_mapping(
         except Exception:
             pass
         return final_job
-    final_job["change_set"] = staging.get_change_set(
-        change_set["id"],
-        user_login,
-    )
-    return final_job
+    return _attach_spreadsheet_change_sets(final_job,user_login)

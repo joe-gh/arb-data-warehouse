@@ -79,6 +79,63 @@ VOLATILE_PREVIEW_COLUMNS = (
 #   text / text? = str (nullable), bool, int, num / num?, ts / ts? (str),
 #   date? (str or null), list? (JSON array or null), json? (any JSON or null)
 SIMPLE_ROW_SCOPES = {
+    "catmgr_rule_row": {
+        "table": "catmgr.assignment_rule",
+        "key": ("rule_id",),
+        "columns": ("rule_id", "node_id", "kind", "spec", "priority", "note", "updated_by", "updated_at"),
+        "types": {
+            "rule_id": "int", "node_id": "int", "kind": "text",
+            "spec": "json", "priority": "int", "note": "text",
+            "updated_by": "text", "updated_at": "ts",
+        },
+    },
+    "catmgr_override_row": {
+        "table": "catmgr.node_store_override",
+        "key": ("override_id",),
+        "columns": ("override_id", "blog_id", "blog_path", "kind", "node_id", "name", "slug", "parent_node_id", "include_descendants", "sort_order", "updated_by", "updated_at", "previous_slug"),
+        "types": {
+            "override_id": "int", "blog_id": "int", "blog_path": "text",
+            "kind": "text", "node_id": "int?", "name": "text?",
+            "slug": "text?", "parent_node_id": "int?", "include_descendants": "bool",
+            "sort_order": "int", "updated_by": "text", "updated_at": "ts",
+            "previous_slug": "text?",
+        },
+    },
+    "catmgr_assignment_row": {
+        "table": "catmgr.product_assignment",
+        "key": ("id",),
+        "columns": ("id", "node_id", "sku", "mode", "source", "note", "added_by", "added_at"),
+        "types": {
+            "id": "int", "node_id": "int", "sku": "text",
+            "mode": "text", "source": "text", "note": "text",
+            "added_by": "text", "added_at": "ts",
+        },
+    },
+    "catmgr_slug_map_row": {
+        "table": "catmgr.slug_map",
+        "key": ("old_slug",),
+        "columns": ("old_slug", "action", "target_node_id", "is_primary", "override_id", "note", "updated_by", "updated_at"),
+        "types": {
+            "old_slug": "text", "action": "text", "target_node_id": "int?",
+            "is_primary": "bool", "override_id": "int?", "note": "text",
+            "updated_by": "text", "updated_at": "ts",
+        },
+    },
+    "catmgr_ack_row": {
+        "table": "catmgr.uncategorized_ack",
+        "key": ("sku",),
+        "columns": ("sku", "note", "added_by", "added_at"),
+        "types": {
+            "sku": "text", "note": "text", "added_by": "text",
+            "added_at": "ts",
+        },
+    },
+    "virtual_catalog_store_row": {
+        "table": "woo.virtual_catalog_store",
+        "key": ("fdm4_store",),
+        "columns": ("fdm4_store", "catalog_id", "note", "created_at", "stock_override"),
+        "types": {"fdm4_store": "text", "catalog_id": "text", "note": "text", "created_at": "ts", "stock_override": "num?"},
+    },
     "display_name_row": {
         "table": "logo.display_name",
         "key": ("design_id", "color_scheme_id", "fdm4_store"),
@@ -197,11 +254,30 @@ SIMPLE_ROW_SCOPES = {
         },
     },
 }
+# Category rows use identity keys reserved before preview; the draft owns
+# all three structural tables, with one combined 2,000-row limit.
+CATMGR_DRAFT_TABLES = ("catmgr.node", "catmgr.node_store_override", "catmgr.slug_map")
+CATMGR_NODE_SPEC = {'table': 'catmgr.node',
+ 'key': ('node_id',),
+ 'pk': ('node_id',),
+ 'columns': ('node_id', 'parent_id', 'name', 'slug', 'sort_order', 'description', 'updated_by', 'updated_at'),
+ 'types': {'node_id': 'int',
+           'parent_id': 'int?',
+           'name': 'text',
+           'slug': 'text',
+           'sort_order': 'int',
+           'description': 'text',
+           'updated_by': 'text',
+           'updated_at': 'ts'}}
+
 for _spec in SIMPLE_ROW_SCOPES.values():
     _spec.setdefault("pk", _spec["key"])
 SIMPLE_TABLE_SPECS = {spec["table"]: spec for spec in SIMPLE_ROW_SCOPES.values()}
 
+SIMPLE_TABLE_SPECS["catmgr.node"] = CATMGR_NODE_SPEC
+
 RESTORE_COLUMNS = {
+    ("catmgr", "node"): frozenset(CATMGR_NODE_SPEC["columns"]),
     ("logo", "assignment"): frozenset(ASSIGNMENT_COLUMNS),
     ("logo", "store_settings"): frozenset(STORE_SETTINGS_COLUMNS),
     ("woo", "store_pricing_tier"): frozenset(STORE_PRICING_COLUMNS),
@@ -211,6 +287,7 @@ RESTORE_COLUMNS = {
     },
 }
 _BASE_SCOPE_KINDS = frozenset({
+    "catmgr_draft",
     "assignment_option_row",
     "assignment_color",
     "assignment_style",
@@ -221,6 +298,7 @@ _BASE_SCOPE_KINDS = frozenset({
 SNAPSHOT_SCOPE_KINDS = _BASE_SCOPE_KINDS | frozenset(SIMPLE_ROW_SCOPES)
 RESTORE_SCOPE_KINDS = _BASE_SCOPE_KINDS | frozenset(SIMPLE_ROW_SCOPES)
 SCOPE_TABLE_BY_KIND = {
+    "catmgr_draft": CATMGR_DRAFT_TABLES,
     "assignment_option_row": "logo.assignment",
     "assignment_color": "logo.assignment",
     "assignment_style": "logo.assignment",
@@ -239,9 +317,10 @@ MAX_SEMANTIC_DIFF_BYTES = 12 * 1024 * 1024
 MAX_SNAPSHOT_SCOPE_ENTRIES = 500
 
 # Scope key columns that are integers (every other key column is text).
-INTEGER_SCOPE_KEYS = frozenset({"option_row", "rule_id"})
+INTEGER_SCOPE_KEYS = frozenset({"option_row", "rule_id", "override_id", "id"})
 
 SCOPE_KEY_COLUMNS = {
+    "catmgr_draft": (),
     "assignment_store": ("fdm4_store",),
     "assignment_style": ("fdm4_store", "product_style"),
     "assignment_color": (
@@ -312,6 +391,8 @@ def compact_scopes(scopes: Iterable[MutationScope]) -> tuple[MutationScope, ...]
 
     unique = {_scope_token(scope): scope for scope in scopes}
     values = list(unique.values())
+    if any(s.kind == "catmgr_draft" for s in values):
+        values = [s for s in values if s.kind not in {"catmgr_slug_map_row", "catmgr_override_row"}]
     # A whole-store scope contains every narrower assignment scope of that store.
     stores = {str(s.key["fdm4_store"]) for s in values if s.kind == "assignment_store"}
     values = [
@@ -366,6 +447,9 @@ def lock_scopes(cursor, scopes: Iterable[MutationScope]) -> tuple[MutationScope,
     """
 
     compacted = compact_scopes(scopes)
+    if any(scope.kind.startswith("catmgr_") for scope in compacted):
+        from categories_draft import lock_draft
+        lock_draft(cursor)
     lock_set = {_scope_token(scope): scope for scope in compacted}
     # Every assignment mutation also takes its style ancestor. Without this,
     # an option-row write and a simultaneous color/style write use different
@@ -404,9 +488,16 @@ def lock_scope_tables(cursor, scopes: Iterable[MutationScope]) -> tuple[str, ...
     """
 
     tables = tuple(sorted({
-        SCOPE_TABLE_BY_KIND[scope.kind]
+        table
         for scope in compact_scopes(scopes)
+        for table in (CATMGR_DRAFT_TABLES if scope.kind == "catmgr_draft"
+                      else (SCOPE_TABLE_BY_KIND[scope.kind],))
     }))
+    category_kinds = {scope.kind for scope in compact_scopes(scopes)}
+    if "catmgr_draft" in category_kinds:
+        tables = tuple(sorted(set(tables) | {"catmgr.assignment_rule", "catmgr.product_assignment"}))
+    if "catmgr_override_row" in category_kinds:
+        tables = tuple(sorted(set(tables) | {"catmgr.slug_map"}))
     for table in tables:
         # Names come only from the closed mapping above, never user input.
         cursor.execute(
@@ -596,8 +687,33 @@ def snapshot_scopes(
     snapshots: list[dict] = []
     total_rows = 0
     total_bytes = 0
+    pending = []
     for scope in compact_scopes(scopes):
-        snapshot = _snapshot_one(cursor, scope, for_update=for_update)
+        if scope.kind == "catmgr_draft":
+            draft_rows = 0
+            draft_bytes = 0
+            for table in CATMGR_DRAFT_TABLES:
+                pk = SIMPLE_TABLE_SPECS[table]["pk"][0]
+                lock = " FOR UPDATE" if for_update else ""
+                try:
+                    rows, size = _bounded_snapshot_rows(cursor,
+                        f"SELECT row_number() OVER (ORDER BY {pk}) AS ordinal, to_jsonb(r) AS row "
+                        f"FROM (SELECT * FROM {table} ORDER BY {pk} LIMIT %s{lock}) r",
+                        (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,))
+                except InvalidCommand as exc:
+                    if "row limit" in str(exc):
+                        raise InvalidCommand("Category draft exceeds the 2,000-row exact-undo limit; reduce the draft before staging") from exc
+                    raise
+                draft_rows += len(rows)
+                draft_bytes += size
+                if draft_rows > MAX_SNAPSHOT_ROWS_PER_SCOPE:
+                    raise InvalidCommand("Category draft exceeds the 2,000-row exact-undo limit; split or reduce the draft before staging")
+                if draft_bytes > MAX_SNAPSHOT_SCOPE_BYTES:
+                    raise InvalidCommand("Category draft exceeds the exact-snapshot byte limit")
+                pending.append({"scope": scope_dict(scope), "table": table, "rows": rows, "_bytes": size})
+        else:
+            pending.append(_snapshot_one(cursor, scope, for_update=for_update))
+    for snapshot in pending:
         total_rows += len(snapshot["rows"])
         total_bytes += int(snapshot.get("_bytes", 0))
         if total_rows > MAX_SNAPSHOT_ROWS_TOTAL:
@@ -644,8 +760,8 @@ def diff_states(
     ignored_columns: set[str] | frozenset[str] = frozenset(),
 ) -> dict:
     ignored = set(ignored_columns)
-    before_by_scope = {_scope_token(scope_from_dict(e["scope"])): e for e in before}
-    after_by_scope = {_scope_token(scope_from_dict(e["scope"])): e for e in after}
+    before_by_scope = {(_scope_token(scope_from_dict(e["scope"])), e["table"]): e for e in before}
+    after_by_scope = {(_scope_token(scope_from_dict(e["scope"])), e["table"]): e for e in after}
     changes = []
     for token in sorted(set(before_by_scope) | set(after_by_scope)):
         left = before_by_scope.get(token, {"rows": [], "table": ""})
@@ -752,6 +868,8 @@ def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
                 else value is None or isinstance(value, str) if kind in {"text?", "ts?", "date?"}
                 else type(value) is bool if kind == "bool"
                 else type(value) is int if kind == "int"
+                else value is None or type(value) is int if kind == "int?"
+                else isinstance(value, (dict, list, str, Number, bool)) if kind == "json"
                 else is_number if kind == "num"
                 else value is None or is_number if kind == "num?"
                 else value is None or isinstance(value, list) if kind == "list?"
@@ -760,7 +878,9 @@ def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
             )
             if not ok:
                 raise InvalidCommand(f"Journal {table} value for {column} is invalid")
-    if not isinstance(row["updated_at"], str):
+    # Kernel tables outside the simple specs always carry updated_at; simple
+    # specs type every column above, and updated_at is re-checked whenever present.
+    if (table not in SIMPLE_TABLE_SPECS or "updated_at" in row) and not isinstance(row.get("updated_at"), str):
         raise InvalidCommand("Journal timestamp value is invalid")
 
 
@@ -769,6 +889,8 @@ def _row_is_within_scope(
     row: Mapping[str, Any],
     scope: MutationScope,
 ) -> bool:
+    if scope.kind == "catmgr_draft":
+        return table in CATMGR_DRAFT_TABLES
     if table in SIMPLE_TABLE_SPECS:
         return all(
             str(row.get(column)) == str(scope.key[column])
@@ -805,6 +927,10 @@ def validate_snapshot_state(
         raise InvalidCommand("Journal snapshot has too many scope entries")
     scopes: list[MutationScope] = []
     seen_scopes: set[str] = set()
+    seen_entries = set()
+    draft_tables = set()
+    draft_rows = 0
+    draft_bytes = 0
     seen_rows: set[tuple[str, str]] = set()
     total_rows = 0
     for entry in entries:
@@ -816,16 +942,25 @@ def validate_snapshot_state(
             raise InvalidCommand("Journal snapshot scope is invalid")
         scope = scope_from_dict(entry["scope"])
         token = _scope_token(scope)
-        if token in seen_scopes:
-            raise InvalidCommand("Journal snapshot repeats a scope")
-        seen_scopes.add(token)
-        scopes.append(scope)
         table = str(entry["table"])
-        if table != SCOPE_TABLE_BY_KIND[scope.kind]:
+        if (token, table) in seen_entries or (token in seen_scopes and scope.kind != "catmgr_draft"):
+            raise InvalidCommand("Journal snapshot repeats a scope")
+        seen_entries.add((token, table))
+        if token not in seen_scopes:
+            scopes.append(scope)
+        seen_scopes.add(token)
+        allowed_tables = CATMGR_DRAFT_TABLES if scope.kind == "catmgr_draft" else (SCOPE_TABLE_BY_KIND[scope.kind],)
+        if table not in allowed_tables:
             raise InvalidCommand("Journal snapshot table does not match its scope")
         rows = entry["rows"]
         if not isinstance(rows, list) or len(rows) > MAX_SNAPSHOT_ROWS_PER_SCOPE:
             raise InvalidCommand("Journal snapshot rows are invalid")
+        if scope.kind == "catmgr_draft":
+            draft_tables.add(table)
+            draft_rows += len(rows)
+            draft_bytes += sum(json_size_bytes(row) for row in rows)
+            if draft_rows > MAX_SNAPSHOT_ROWS_PER_SCOPE or draft_bytes > MAX_SNAPSHOT_SCOPE_BYTES:
+                raise InvalidCommand("Category draft exceeds the 2,000-row or byte restore limit")
         total_rows += len(rows)
         if total_rows > MAX_SNAPSHOT_ROWS_TOTAL:
             raise InvalidCommand("Journal snapshot exceeds the restore row limit")
@@ -841,6 +976,8 @@ def validate_snapshot_state(
             if row_identity in seen_rows:
                 raise InvalidCommand("Journal snapshot repeats a business row")
             seen_rows.add(row_identity)
+    if draft_tables and draft_tables != set(CATMGR_DRAFT_TABLES):
+        raise InvalidCommand("Journal category draft is missing a table")
     compacted = compact_scopes(scopes)
     if len(compacted) != len(scopes) or {
         _scope_token(scope) for scope in compacted
@@ -927,19 +1064,22 @@ def _delete_scope(cursor, scope: MutationScope) -> None:
         raise InvalidCommand("unsupported restore scope")
 
 
-def _insert_simple(cursor, table: str, row: Mapping[str, Any]) -> None:
+def _insert_simple(cursor, table: str, row: Mapping[str, Any], *, upsert: bool = False) -> None:
     spec = SIMPLE_TABLE_SPECS[table]
     columns = spec["columns"]
     values = []
     for column in columns:
         value = row[column]
-        if spec["types"].get(column) == "json?" and value is not None:
+        if spec["types"].get(column) in {"json", "json?"} and value is not None:
             value = Json(value)
         values.append(value)
+    identity = "OVERRIDING SYSTEM VALUE" if table.startswith("catmgr.") else ""
+    conflict = (" ON CONFLICT (" + ", ".join(spec["pk"]) + ") DO UPDATE SET " +
+                ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c not in spec["pk"])) if upsert else ""
     cursor.execute(
         f"""
-        INSERT INTO {table} ({', '.join(columns)})
-        VALUES ({', '.join(['%s'] * len(columns))})
+        INSERT INTO {table} ({', '.join(columns)}) {identity}
+        VALUES ({', '.join(['%s'] * len(columns))}) {conflict}
         """,
         tuple(values),
     )
@@ -975,6 +1115,32 @@ def _insert_pricing(cursor, row: Mapping[str, Any]) -> None:
     )
 
 
+def _restore_category_draft(cursor, entries) -> None:
+    from uuid import uuid4
+    by_table = {entry["table"]: entry["rows"] for entry in entries}
+    nodes = by_table["catmgr.node"]
+    wanted = [row["node_id"] for row in nodes]
+    # Rows outside the journal must never disappear via a cascading undo.
+    for table in ("catmgr.assignment_rule", "catmgr.product_assignment"):
+        cursor.execute(f"SELECT 1 FROM {table} WHERE NOT (node_id = ANY(%s::bigint[])) LIMIT 1", (wanted,))
+        if cursor.fetchone():
+            raise InvalidCommand("Category undo would delete rules or style assignments outside its reviewed scopes")
+    cursor.execute("DELETE FROM catmgr.slug_map")
+    cursor.execute("DELETE FROM catmgr.node_store_override")
+    cursor.execute("UPDATE catmgr.node SET parent_id = NULL")
+    cursor.execute("DELETE FROM catmgr.node WHERE NOT (node_id = ANY(%s::bigint[]))", (wanted,))
+    # Release unique web addresses before restoring a rename or address swap.
+    prefix = "restore-" + uuid4().hex + "-"
+    cursor.execute("UPDATE catmgr.node SET slug = %s || node_id::text", (prefix,))
+    for row in nodes:
+        _insert_simple(cursor, "catmgr.node", {**row, "parent_id": None}, upsert=True)
+    for row in nodes:
+        cursor.execute("UPDATE catmgr.node SET parent_id = %s WHERE node_id = %s", (row["parent_id"], row["node_id"]))
+    for table in ("catmgr.node_store_override", "catmgr.slug_map"):
+        for row in by_table[table]:
+            _insert_simple(cursor, table, row)
+
+
 def restore_state(
     cursor,
     state: Sequence[Mapping[str, Any]],
@@ -985,8 +1151,18 @@ def restore_state(
 
     entries = list(state)
     validate_snapshot_state(entries, expected_scopes=expected_scopes)
-    for entry in entries:
-        _delete_scope(cursor, scope_from_dict(entry["scope"]))
+    draft_entries = [e for e in entries if e["scope"]["kind"] == "catmgr_draft"]
+    entries = [e for e in entries if e["scope"]["kind"] != "catmgr_draft"]
+    # Mapping children precede overrides; rules/assignments precede nodes.
+    for entry in sorted(entries, key=lambda e: e["table"] != "catmgr.slug_map"):
+        scope = scope_from_dict(entry["scope"])
+        if scope.kind == "catmgr_override_row":
+            cursor.execute("SELECT 1 FROM catmgr.slug_map WHERE override_id = %s LIMIT 1", (scope.key["override_id"],))
+            if cursor.fetchone():
+                raise InvalidCommand("Category undo would delete mapping decisions outside its reviewed scopes")
+        _delete_scope(cursor, scope)
+    if draft_entries:
+        _restore_category_draft(cursor, draft_entries)
 
     assignments: list[Mapping[str, Any]] = []
     settings: list[Mapping[str, Any]] = []

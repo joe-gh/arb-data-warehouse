@@ -22,6 +22,8 @@ from database_contract import (
     EXPECTED_PRIMARY_KEYS,
     EXPECTED_PRUNE_SOURCE_SHA256,
     RESTORE_COLUMN_CONTRACTS,
+    RESTORE_IDENTITY_COLUMNS,
+    EXPECTED_RESTORE_UNIQUE_KEYS,
     TABLE_POLICIES,
     TABLE_PRIVILEGES,
     _COLUMN_PRIVILEGE_SQL,
@@ -426,8 +428,8 @@ def _safe_restore_column_rows():
             "formatted_type": formatted_type,
             "nullable": nullable,
             "generated_kind": "",
-            "identity_kind": "",
-            "collation_name": "default" if formatted_type == "text" else None,
+            "identity_kind": RESTORE_IDENTITY_COLUMNS.get((table_name, column_name), ""),
+            "collation_name": "default" if formatted_type in ("text", "text[]") else None,
             "default_expression": default,
         }
         for table_name, columns in RESTORE_COLUMN_CONTRACTS.items()
@@ -526,6 +528,9 @@ def _safe_constraint_rows():
             match_type,
         ) in EXPECTED_FOREIGN_KEYS
     )
+    rows.extend(_constraint_row(table_name=table, constraint_name=name,
+                                constraint_type="u", key_columns=list(columns))
+                for table, name, columns in EXPECTED_RESTORE_UNIQUE_KEYS)
     return rows
 
 
@@ -1047,3 +1052,20 @@ def test_repull_contract_rejects_static_dml_definition_drift():
             [row],
             expected_definition_sha256=reviewed_hash,
         )
+
+
+def test_restore_contract_safe_fixtures_include_category_identity_and_unique_keys():
+    _assert_restore_column_contract(_safe_restore_column_rows())
+    _assert_restore_constraint_contract(_safe_constraint_rows())
+
+
+@pytest.mark.parametrize("table", ["catmgr.node", "catmgr.slug_map", "catmgr.node_store_override",
+                                   "catmgr.assignment_rule", "catmgr.product_assignment", "catmgr.uncategorized_ack"])
+def test_category_column_and_constraint_drift_fail_closed(table):
+    columns = _safe_restore_column_rows()
+    columns = [r for r in columns if not (r["table_name"] == table and r["ordinal_position"] == 1)]
+    with pytest.raises(RuntimeError, match="column"):
+        _assert_restore_column_contract(columns)
+    constraints = [r for r in _safe_constraint_rows() if not (r["table_name"] == table and r["constraint_type"] == "p")]
+    with pytest.raises(RuntimeError, match="constraint"):
+        _assert_restore_constraint_contract(constraints)

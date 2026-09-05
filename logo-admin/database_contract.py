@@ -36,7 +36,78 @@ EXPECTED_PRUNE_SOURCE_SHA256 = (
 EXPECTED_AUDIT_SOURCE_SHA256 = (
     "0ffa5f09bd205a694dfe288347074a85195458d1eb3ae74577d4723343d7e58b"
 )
+RESTORE_IDENTITY_COLUMNS = {('catmgr.assignment_rule', 'rule_id'): 'a',
+ ('catmgr.node', 'node_id'): 'a',
+ ('catmgr.node_store_override', 'override_id'): 'a',
+ ('catmgr.product_assignment', 'id'): 'a'}
+
 RESTORE_COLUMN_CONTRACTS = {
+    "catmgr.assignment_rule": {
+        "rule_id": ('bigint', False, None),
+        "node_id": ('bigint', False, None),
+        "kind": ('text', False, "'filter'::text"),
+        "spec": ('jsonb', False, None),
+        "priority": ('integer', False, '0'),
+        "note": ('text', False, "''::text"),
+        "updated_by": ('text', False, "''::text"),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
+    },
+    "catmgr.node": {
+        "node_id": ('bigint', False, None),
+        "parent_id": ('bigint', True, None),
+        "name": ('text', False, None),
+        "slug": ('text', False, None),
+        "sort_order": ('integer', False, '0'),
+        "description": ('text', False, "''::text"),
+        "updated_by": ('text', False, "''::text"),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
+    },
+    "catmgr.node_store_override": {
+        "override_id": ('bigint', False, None),
+        "blog_id": ('integer', False, None),
+        "blog_path": ('text', False, "''::text"),
+        "kind": ('text', False, None),
+        "node_id": ('bigint', True, None),
+        "name": ('text', True, None),
+        "slug": ('text', True, None),
+        "parent_node_id": ('bigint', True, None),
+        "include_descendants": ('boolean', False, 'true'),
+        "sort_order": ('integer', False, '0'),
+        "updated_by": ('text', False, "''::text"),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
+        "previous_slug": ('text', True, None),
+    },
+    "catmgr.product_assignment": {
+        "id": ('bigint', False, None),
+        "node_id": ('bigint', False, None),
+        "sku": ('text', False, None),
+        "mode": ('text', False, None),
+        "source": ('text', False, None),
+        "note": ('text', False, "''::text"),
+        "added_by": ('text', False, "''::text"),
+        "added_at": ('timestamp with time zone', False, 'now()'),
+    },
+    "catmgr.slug_map": {
+        "old_slug": ('text', False, None),
+        "action": ('text', False, None),
+        "target_node_id": ('bigint', True, None),
+        "is_primary": ('boolean', False, 'false'),
+        "override_id": ('bigint', True, None),
+        "note": ('text', False, "''::text"),
+        "updated_by": ('text', False, "''::text"),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
+    },
+    "catmgr.uncategorized_ack": {
+        "sku": ('text', False, None),
+        "note": ('text', False, "''::text"),
+        "added_by": ('text', False, "''::text"),
+        "added_at": ('timestamp with time zone', False, 'now()'),
+    },
+    "woo.virtual_catalog_store": {
+        "fdm4_store": ("text", False, None), "catalog_id": ("text", False, None),
+        "note": ("text", False, "''"), "created_at": ("timestamp with time zone", False, "now"),
+        "stock_override": ("numeric", True, None),
+    },
     "logo.assignment": {
         "fdm4_store": ("text", False, None),
         "product_style": ("text", False, None),
@@ -353,6 +424,14 @@ EXPECTED_TRIGGERS = frozenset({
 # sql/logo_admin_role.sql grants with GRANT SELECT ON ALL TABLES.
 WAREHOUSE_READ_SCHEMAS = frozenset({"woo", "fdm4", "pim", "curated"})
 EXPECTED_PRIMARY_KEYS = {
+    'catmgr.assignment_rule': ('assignment_rule_pkey', ('rule_id',)),
+    'catmgr.node': ('node_pkey', ('node_id',)),
+    'catmgr.node_store_override': ('node_store_override_pkey', ('override_id',)),
+    'catmgr.product_assignment': ('product_assignment_pkey', ('id',)),
+    'catmgr.slug_map': ('slug_map_pkey', ('old_slug',)),
+    'catmgr.uncategorized_ack': ('uncategorized_ack_pkey', ('sku',)),
+
+    "woo.virtual_catalog_store": ("virtual_catalog_store_pkey", ("fdm4_store",)),
     "logo.assignment": (
         "assignment_pkey",
         (
@@ -385,6 +464,21 @@ EXPECTED_PRIMARY_KEYS = {
     "woo.store_mix_item": ("store_mix_item_pkey", ("fdm4_store", "style_code")),
 }
 EXPECTED_CHECKS = {
+    ('catmgr.assignment_rule', 'assignment_rule_kind_check', ('kind',)): "kind='filter'",
+    ('catmgr.node', 'node_name_check', ('name',)): "btrimname<>''",
+    ('catmgr.node', 'node_slug_check', ('slug',)): "slug~'^[a-z0-9]+-[a-z0-9]+*$'",
+    ('catmgr.node_store_override', 'node_store_override_kind_check', ('kind',)): "kind=anyarray['extra_node','rename','exclude']",
+    ('catmgr.node_store_override', 'node_store_override_previous_slug_check', ('previous_slug',)): "previous_slugisnullorprevious_slug~'^[a-z0-9]+-[a-z0-9]+*$'",
+    ('catmgr.node_store_override', 'node_store_override_slug_check', ('slug',)): "slugisnullorslug~'^[a-z0-9]+-[a-z0-9]+*$'",
+    ('catmgr.node_store_override', 'override_shape', ('kind', 'node_id', 'name', 'slug', 'parent_node_id')): "kind='extra_node'andnode_idisnullandnameisnotnullandbtrimname<>''andslugisnotnullorkind='rename'andnode_idisnotnullandnameisnotnullandbtrimname<>''andslugisnullandparent_node_idisnullorkind='exclude'andnode_idisnotnullandnameisnullandslugisnullandparent_node_idisnull",
+    ('catmgr.product_assignment', 'product_assignment_mode_check', ('mode',)): "mode=anyarray['add','remove']",
+    ('catmgr.product_assignment', 'product_assignment_sku_check', ('sku',)): "btrimsku<>''",
+    ('catmgr.product_assignment', 'product_assignment_source_check', ('source',)): "source=anyarray['manual','csv','ai','rule']",
+    ('catmgr.slug_map', 'slug_map_action_check', ('action',)): "action=anyarray['map','delete','store_custom']",
+    ('catmgr.slug_map', 'slug_map_shape', ('action', 'target_node_id', 'override_id', 'is_primary')): "action='map'andtarget_node_idisnotnullandoverride_idisnulloraction='delete'andtarget_node_idisnullandoverride_idisnullandnotis_primaryoraction='store_custom'andtarget_node_idisnullandnotis_primary",
+    ('catmgr.uncategorized_ack', 'uncategorized_ack_sku_check', ('sku',)): "btrimsku<>''",
+
+    # woo.virtual_catalog_store has no CHECK constraints; any added check is rejected.
     (
         "logo.assignment",
         "logo_assignment_position_check",
@@ -431,7 +525,18 @@ EXPECTED_CHECKS = {
     ("woo.store_mix_item", "store_mix_item_source_check", ('source',)): "source=anyarray['import','manual']",
     ("woo.store_mix_store", "store_mix_store_mode_check", ('mode',)): "mode=anyarray['all','list']",
 }
+EXPECTED_RESTORE_UNIQUE_KEYS = {('catmgr.node', 'node_slug_key', ('slug',)),
+ ('catmgr.product_assignment', 'product_assignment_node_id_sku_mode_key', ('node_id', 'sku', 'mode'))}
+
 EXPECTED_FOREIGN_KEYS = {
+    ('catmgr.assignment_rule', 'assignment_rule_node_id_fkey', ('node_id',), 'catmgr.node', ('node_id',), 'a', 'c', 's'),
+    ('catmgr.node', 'node_parent_id_fkey', ('parent_id',), 'catmgr.node', ('node_id',), 'a', 'r', 's'),
+    ('catmgr.node_store_override', 'node_store_override_node_id_fkey', ('node_id',), 'catmgr.node', ('node_id',), 'a', 'c', 's'),
+    ('catmgr.node_store_override', 'node_store_override_parent_node_id_fkey', ('parent_node_id',), 'catmgr.node', ('node_id',), 'a', 'n', 's'),
+    ('catmgr.product_assignment', 'product_assignment_node_id_fkey', ('node_id',), 'catmgr.node', ('node_id',), 'a', 'c', 's'),
+    ('catmgr.slug_map', 'slug_map_override_id_fkey', ('override_id',), 'catmgr.node_store_override', ('override_id',), 'a', 'c', 's'),
+    ('catmgr.slug_map', 'slug_map_target_node_id_fkey', ('target_node_id',), 'catmgr.node', ('node_id',), 'a', 'c', 's'),
+
     (
         "woo.store_pricing_tier",
         "store_pricing_tier_tier_name_fkey",
@@ -1518,7 +1623,7 @@ def _assert_restore_column_contract(
                 formatted_type,
                 nullable,
                 "",
-                "",
+                RESTORE_IDENTITY_COLUMNS.get((table_name, column_name), ""),
                 # Arrays of a collatable element type carry the element
                 # collation, so text[] columns report "default" like text.
                 "default" if formatted_type in ("text", "text[]") else None,
@@ -1804,6 +1909,7 @@ def _assert_restore_constraint_contract(
     rows: Iterable[Mapping[str, Any]],
 ) -> None:
     actual_primary_keys = set()
+    actual_unique_keys = set()
     actual_checks = {}
     actual_foreign_keys = set()
     unexpected = []
@@ -1824,6 +1930,8 @@ def _assert_restore_constraint_contract(
             unsafe_metadata.append((table_name, constraint_name))
         if constraint_type == "p":
             actual_primary_keys.add((table_name, constraint_name, key_columns))
+        elif constraint_type == "u":
+            actual_unique_keys.add((table_name, constraint_name, key_columns))
         elif constraint_type == "c":
             actual_checks[(table_name, constraint_name, key_columns)] = (
                 _normalized_check_expression(row.get("check_expression"))
@@ -1852,6 +1960,7 @@ def _assert_restore_constraint_contract(
     }
     if (
         actual_primary_keys != expected_primary_keys
+        or actual_unique_keys != EXPECTED_RESTORE_UNIQUE_KEYS
         or actual_checks != EXPECTED_CHECKS
         or actual_foreign_keys != EXPECTED_FOREIGN_KEYS
         or unexpected
@@ -1999,28 +2108,38 @@ def _validate_write_relation_shapes(cursor) -> None:
 
     cursor.execute(
         """
-        SELECT count(*)::integer AS unsafe_unique_index_count
+        SELECT format('%%I.%%I', namespace.nspname, relation.relname) AS table_name,
+               index_relation.relname AS index_name,
+               pg_get_indexdef(index_row.indexrelid) AS definition,
+               index_row.indisvalid AND index_row.indisready AND index_row.indislive AS healthy
           FROM pg_index AS index_row
-          JOIN pg_class AS relation
-            ON relation.oid = index_row.indrelid
-          JOIN pg_namespace AS namespace
-            ON namespace.oid = relation.relnamespace
+          JOIN pg_class AS relation ON relation.oid = index_row.indrelid
+          JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+          JOIN pg_class AS index_relation ON index_relation.oid = index_row.indexrelid
          WHERE format('%%I.%%I', namespace.nspname, relation.relname) = ANY (%s)
            AND index_row.indisunique
-           AND NOT EXISTS (
-               SELECT 1
-                 FROM pg_constraint AS constraint_row
-                WHERE constraint_row.conindid = index_row.indexrelid
-           )
-        """,
-        (restore_names,),
+           AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = index_row.indexrelid)
+        """, (restore_names,),
     )
-    _expect(
-        cursor.fetchone(),
-        "unsafe_unique_index_count",
-        0,
-        "standalone unique indexes are forbidden on exact-undo tables",
-    )
+    _assert_restore_unique_indexes(cursor.fetchall())
+
+
+def _assert_restore_unique_indexes(rows) -> None:
+    """Standalone unique indexes are otherwise forbidden on exact-undo tables
+    because a row-by-row restore could trip one part-way through. These four
+    partial indexes are allowed only because snapshots.restore_state deletes
+    every row of every scope before it inserts any, so no transient duplicate
+    can exist. Adding a scope or changing that ordering must re-check this
+    list; the set is exact and fails closed on any drift."""
+    expected = {
+        ("catmgr.node_store_override", "override_rename_once"): "CREATE UNIQUE INDEX override_rename_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = 'rename'::text)",
+        ("catmgr.node_store_override", "override_exclude_once"): "CREATE UNIQUE INDEX override_exclude_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = 'exclude'::text)",
+        ("catmgr.node_store_override", "override_extra_slug_once"): "CREATE UNIQUE INDEX override_extra_slug_once ON catmgr.node_store_override USING btree (blog_id, slug) WHERE (kind = 'extra_node'::text)",
+        ("catmgr.slug_map", "slug_map_one_primary"): "CREATE UNIQUE INDEX slug_map_one_primary ON catmgr.slug_map USING btree (target_node_id) WHERE is_primary",
+    }
+    actual = {(r['table_name'], r['index_name']): r['definition'] for r in rows}
+    if actual != expected or any(not r['healthy'] for r in rows):
+        raise RuntimeError("unsafe write-enabled database contract: exact-undo unique index drift")
 
 
 def _validate_agent_schema_signatures(cursor) -> None:

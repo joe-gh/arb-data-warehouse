@@ -396,7 +396,7 @@ def get_settings() -> Settings:
             25 * 1024 * 1024,
         ),
         agent_max_spreadsheet_rows=_integer(
-            "AGENT_MAX_SPREADSHEET_ROWS", 500, 1, 500
+            "AGENT_MAX_SPREADSHEET_ROWS", 500, 1, 2000
         ),
         agent_max_spreadsheet_columns=_integer(
             "AGENT_MAX_SPREADSHEET_COLUMNS", 40, 1, 100

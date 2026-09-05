@@ -12,6 +12,7 @@ from psycopg2.extras import Json
 from authorization import required_tier
 from commands import (
     HARD_DELETE_TOOLS,
+    CatCommand,
     SavePriceRuleCommand,
     SetPriceRuleActiveCommand,
     MutationCommand,
@@ -26,7 +27,7 @@ from domain import (
     NotFound,
     PreviewDrift,
 )
-from mutations import affected_scopes, dispatch_mutation
+from mutations import affected_scopes, dispatch_mutation, prepare_category_command, assert_category_write_access
 from snapshots import (
     MAX_SNAPSHOT_STATE_BYTES,
     VOLATILE_PREVIEW_COLUMNS,
@@ -79,12 +80,22 @@ def _commands_from_rows(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, Mu
         name = str(row["tool_name"])
         arguments = dict(row["arguments"])
         reserved_id = arguments.pop("_reserved_rule_id", None)
+        category_state = arguments.pop("_category_state", None)
         required_tier(name)
         command = parse_command(name, arguments)
         if reserved_id is not None:
             if not isinstance(command, SavePriceRuleCommand) or command.rule_id is not None or type(reserved_id) is not int or reserved_id < 1:
                 raise InvalidCommand("Stored price-rule reservation is invalid")
             command._reserved_rule_id = reserved_id
+        if category_state is not None:
+            if not isinstance(command, CatCommand) or not isinstance(category_state, dict) or set(category_state) != {"reserved", "targets", "scopes"}:
+                raise InvalidCommand("Stored category reservation is invalid")
+            if any(not isinstance(category_state[k], dict) for k in ("reserved", "targets")) or not isinstance(category_state["scopes"], list):
+                raise InvalidCommand("Stored category reservation is invalid")
+            if any(type(v) is not int or v < 1 for v in category_state["reserved"].values()):
+                raise InvalidCommand("Stored category identity is invalid")
+            command._category_state = category_state
+            affected_scopes(command)
         commands.append((name, command))
     return commands
 
@@ -132,6 +143,8 @@ def _stored_arguments(command):
     arguments = command_arguments(command)
     if isinstance(command, SavePriceRuleCommand) and command._reserved_rule_id is not None:
         arguments["_reserved_rule_id"] = command._reserved_rule_id
+    if isinstance(command, CatCommand):
+        arguments["_category_state"] = command._category_state
     return arguments
 
 
@@ -148,6 +161,9 @@ def _preview_diff(before, after, results):
     impacts = [result["price_rule_impact"] for result in results if "price_rule_impact" in result]
     if impacts:
         diff["price_rule_impacts"] = impacts
+    category_impacts = [r["category_rule_impact"] for r in results if "category_rule_impact" in r]
+    if category_impacts:
+        diff["category_rule_impacts"] = category_impacts
     return diff
 
 
@@ -155,13 +171,30 @@ def preview_commands(
     commands: Sequence[tuple[str, MutationCommand]],
     user_login: str,
 ) -> Preview:
-    scopes = _all_scopes(commands)
     results: list[dict] = []
     with database.cursor(
         write=True,
         actor=f"agent-preview:{user_login}"[:100],
         commit_on_success=False,
     ) as cursor:
+        category_commands = [(name, c) for name, c in commands if isinstance(c, CatCommand)]
+        if category_commands:
+            # Discover IDs and cascading row scopes in the cumulative draft,
+            # then roll back every row before taking the real before snapshot.
+            for name, command in category_commands:
+                assert_category_write_access(cursor, user_login, command.env, name)
+            if any(name in {"cat_create_category", "cat_rename_category", "cat_move_category", "cat_delete_category"}
+                   or (name == "cat_set_store_override" and command.override_id is not None and command.kind == "store_only")
+                   for name, command in category_commands):
+                from mutations import MutationScope
+                snapshot_scopes(cursor, (MutationScope("catmgr_draft", {}),))
+            cursor.execute("SAVEPOINT category_scope_discovery")
+            for name, command in category_commands:
+                prepare_category_command(cursor, user_login, command)
+                _dispatch_checked(cursor, f"agent:{user_login}", command)
+            cursor.execute("ROLLBACK TO SAVEPOINT category_scope_discovery")
+            cursor.execute("RELEASE SAVEPOINT category_scope_discovery")
+        scopes = _all_scopes(commands)
         lock_scopes(cursor, scopes)
         before = snapshot_scopes(cursor, scopes, for_update=False)
         for name, command in commands:
@@ -186,6 +219,8 @@ def _preview_batch_candidates(
 ) -> tuple[Preview, list[tuple[str, str, MutationCommand]], list[dict]]:
     """Preview a batch once, rolling back only invalid domain-level rows."""
 
+    if any(isinstance(command, CatCommand) for _, _, command in candidates):
+        raise InvalidCommand("Stage category tools individually for cumulative draft review")
     all_commands = [(name, command) for _call_id, name, command in candidates]
     all_scopes = _all_scopes(all_commands)
     accepted: list[tuple[str, str, MutationCommand]] = []
@@ -291,11 +326,12 @@ def _spreadsheet_build_in_progress(cursor, change_set_id, user_login: str) -> bo
         """
         SELECT 1
           FROM logo.agent_spreadsheet_job
-         WHERE change_set_id = %s AND user_login = %s
+         WHERE user_login = %s
+           AND (change_set_id = %s OR mapping -> '_change_set_ids' ? %s)
            AND status IN ('mapping_processing', 'mapping_confirmed')
          LIMIT 1
         """,
-        (_uuid(change_set_id), user_login),
+        (user_login, _uuid(change_set_id), str(_uuid(change_set_id))),
     )
     return cursor.fetchone() is not None
 
@@ -434,7 +470,7 @@ def stage_write(
             if existing is not None:
                 if (
                     str(existing["tool_name"]) != tool_name
-                    or {k: v for k, v in dict(existing["arguments"]).items() if k != "_reserved_rule_id"}
+                    or {k: v for k, v in dict(existing["arguments"]).items() if k not in {"_reserved_rule_id", "_category_state"}}
                     != command_arguments(command)
                 ):
                     raise Conflict(
@@ -745,6 +781,9 @@ def apply_change_set(
         commands = _commands_from_rows(item_rows)
         if not commands:
             raise InvalidCommand("Cannot apply an empty change-set")
+        for name, command in commands:
+            if isinstance(command, CatCommand):
+                assert_category_write_access(cursor, user_login, command.env, name)
         scopes = _all_scopes(commands)
         if _persisted_scopes(change_set.get("affected_scopes")) != scopes:
             # A deployment changed the command/scope contract after preview.
@@ -926,6 +965,10 @@ def undo_change_set(change_set_id, user_login: str) -> dict:
             user_login,
             lock=True,
         )
+        if any(scope.kind.startswith("catmgr_") for scope in scopes):
+            for name, command in _commands_from_rows(_owned_items(cursor, change_set_id, user_login)):
+                if isinstance(command, CatCommand):
+                    assert_category_write_access(cursor, user_login, command.env, name)
         lock_scopes(cursor, scopes)
         lock_scope_tables(cursor, scopes)
         current = snapshot_scopes(cursor, scopes, for_update=True)
@@ -942,6 +985,10 @@ def undo_change_set(change_set_id, user_login: str) -> dict:
         if not states_equal(restored, journal["before_state"]):
             raise Conflict("Exact restoration check failed")
         actor = f"agent-undo:{user_login}"[:100]
+        if any(scope.kind.startswith("catmgr_") for scope in scopes):
+            from categories_service import record_audit
+            record_audit(cursor, actor=f"agent:{user_login}", action="category_changes_undone",
+                         entity="draft", entity_key=str(change_set_id), detail={})
         cursor.execute(
             """
             INSERT INTO logo.agent_action_journal (
