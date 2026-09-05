@@ -11,8 +11,84 @@ import pytest
 from tests.harness_guard import SAFE_LOGO_ADMIN_FLAGS, validate_test_target
 
 
+from contextlib import contextmanager
+
 TEST_DSN = os.environ.get("TEST_DATABASE_DSN", "").strip()
 TEST_ADMIN_DSN = os.environ.get("TEST_DATABASE_ADMIN_DSN", "").strip()
+
+# The harness grants logo_admin INSERT/UPDATE/DELETE on woo.store_product_state
+# so fixtures can shape product state directly. Production revokes them (the
+# role script), so contract checks look at the role WITHOUT them.
+HARNESS_ONLY_GRANTS = (
+    ("woo.store_product_state", ("INSERT", "UPDATE", "DELETE")),
+)
+
+
+@contextmanager
+def harness_grants_suspended():
+    """Lift the harness-only grants while a contract check runs, then put
+    back exactly what was there."""
+
+    if not TEST_ADMIN_DSN:
+        yield
+        return
+    connection = psycopg2.connect(TEST_ADMIN_DSN)
+    connection.autocommit = True
+    restore = []
+    try:
+        with connection.cursor() as cursor:
+            for table, privileges in HARNESS_ONLY_GRANTS:
+                present = []
+                for privilege in privileges:
+                    cursor.execute(
+                        "SELECT has_table_privilege('logo_admin', %s, %s)",
+                        (table, privilege),
+                    )
+                    if cursor.fetchone()[0]:
+                        present.append(privilege)
+                if present:
+                    cursor.execute(
+                        f"REVOKE {', '.join(present)} ON {table} FROM logo_admin"
+                    )
+                    restore.append((table, present))
+        yield
+    finally:
+        with connection.cursor() as cursor:
+            for table, present in restore:
+                cursor.execute(
+                    f"GRANT {', '.join(present)} ON {table} TO logo_admin"
+                )
+        connection.close()
+
+
+def repull_function_sha256():
+    """The hash the write contract expects for logo.repull_display_name,
+    taken from the function the harness installed. Production supplies
+    AGENT_REPULL_FUNCTION_SHA256 by hand after review; the tests fall back
+    to the installed definition when the variable is not set."""
+
+    dsn = TEST_ADMIN_DSN or TEST_DSN
+    if not dsn:
+        return None
+    connection = psycopg2.connect(dsn)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT encode(sha256(convert_to(
+                           pg_get_functiondef(procedure.oid), 'UTF8'
+                       )), 'hex')
+                  FROM pg_proc AS procedure
+                  JOIN pg_namespace AS namespace
+                    ON namespace.oid = procedure.pronamespace
+                 WHERE namespace.nspname = 'logo'
+                   AND procedure.proname = 'repull_display_name'
+                """
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    return row[0] if row else None
 if not TEST_DSN or not TEST_ADMIN_DSN:
     raise pytest.UsageError(
         "TEST_DATABASE_DSN and TEST_DATABASE_ADMIN_DSN are required"

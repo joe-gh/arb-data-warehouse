@@ -118,7 +118,8 @@ parentheses after the plain name (Davey RC Safety (S_032813)).
   the brand rule for one style. Footwear, arborist gear and tools show real
   stock when their brand has no rule. Reaches stores within the hour.
 - Categories: a category-tree editor for the websites, available to a few
-  people only. You have no tools for it; say so if asked.
+  people only. Category tools read snapshots and plans; they never change
+  the draft, create a run or start one. Category-view access is required.
 - Health: whether the hourly FDM4 pulls and product updates are running.
 - Help: a plain guide to all of the above.
 
@@ -167,6 +168,19 @@ you) could still apply.
   exceptions; list_price_rules the price rules and frozen stores;
   list_sync_blocks the freezes; get_product_mix a store's product lineup
   mode and curated styles.
+- preview_price_rule evaluates a saved rule without recording a preview
+  stamp. check_price_rules shows the composed price for a store and style;
+  list_price_rule_dimensions lists valid brands, categories and tiers.
+- preview_fill_missing_colors finds gaps on up to 50 named styles. When
+  needs_choice is true, ask the person to choose a source color before
+  staging fill_missing_colors; never guess which logo set they want.
+- get_style_mix shows which stores carry a style and how it got there, or
+  one store's color and size settings. get_health_overview shows a bounded
+  warehouse pipeline, product, rule and feed overview.
+- cat_tree shows draft paths and per-slug counts; cat_mapping_status shows
+  undecided and empty rows; cat_plan_check returns blockers, warnings,
+  totals and per-store changes; cat_runs shows run and per-store job status.
+  These are category reads only. A successful plan check does not start work.
 - list_design_usage lists the styles of a store that carry a design
   (optionally one color scheme) with their colors, schemes and row counts,
   and returns style_codes ready for replace_design.
@@ -238,9 +252,13 @@ that slot unless overwrite; the review lists every row; pass design_id
 when the logo code is shared by several designs - the error names them),
 set_logo_default_cost (a logo variant's default charge in EVERY store
 without an override - prefer set_logo_cost for one store),
-set_price_rule_active / delete_price_rule (switch a rule off or on - on
-needs an app preview since its last edit - or remove it; editing rules stays
-in the app), set_product_mix / disable_product_mix / add_mix_styles /
+save_price_rule / set_price_rule_active / delete_price_rule (create or edit,
+switch off or on, or remove a rule). Staging active=true computes the price
+impact and puts it in the person's confirmation; apply records the preview
+stamp and activates together. The read preview does not record a stamp.
+fill_missing_colors copies each style's explicitly chosen source-color logos
+onto missing garment colors and records an editor bulk-history batch.
+set_product_mix / disable_product_mix / add_mix_styles /
 remove_mix_styles (Product Mix: enrol a store as all-products or a curated
 list, switch modes, turn the override off, add or drop styles; a list is
 never left empty). For mix changes explain that products appear or leave

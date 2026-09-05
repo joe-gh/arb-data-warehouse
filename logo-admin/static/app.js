@@ -2371,6 +2371,8 @@
     set_store_extra_customers: "Change which customers' designs a store may use",
     bulk_apply: "Put a logo on many colors across the store",
     set_logo_default_cost: "Change a logo's default price everywhere",
+    save_price_rule: "Create or edit a price rule",
+    fill_missing_colors: "Fill missing garment colors from each style’s own logos",
     set_price_rule_active: "Switch a price rule on or off",
     delete_price_rule: "Delete a price rule",
     set_product_mix: "Change how a store's product mix is decided",
@@ -2598,6 +2600,28 @@
       summary.append(agentNode("p", "muted", "No command details were returned."));
     }
     elements.review.append(summary);
+
+    for (const impact of changeSet.diff?.price_rule_impacts || []) {
+      const section = agentNode("div", "assistant-review__section");
+      const totals = impact.summary || {};
+      section.append(
+        agentNode("h4", "", `Price impact for rule ${impact.rule_id}`),
+        agentNode("p", "", `${totals.affected ?? 0} products across ${impact.store_count ?? 0} stores; ${totals.changed ?? 0} prices change.`),
+      );
+      if (totals.truncated) section.append(agentNode("p", "notice notice--warning", "Impact exceeds the evaluation limit; these totals are partial."));
+      if (impact.frozen_targets?.length) section.append(agentNode("p", "", `Price-frozen stores: ${impact.frozen_targets.join(", ")}`));
+      const table = agentNode("table", "assistant-change-table");
+      const head = agentNode("tr");
+      ["Store", "Style", "SKU", "Before", "After"].forEach((label) => head.append(agentNode("th", "", label)));
+      table.append(head);
+      for (const item of impact.sample || []) {
+        const row = agentNode("tr");
+        [item.fdm4_store, item.style_code, item.sku, item.before_price, item.after_price].forEach((value) => row.append(agentNode("td", "", String(value ?? ""))));
+        table.append(row);
+      }
+      const wrap = agentNode("div", "assistant-change-table-wrap");
+      wrap.append(table); section.append(wrap); elements.review.append(section);
+    }
 
     const changeRows = Array.isArray(changeSet.diff?.changes) ? changeSet.diff.changes : [];
     const changes = agentNode("div", "assistant-review__section");
@@ -2873,6 +2897,15 @@
     );
 
     elements.mapping.append(buildMappingSummary(job.mapping, job.status));
+    const resolutions = job.mapping?._resolutions || [];
+    if (resolutions.length) {
+      const section = agentNode("div", "assistant-review__section");
+      section.append(agentNode("h4", "", "Resolved from name"));
+      const list = agentNode("ul");
+      for (const item of resolutions) list.append(agentNode("li", "", `Row ${item.row}, ${item.field}: ${item.input} → ${item.code}`));
+      section.append(list); elements.mapping.append(section);
+    }
+
     if (job.rejectedRows.length) {
       elements.mapping.append(buildRejectedRowsTable(job.rejectedRows));
     }

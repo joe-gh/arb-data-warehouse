@@ -4,12 +4,15 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import uuid
 
 import psycopg2
 from psycopg2.extensions import parse_dsn
 import pytest
+
+from tests.conftest import harness_grants_suspended, repull_function_sha256
 
 
 PREFLIGHT = (
@@ -50,18 +53,34 @@ def _psql_environment(dsn: str) -> dict[str, str]:
     return environment
 
 
+def _psql_binary() -> str:
+    found = shutil.which("psql")
+    if found:
+        return found
+    for candidate in (
+        "/opt/homebrew/opt/libpq/bin/psql",
+        "/usr/local/opt/libpq/bin/psql",
+        "/usr/lib/postgresql/16/bin/psql",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    pytest.fail("psql is not installed; the preflight tests need libpq's psql")
+
+
 def _run_sql_preflight() -> subprocess.CompletedProcess[str]:
+    expected_hash = (
+        os.environ.get("AGENT_REPULL_FUNCTION_SHA256", "").strip()
+        or repull_function_sha256()
+        or ""
+    )
     return subprocess.run(
         [
-            "psql",
+            _psql_binary(),
             "-X",
             "-v",
             "ON_ERROR_STOP=1",
             "-v",
-            "repull_function_sha256=" + os.environ.get(
-                "AGENT_REPULL_FUNCTION_SHA256",
-                "",
-            ),
+            "repull_function_sha256=" + expected_hash,
             "-f",
             str(PREFLIGHT),
         ],
@@ -446,7 +465,8 @@ def test_provisioner_marks_fdm4_and_runs_app_preflight_read_only():
 
 
 def test_sql_preflight_accepts_the_clean_disposable_target():
-    result = _run_sql_preflight()
+    with harness_grants_suspended():
+        result = _run_sql_preflight()
     assert result.returncode == 0, result.stderr[-2_000:]
 
 

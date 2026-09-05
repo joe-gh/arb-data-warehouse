@@ -10,12 +10,20 @@ from fastapi.testclient import TestClient
 
 import main
 from db import database
+from tests.test_rule_agent_tools import _admin
 
 TOKEN = "feed-test-token"
 
 
 @pytest.fixture
 def feed_client():
+    # Production versions come from the warehouse transform, which this
+    # fixture does not run. Seed a unique positive feed cursor per row.
+    _admin("""WITH versions AS (
+                  SELECT ctid, row_number() OVER (ORDER BY fdm4_store, catalog_id, sku) AS version
+                    FROM woo.store_product_state
+              ) UPDATE woo.store_product_state s SET row_version=v.version
+                  FROM versions v WHERE s.ctid=v.ctid""")
     client = TestClient(main.app)
     yield client
     client.close()

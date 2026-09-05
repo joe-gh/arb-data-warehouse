@@ -65,6 +65,7 @@ STORE_PRICING_COLUMNS = (
 VOLATILE_PREVIEW_COLUMNS = (
     frozenset({
         "updated_by", "updated_at", "created_at", "created_by", "added_at", "added_by",
+        "last_previewed_at",  # activation stamps vary between rolled-back preview and apply
         "imported_at",  # product-mix list snapshot stamp (now() at enrolment)
     })
     | TRIGGER_MANAGED_COLUMNS

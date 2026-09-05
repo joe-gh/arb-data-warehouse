@@ -8,6 +8,8 @@ import os
 import psycopg2
 import pytest
 
+from tests.conftest import harness_grants_suspended, repull_function_sha256
+
 from database_contract import (
     AGENT_CHECKS,
     AGENT_COLUMN_CONTRACTS,
@@ -83,14 +85,16 @@ def _safe_prune_row():
 
 
 def test_provisioned_application_role_satisfies_write_contract():
-    with database.cursor() as cursor:
-        validate_write_database_contract(
-            cursor,
-            expected_repull_sha256=(
-                os.environ.get("AGENT_REPULL_FUNCTION_SHA256", "").strip()
-                or None
-            ),
-        )
+    expected = (
+        os.environ.get("AGENT_REPULL_FUNCTION_SHA256", "").strip()
+        or repull_function_sha256()
+    )
+    with harness_grants_suspended():
+        with database.cursor() as cursor:
+            validate_write_database_contract(
+                cursor,
+                expected_repull_sha256=expected,
+            )
 
 
 @pytest.mark.parametrize(

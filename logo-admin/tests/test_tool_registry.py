@@ -18,7 +18,8 @@ from tool_registry import (
 def test_registry_contains_bounded_reads_and_exact_approved_writes():
     reads = [spec for spec in TOOL_SPECS if spec.kind == "read"]
     writes = [spec for spec in TOOL_SPECS if spec.kind == "write"]
-    assert len(reads) == 22
+    assert len(reads) == 32
+    assert len(writes) == 37
     assert {spec.name for spec in reads} == APPROVED_AGENT_READ_NAMES
     assert {spec.name for spec in writes} == APPROVED_AGENT_WRITE_NAMES
     assert all(spec.agent_enabled and spec.bounded for spec in TOOL_SPECS)

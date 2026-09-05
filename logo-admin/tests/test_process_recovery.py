@@ -177,6 +177,13 @@ def test_replay_window_keeps_newest_complete_turn_and_provider_pairs_together():
                 },
             ],
         )
+        # now() is shared by this fixture transaction. Make the older turn
+        # chronologically older instead of relying on random UUID ordering.
+        cursor.execute(
+            "UPDATE logo.agent_chat_message SET created_at=now()-interval '1 minute' "
+            "WHERE session_id=%s AND turn_id=%s",
+            (session["id"], old_turn),
+        )
     with database.cursor() as cursor:
         replay = agent_repository.get_replay_items(
             cursor,

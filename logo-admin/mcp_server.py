@@ -1192,6 +1192,27 @@ def remove_mix_styles(fdm4_store: str, styles: List[str]) -> Any:
     return _call("DELETE", "/api/product-mix", json_body={"store": fdm4_store, "styles": styles})
 
 
+@mcp.tool()
+def get_stock_rules(q: str = "", limit: int = 200) -> Any:
+    """Read brand inventory rules and a bounded page of style exceptions."""
+    return {
+        "brands": _call("GET", "/api/stock-overrides/brands"),
+        "style_exceptions": _call("GET", "/api/stock-overrides", params={"q": q, "limit": limit}),
+    }
+
+
+@mcp.tool()
+def list_sync_blocks() -> Any:
+    """Read the existing store and style sync freezes."""
+    return _call("GET", "/api/sync-blocks")
+
+
+@mcp.tool()
+def get_product_mix(store: str, q: str = "", limit: int = 50, offset: int = 0) -> Any:
+    """Read a store's product-mix mode and a page of curated styles."""
+    return _call("GET", "/api/product-mix", params={"store": store, "q": q, "limit": limit, "offset": offset})
+
+
 def tool_names() -> List[str]:
     """Return names of all registered MCP tools. Used by parity tests only."""
     try:

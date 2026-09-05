@@ -322,3 +322,98 @@ async def propose_mapping(
         except Exception:
             raise ValueError(str(wire_error)[:300]) from wire_error
     return validate_mapping_headers(proposal, bounded_headers)
+
+
+class NameResolutionError(ValueError):
+    def __init__(self, field, value, candidates, *, truncated=False):
+        self.field = field
+        self.candidates = candidates[:10]
+        reason = "Ambiguous or incomplete lookup" if truncated or len(candidates) > 1 else "No single exact match"
+        choices = "; ".join(f"{row['code']} ({row['name']})" for row in self.candidates) or "none"
+        super().__init__(f"{field}: {reason} for {value!r}. Candidates: {choices}")
+
+
+def _name_key(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+class SpreadsheetNameResolver:
+    """Resolve codes first, then unique exact names; partial matches are advice only."""
+
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.cache = {}
+
+    def _lookup(self, field, value, store):
+        import queries
+        cursor = self.cursor
+        if field == "fdm4_store":
+            cursor.execute("SELECT DISTINCT fdm4_store AS code FROM woo.store_catalog WHERE lower(btrim(fdm4_store)) = lower(%s) LIMIT 2", (value,))
+        elif field == "product_style":
+            cursor.execute("""SELECT DISTINCT style_code AS code FROM woo.store_product_state
+                              WHERE fdm4_store = %s AND lower(btrim(style_code)) = lower(%s)
+                              UNION SELECT DISTINCT product_style AS code FROM logo.assignment
+                              WHERE fdm4_store = %s AND lower(btrim(product_style)) = lower(%s) LIMIT 2""", (store, value, store, value))
+        elif field == "garment_color_code":
+            cursor.execute("""SELECT color_code AS code FROM logo.color_class WHERE lower(btrim(color_code)) = lower(%s)
+                              UNION SELECT DISTINCT color_code AS code FROM woo.store_product_state
+                              WHERE lower(btrim(color_code)) = lower(%s) LIMIT 2""", (value, value))
+        else:
+            cursor.execute("SELECT DISTINCT btrim(design_id) AS code FROM fdm4.dec_design WHERE lower(btrim(design_id)) = lower(%s) LIMIT 2", (value,))
+        codes = [str(row["code"]).strip() for row in cursor.fetchall()]
+        if len(codes) == 1:
+            return codes[0], False
+        if codes:
+            raise NameResolutionError(field, value, [{"code": code, "name": code} for code in codes])
+        if field == "fdm4_store":
+            result = queries.list_stores(cursor)
+            cursor.execute("SELECT fdm4_store, blog_id, blog_path, blog_name FROM woo.store_blog_map ORDER BY fdm4_store, blog_id LIMIT 5001")
+            aliases = list(cursor.fetchall())
+            by_store = {}
+            for row in aliases:
+                by_store.setdefault(row["fdm4_store"], []).extend([str(row["blog_id"]), row["blog_path"], row["blog_name"]])
+            candidates = [{"code": row["fdm4_store"], "name": row["display_name"],
+                           "aliases": [row["display_name"], row.get("blog_path"), str(row.get("blog_id") or ""), *by_store.get(row["fdm4_store"], [])]}
+                          for row in result["stores"]]
+            truncated = result["truncated"] or len(aliases) > 5000
+        elif field == "product_style":
+            result = queries.list_styles(cursor, store=store, q=value, active_only=False, assigned_only=False)
+            candidates = [{"code": row["product_style"], "name": row["name"], "aliases": [row["name"]]} for row in result["styles"]]
+            truncated = result["truncated"]
+        elif field == "garment_color_code":
+            result = queries.list_colors(cursor, q=value, limit=500)
+            candidates = [{"code": row["color_code"], "name": row["color_name"], "aliases": [row["color_name"]]} for row in result["colors"]]
+            truncated = result["truncated"] or result["total"] > len(candidates)
+        else:
+            result = queries.search_designs(cursor, q=value, store=store)
+            candidates = [{"code": row["design_id"], "name": row["description"], "aliases": [row["description"], row.get("fdm4_description"), row.get("web_description"), value if row.get("exact_name_match") else None]} for row in result["designs"]]
+            truncated = result["truncated"]
+        def alias_key(alias):
+            return _name_key(alias).strip("/") if field == "fdm4_store" else _name_key(alias)
+        exact = {row["code"]: row for row in candidates if alias_key(value) in {alias_key(a) for a in row["aliases"] if a}}
+        if len(exact) == 1 and not truncated:
+            return next(iter(exact)), True
+        suggestions = list(exact.values()) or [row for row in candidates if any(alias_key(value) in alias_key(a) for a in row["aliases"] if a)]
+        raise NameResolutionError(field, value, [{"code": row["code"], "name": row["name"]} for row in suggestions], truncated=truncated)
+
+    def resolve(self, values, row_number):
+        values = dict(values)
+        resolutions = []
+        for field in ("fdm4_store", "product_style", "garment_color_code", "design_id"):
+            if field not in values:
+                continue
+            raw = str(values[field]).strip()
+            key = (field, raw, values.get("fdm4_store"))
+            if key not in self.cache:
+                try:
+                    self.cache[key] = self._lookup(field, raw, values.get("fdm4_store"))
+                except NameResolutionError as exc:
+                    self.cache[key] = exc
+            result = self.cache[key]
+            if isinstance(result, NameResolutionError):
+                raise result
+            code, from_name = result
+            values[field] = code
+            if from_name:
+                resolutions.append({"row": row_number, "field": field, "input": raw, "code": code, "status": "resolved from name"})
+        return values, resolutions

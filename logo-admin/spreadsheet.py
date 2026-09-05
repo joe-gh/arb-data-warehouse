@@ -32,6 +32,8 @@ from spreadsheet_mapping import (
     MappingCapacityExceeded,
     MappingProposal,
     propose_mapping,
+    SpreadsheetNameResolver,
+    NameResolutionError,
     validate_mapping_headers,
 )
 import staging
@@ -433,6 +435,7 @@ def _restore_csv_text(value: Any, *, csv_format: bool) -> Any:
 def _translate_rows_with_numbers(
     parsed: ParsedSpreadsheet,
     proposal: MappingProposal,
+    *, resolver=None, resolutions=None,
 ) -> tuple[list[tuple[int, MutationCommand]], list[dict]]:
     validate_mapping_headers(proposal, parsed.headers)
     commands: list[tuple[int, MutationCommand]] = []
@@ -448,6 +451,9 @@ def _translate_rows_with_numbers(
             for target, source in proposal.columns.items()
         })
         try:
+            row_resolutions = []
+            if resolver is not None:
+                values, row_resolutions = resolver.resolve(values, index)
             if proposal.command == "save_assignment":
                 values.setdefault("option_row", 1)
                 values.setdefault("location", "")
@@ -468,8 +474,13 @@ def _translate_rows_with_numbers(
                 values.setdefault("note", "")
                 command = SetStorePricingTierCommand.model_validate(values)
             commands.append((index, command))
+            if resolutions is not None:
+                resolutions.extend(row_resolutions)
         except Exception as exc:
-            rejected.append({"row": index, "detail": str(exc)[:500]})
+            error = {"row": index, "detail": str(exc)[:500]}
+            if isinstance(exc, NameResolutionError):
+                error.update({"field": exc.field, "candidates": exc.candidates})
+            rejected.append(error)
     return commands, rejected
 
 
@@ -867,6 +878,7 @@ def _terminal_confirmation_result(
             job["change_set_id"],
             user_login,
         )
+    job["resolutions"] = (job.get("mapping") or {}).get("_resolutions", [])
     return job
 
 
@@ -1031,10 +1043,11 @@ def confirm_spreadsheet_mapping(
             SpreadsheetLimits.from_settings(settings),
         )
         proposal = MappingProposal.model_validate(job["mapping"])
-        numbered_commands, rejected = _translate_rows_with_numbers(
-            parsed,
-            proposal,
-        )
+        resolutions = []
+        with database.cursor() as cursor:
+            numbered_commands, rejected = _translate_rows_with_numbers(
+                parsed, proposal, resolver=SpreadsheetNameResolver(cursor), resolutions=resolutions,
+            )
     except (Conflict, InvalidCommand, ValueError) as exc:
         # A concurrent confirmer can finish and remove the private upload
         # between our initial read and file open. Return its canonical result
@@ -1118,13 +1131,15 @@ def confirm_spreadsheet_mapping(
             job_cursor.execute(
                 """
                 UPDATE logo.agent_spreadsheet_job
-                   SET status = %s, rejected_rows = %s
+                   SET status = %s, rejected_rows = %s,
+                       mapping = mapping || %s::jsonb
                  WHERE id = %s AND user_login = %s
                 RETURNING *
                 """,
                 (
                     final_status,
                     Json(rejected[: settings.agent_max_spreadsheet_rows]),
+                    Json({"_resolutions": resolutions}),
                     locked["id"],
                     user_login,
                 ),
@@ -1132,6 +1147,8 @@ def confirm_spreadsheet_mapping(
             final_job = dict(job_cursor.fetchone())
 
     _remove_private_file(path)
+    if final_job is not None:
+        final_job["resolutions"] = (final_job.get("mapping") or {}).get("_resolutions", [])
     if final_job is None or change_set is None:
         raise RuntimeError("Spreadsheet staging did not produce a final result")
     if final_job["status"] == "rejected":

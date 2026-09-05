@@ -4,7 +4,7 @@ Field descriptions are part of the JSON schema the model sees, so they double
 as the parameter documentation for every read tool.
 """
 
-from typing import Optional
+from typing import Optional, Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -171,3 +171,54 @@ class GetSyncStatusCommand(ReadCommand):
         default=None, max_length=100,
         description="Optional store code: adds that store's logo-sync ownership, its freezes and its recent sync events. Omit for the warehouse pipeline alone.",
     )
+
+
+class PreviewPriceRuleCommand(ReadCommand):
+    rule_id: int = Field(ge=1, description="Rule id from list_price_rules.")
+    sample_limit: int = Field(default=200, ge=1, le=1000, description="Maximum before and after price examples.")
+
+
+class CheckPriceRulesCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    style: str = Field(min_length=1, max_length=100, description=STYLE)
+
+
+class ListPriceRuleDimensionsCommand(ReadCommand):
+    pass
+
+
+class PreviewFillMissingColorsCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    styles: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(min_length=1, max_length=50, description="Style codes to check, up to 50 per call.")
+
+
+class GetStyleMixCommand(ReadCommand):
+    style: str = Field(min_length=1, max_length=100, description=STYLE)
+    store: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional store code; null lists stores carrying the style.")
+    limit: int = Field(default=100, ge=1, le=200, description="Maximum stores returned.")
+
+
+class GetHealthOverviewCommand(ReadCommand):
+    pass
+
+
+class CatTreeCommand(ReadCommand):
+    env: str = Field(min_length=3, max_length=8, description="Configured category snapshot environment.")
+    limit: int = Field(default=200, ge=1, le=500, description="Maximum paths returned.")
+
+
+class CatMappingStatusCommand(ReadCommand):
+    env: str = Field(min_length=3, max_length=8, description="Configured category snapshot environment.")
+    limit: int = Field(default=100, ge=1, le=200, description="Maximum undecided and empty rows returned each.")
+
+
+class CatPlanCheckCommand(ReadCommand):
+    env: str = Field(min_length=3, max_length=8, description="Configured category snapshot environment.")
+    blog_ids: Optional[list[Annotated[int, Field(ge=1)]]] = Field(default=None, max_length=200, description="Store site numbers to check; null checks all imported snapshots.")
+    limit: int = Field(default=100, ge=1, le=200, description="Maximum per-store rows and nested examples returned.")
+
+
+class CatRunsCommand(ReadCommand):
+    env: Optional[str] = Field(default=None, min_length=3, max_length=8, description="Optional category environment filter.")
+    run_id: Optional[int] = Field(default=None, ge=1, description="Optional run id whose jobs to summarize.")
+    limit: int = Field(default=50, ge=1, le=200, description="Maximum runs and per-store jobs returned.")

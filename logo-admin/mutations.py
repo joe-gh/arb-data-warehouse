@@ -4,6 +4,7 @@ Every public function in this module accepts a caller-owned PostgreSQL cursor.
 It never opens or commits a transaction and never performs non-database I/O.
 """
 
+import datetime
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import json
@@ -13,6 +14,8 @@ from urllib.parse import urlsplit
 import mix_service
 from commands import (
     COMMAND_MODELS,
+    SavePriceRuleCommand,
+    FillMissingColorsCommand,
     AddMixStylesCommand,
     DeletePriceRuleCommand,
     DisableProductMixCommand,
@@ -120,6 +123,8 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "set_logo_cost": frozenset({"assignment_style"}),
     "set_store_extra_customers": frozenset({"store_settings_row"}),
     "bulk_apply": frozenset({"assignment_store"}),
+    "fill_missing_colors": frozenset({"assignment_store"}),
+    "save_price_rule": frozenset({"price_rule_row"}),
     "set_logo_default_cost": frozenset({"default_cost_row"}),
     "set_price_rule_active": frozenset({"price_rule_row"}),
     "delete_price_rule": frozenset({"price_rule_row"}),
@@ -589,13 +594,18 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = _style_scopes(command.store, command.styles)
     elif isinstance(command, SetStoreExtraCustomersCommand):
         scopes = (MutationScope("store_settings_row", {"fdm4_store": command.store.strip()}),)
-    elif isinstance(command, BulkApplyCommand):
+    elif isinstance(command, (BulkApplyCommand, FillMissingColorsCommand)):
         scopes = (assignment_store_scope(command.store),)
     elif isinstance(command, SetLogoDefaultCostCommand):
         scopes = (MutationScope("default_cost_row", {
             "logo_code": _upper(command.logo_code, "logo_code"),
             "color_scheme_id": _upper(command.color_scheme_id, "color_scheme_id"),
         }),)
+    elif isinstance(command, SavePriceRuleCommand):
+        rule_id = command.rule_id or command._reserved_rule_id
+        if rule_id is None:
+            raise InvalidCommand("A new price rule needs a reserved id before staging")
+        scopes = (MutationScope("price_rule_row", {"rule_id": int(rule_id)}),)
     elif isinstance(command, (SetPriceRuleActiveCommand, DeletePriceRuleCommand)):
         scopes = (MutationScope("price_rule_row", {"rule_id": int(command.rule_id)}),)
     elif isinstance(command, SetProductMixCommand):
@@ -1629,8 +1639,199 @@ def set_logo_default_cost(cursor, actor: str, command: SetLogoDefaultCostCommand
         affected_scopes(command),
     )
 
+PRICE_EFFECT_TYPES = ("percent", "flat", "set_price", "price_level", "margin_over_cost")
+PRICE_LEVEL_KEYS = ("msrp", "corp1", "corp2", "corp3", "wholesale", "employee", "base")
+MAX_RULE_VALUE = Decimal("9999999")
 
-def set_price_rule_active(cursor, actor: str, command: SetPriceRuleActiveCommand) -> MutationResult:
+MATERIAL_RULE_FIELDS = (
+    "priority", "stackable", "stores", "store_tiers", "styles", "brands",
+    "categories", "excl_stores", "excl_styles", "excl_brands",
+    "excl_categories", "effect_type", "effect_value", "price_level_key",
+    "basis", "rounding", "floor_price", "ceiling_price", "cap_at_msrp",
+    "effective_from", "effective_until",
+)
+
+def _rule_material_changed(old, new) -> bool:
+    for field in MATERIAL_RULE_FIELDS:
+        a, b = old.get(field), new[field]
+        if isinstance(a, list) or isinstance(b, list):
+            if set(a or []) != set(b or []):
+                return True
+        elif field in ("effect_value", "floor_price", "ceiling_price"):
+            if (a is None) != (b is None):
+                return True
+            if a is not None and Decimal(a) != Decimal(b):
+                return True
+        elif a != b:
+            return True
+    return False
+
+
+def _clean_list(values, upper=False, maxlen=100, maxitems=5000, field="list"):
+    out = []
+    seen = set()
+    for v in values or []:
+        v = " ".join(str(v).split())
+        if len(v) > maxlen:
+            raise InvalidCommand(f"{field}: entry exceeds {maxlen} characters: {v[:40]}...")
+        if upper:
+            v = v.upper()
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    if len(out) > maxitems:
+        raise InvalidCommand(f"{field}: too many entries ({len(out)}; max {maxitems})")
+    return out
+
+
+def _parse_rule_date(value, field):
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        raise InvalidCommand(f"{field} must be YYYY-MM-DD")
+
+
+def save_price_rule(cursor, actor: str, command: SavePriceRuleCommand, *, preview_activation: bool = False) -> MutationResult:
+    for field in ("effect_value", "floor_price", "ceiling_price"):
+        value = getattr(command, field)
+        if value is not None and not value.is_finite():
+            raise InvalidCommand(f"{field} must be finite")
+    if not " ".join(command.name.split()):
+        raise InvalidCommand("name is required")
+    if command.effect_type not in PRICE_EFFECT_TYPES:
+        raise InvalidCommand("Unknown effect type")
+    if command.effect_type == "price_level":
+        if (command.price_level_key or "") not in PRICE_LEVEL_KEYS:
+            raise InvalidCommand("price_level_key required for price_level effect")
+    elif command.effect_value is None:
+        raise InvalidCommand("effect_value required for this effect type")
+    if command.effect_value is not None:
+        if abs(command.effect_value) > MAX_RULE_VALUE:
+            raise InvalidCommand("effect_value is out of range")
+        if command.effect_type == "set_price" and command.effect_value <= 0:
+            raise InvalidCommand("set_price must be greater than 0")
+        if command.effect_type == "margin_over_cost" and command.effect_value <= 0:
+            raise InvalidCommand("margin_over_cost multiplier must be greater than 0")
+        if command.effect_type == "percent" and (command.effect_value <= -100 or command.effect_value > 1000):
+            raise InvalidCommand("percent must be above -100 and at most 1000")
+    if command.floor_price is not None and (command.floor_price < 0 or command.floor_price > MAX_RULE_VALUE):
+        raise InvalidCommand("floor_price must be between 0 and 9,999,999")
+    if command.ceiling_price is not None and (command.ceiling_price < 0 or command.ceiling_price > MAX_RULE_VALUE):
+        raise InvalidCommand("ceiling_price must be between 0 and 9,999,999")
+    if (command.floor_price is not None and command.ceiling_price is not None
+            and command.ceiling_price < command.floor_price):
+        raise InvalidCommand("The never-above price is below the never-below price")
+    basis = (command.basis or "current").strip().lower()
+    if command.effect_type not in ("percent", "flat"):
+        basis = "current"
+    if basis != "current" and basis not in PRICE_LEVEL_KEYS:
+        raise InvalidCommand("Unknown price basis")
+    rounding = (command.rounding or "none").strip().lower()
+    if rounding not in ("none", "99", "95", "00"):
+        raise InvalidCommand("Unknown rounding choice")
+    frm = _parse_rule_date(command.effective_from, "effective_from")
+    until = _parse_rule_date(command.effective_until, "effective_until")
+    if frm and until and until < frm:
+        raise InvalidCommand("effective_until is before effective_from")
+    values = {
+        "rule_id": command.rule_id,
+        "name": " ".join(command.name.split()),
+        "priority": command.priority,
+        "stackable": command.stackable,
+        "stores": _clean_list(command.stores, upper=True, field="stores") or None,
+        "store_tiers": _clean_list(command.store_tiers, field="store_tiers") or None,
+        "styles": _clean_list(command.styles, upper=True, field="styles") or None,
+        "brands": _clean_list(command.brands, field="brands") or None,
+        "categories": _clean_list(command.categories, field="categories") or None,
+        "excl_stores": _clean_list(command.excl_stores, upper=True, field="excl_stores") or None,
+        "excl_styles": _clean_list(command.excl_styles, upper=True, field="excl_styles") or None,
+        "excl_brands": _clean_list(command.excl_brands, field="excl_brands") or None,
+        "excl_categories": _clean_list(command.excl_categories, field="excl_categories") or None,
+        "effect_type": command.effect_type,
+        "effect_value": command.effect_value,
+        "price_level_key": command.price_level_key if command.effect_type == "price_level" else None,
+        "basis": basis,
+        "rounding": rounding,
+        "floor_price": command.floor_price,
+        "ceiling_price": command.ceiling_price,
+        "cap_at_msrp": bool(command.cap_at_msrp),
+        "effective_from": frm,
+        "effective_until": until,
+        "note": command.note.strip(),
+    }
+    deactivated = False
+    if values["rule_id"]:
+        cursor.execute(
+            "SELECT * FROM woo.price_rule WHERE rule_id=%s FOR UPDATE",
+            (values["rule_id"],),
+        )
+        old = cursor.fetchone()
+        if not old:
+            raise NotFound("Rule not found")
+        material = _rule_material_changed(old, values)
+        # HTTP save can keep an active rule only for label edits. Staged
+        # activation below evaluates the saved content before switching on.
+        new_active = bool(command.active) and bool(old["active"]) and not material
+        deactivated = bool(old["active"]) and bool(command.active) and not new_active
+        cursor.execute(
+            """
+            UPDATE woo.price_rule SET
+                name=%(name)s, active=%(active)s, priority=%(priority)s, stackable=%(stackable)s,
+                stores=%(stores)s, store_tiers=%(store_tiers)s, styles=%(styles)s,
+                brands=%(brands)s, categories=%(categories)s,
+                excl_stores=%(excl_stores)s, excl_styles=%(excl_styles)s,
+                excl_brands=%(excl_brands)s, excl_categories=%(excl_categories)s,
+                effect_type=%(effect_type)s, effect_value=%(effect_value)s,
+                price_level_key=%(price_level_key)s, basis=%(basis)s, rounding=%(rounding)s,
+                floor_price=%(floor_price)s, ceiling_price=%(ceiling_price)s, cap_at_msrp=%(cap_at_msrp)s,
+                effective_from=%(effective_from)s, effective_until=%(effective_until)s,
+                last_previewed_at=CASE WHEN %(material)s THEN NULL ELSE last_previewed_at END,
+                note=%(note)s, updated_at=now(), updated_by=%(actor)s
+             WHERE rule_id=%(rule_id)s RETURNING rule_id, active
+            """,
+            {**values, "active": new_active, "material": material,
+             "actor": actor},
+        )
+        row = cursor.fetchone()
+    else:
+        # New rules start inactive; staged activation follows the impact check.
+        cursor.execute(
+            """
+            INSERT INTO woo.price_rule (rule_id, name, active, priority, stackable, stores, store_tiers,
+                styles, brands, categories, excl_stores, excl_styles, excl_brands, excl_categories,
+                effect_type, effect_value, price_level_key, basis, rounding,
+                floor_price, ceiling_price, cap_at_msrp, effective_from, effective_until, note, updated_by)
+            VALUES (COALESCE(%(reserved_id)s, nextval(pg_get_serial_sequence('woo.price_rule', 'rule_id'))), %(name)s, false, %(priority)s, %(stackable)s, %(stores)s, %(store_tiers)s,
+                %(styles)s, %(brands)s, %(categories)s, %(excl_stores)s, %(excl_styles)s,
+                %(excl_brands)s, %(excl_categories)s, %(effect_type)s, %(effect_value)s,
+                %(price_level_key)s, %(basis)s, %(rounding)s, %(floor_price)s, %(ceiling_price)s,
+                %(cap_at_msrp)s, %(effective_from)s, %(effective_until)s, %(note)s, %(actor)s)
+            RETURNING rule_id, active
+            """,
+            {**values, "actor": actor, "reserved_id": command._reserved_rule_id},
+        )
+        row = cursor.fetchone()
+    impact = None
+    if preview_activation and command.active:
+        from queries import price_rule_impact
+        impact = price_rule_impact(cursor, row["rule_id"])
+        cursor.execute(
+            "UPDATE woo.price_rule SET active = true, last_previewed_at = now() WHERE rule_id = %s",
+            (row["rule_id"],),
+        )
+        row = {**row, "active": True}
+        deactivated = False
+    scoped = command.model_copy(update={"rule_id": row["rule_id"]})
+    value = {"ok": True, "rule_id": row["rule_id"], "active": row["active"], "deactivated": deactivated}
+    if impact is not None:
+        value["price_rule_impact"] = impact
+    return MutationResult(value, affected_scopes(scoped))
+
+
+def set_price_rule_active(cursor, actor: str, command: SetPriceRuleActiveCommand, *, preview_activation: bool = False) -> MutationResult:
     """Flip a price rule on or off - never its content. Activation needs a
     preview stamp newer than the last edit (the app's save path clears it)."""
     cursor.execute(
@@ -1640,7 +1841,12 @@ def set_price_rule_active(cursor, actor: str, command: SetPriceRuleActiveCommand
     row = cursor.fetchone()
     if not row:
         raise NotFound("Rule not found")
-    if command.active and row["last_previewed_at"] is None:
+    impact = None
+    if command.active and preview_activation:
+        from queries import price_rule_impact
+        impact = price_rule_impact(cursor, command.rule_id)
+        cursor.execute("UPDATE woo.price_rule SET last_previewed_at = now() WHERE rule_id = %s", (command.rule_id,))
+    if command.active and not preview_activation and row["last_previewed_at"] is None:
         raise InvalidCommand(
             "Preview this rule in the app before activating it - its settings changed since the last preview"
         )
@@ -1650,7 +1856,7 @@ def set_price_rule_active(cursor, actor: str, command: SetPriceRuleActiveCommand
     )
     return MutationResult(
         {"ok": True, "rule_id": command.rule_id, "name": row["name"], "active": command.active,
-         "was_active": bool(row["active"])},
+         "was_active": bool(row["active"]), **({"price_rule_impact": impact} if impact is not None else {})},
         affected_scopes(command),
     )
 
@@ -1700,7 +1906,23 @@ def remove_mix_styles(cursor, actor: str, command: RemoveMixStylesCommand) -> Mu
     return MutationResult({"ok": True, "store": store, "removed": removed}, affected_scopes(command))
 
 
+def fill_missing_colors(cursor, actor: str, command: FillMissingColorsCommand) -> MutationResult:
+    store = _clean(command.store, "store")
+    styles = [_clean(entry.style, "style") for entry in command.entries]
+    _clean_styles(styles, "styles")
+    if len(styles) != len(set(styles)):
+        raise InvalidCommand("Each style must appear only once")
+    _bounded_assignment_count(cursor, "fdm4_store = %s", (store,), label="Store")
+    outcome = fill_gaps(cursor, fdm4_store=store,
+                        entries=[entry.model_dump() for entry in command.entries],
+                        overwrite=command.overwrite, actor=actor)
+    _bounded_assignment_count(cursor, "fdm4_store = %s", (store,), label="Store")
+    return MutationResult(outcome, affected_scopes(command))
+
+
 MUTATION_HANDLERS: Dict[str, Callable] = {
+    "save_price_rule": save_price_rule,
+    "fill_missing_colors": fill_missing_colors,
     "save_assignment": save_assignment,
     "deactivate_assignment": deactivate_assignment,
     "hard_delete_assignment": hard_delete_assignment,
@@ -1743,9 +1965,12 @@ def dispatch_mutation(
     cursor,
     actor: str,
     command: MutationCommand,
+    *, preview_activation: bool = False,
 ) -> MutationResult:
     for name, model in COMMAND_MODELS.items():
         if isinstance(command, model):
+            if isinstance(command, (SavePriceRuleCommand, SetPriceRuleActiveCommand)):
+                return MUTATION_HANDLERS[name](cursor, actor, command, preview_activation=preview_activation)
             return MUTATION_HANDLERS[name](cursor, actor, command)
     raise InvalidCommand("unsupported mutation command")
 

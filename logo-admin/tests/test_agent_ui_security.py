@@ -56,7 +56,7 @@ def test_server_render_omits_every_assistant_entry_point_when_disallowed():
 def test_server_render_includes_assistant_for_allowlisted_operator():
     rendered = _render_dashboard(True)
     assert 'id="assistant-toggle"' in rendered
-    assert 'id="assistant-fab"' in rendered
+    assert 'aria-controls="assistant-panel"' in rendered
     assert 'id="assistant-panel"' in rendered
     assert 'id="assistant-review"' in rendered
     assert 'id="assistant-mapping"' in rendered

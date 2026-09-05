@@ -12,6 +12,8 @@ from psycopg2.extras import Json
 from authorization import required_tier
 from commands import (
     HARD_DELETE_TOOLS,
+    SavePriceRuleCommand,
+    SetPriceRuleActiveCommand,
     MutationCommand,
     command_arguments,
     parse_command,
@@ -76,8 +78,14 @@ def _commands_from_rows(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, Mu
     for row in rows:
         name = str(row["tool_name"])
         arguments = dict(row["arguments"])
+        reserved_id = arguments.pop("_reserved_rule_id", None)
         required_tier(name)
-        commands.append((name, parse_command(name, arguments)))
+        command = parse_command(name, arguments)
+        if reserved_id is not None:
+            if not isinstance(command, SavePriceRuleCommand) or command.rule_id is not None or type(reserved_id) is not int or reserved_id < 1:
+                raise InvalidCommand("Stored price-rule reservation is invalid")
+            command._reserved_rule_id = reserved_id
+        commands.append((name, command))
     return commands
 
 
@@ -108,13 +116,39 @@ def _dispatch_checked(cursor, actor: str, command: MutationCommand):
     """Reject a handler whose reported mutation boundary drifts."""
 
     expected = compact_scopes(affected_scopes(command))
-    result = dispatch_mutation(cursor, actor, command)
+    if isinstance(command, (SavePriceRuleCommand, SetPriceRuleActiveCommand)):
+        result = dispatch_mutation(cursor, actor, command, preview_activation=True)
+    else:
+        result = dispatch_mutation(cursor, actor, command)
     actual = compact_scopes(result.scopes)
     if actual != expected:
         raise InvalidCommand(
             "Mutation handler scope does not match its command contract"
         )
     return result
+
+
+def _stored_arguments(command):
+    arguments = command_arguments(command)
+    if isinstance(command, SavePriceRuleCommand) and command._reserved_rule_id is not None:
+        arguments["_reserved_rule_id"] = command._reserved_rule_id
+    return arguments
+
+
+def _reserve_price_rule_id(command):
+    if isinstance(command, SavePriceRuleCommand) and command.rule_id is None and command._reserved_rule_id is None:
+        # nextval reserves an identity only; preview never leaves a business row.
+        with database.cursor(write=True, commit_on_success=False) as cursor:
+            cursor.execute("SELECT nextval(pg_get_serial_sequence('woo.price_rule', 'rule_id')) AS rule_id")
+            command._reserved_rule_id = int(cursor.fetchone()["rule_id"])
+
+
+def _preview_diff(before, after, results):
+    diff = diff_states(before, after, ignored_columns=VOLATILE_PREVIEW_COLUMNS)
+    impacts = [result["price_rule_impact"] for result in results if "price_rule_impact" in result]
+    if impacts:
+        diff["price_rule_impacts"] = impacts
+    return diff
 
 
 def preview_commands(
@@ -141,11 +175,7 @@ def preview_commands(
         after = snapshot_scopes(cursor, scopes, for_update=False)
     return Preview(
         scopes=scopes,
-        semantic_diff=diff_states(
-            before,
-            after,
-            ignored_columns=VOLATILE_PREVIEW_COLUMNS,
-        ),
+        semantic_diff=_preview_diff(before, after, results),
         results=tuple(results),
     )
 
@@ -195,11 +225,7 @@ def _preview_batch_candidates(
     return (
         Preview(
             scopes=accepted_scopes,
-            semantic_diff=diff_states(
-                before,
-                after,
-                ignored_columns=VOLATILE_PREVIEW_COLUMNS,
-            ),
+            semantic_diff=_preview_diff(before, after, results),
             results=tuple(results),
         ),
         accepted,
@@ -408,7 +434,7 @@ def stage_write(
             if existing is not None:
                 if (
                     str(existing["tool_name"]) != tool_name
-                    or dict(existing["arguments"])
+                    or {k: v for k, v in dict(existing["arguments"]).items() if k != "_reserved_rule_id"}
                     != command_arguments(command)
                 ):
                     raise Conflict(
@@ -423,6 +449,7 @@ def stage_write(
             base_revision = int(change_set["revision"])
             commands = _commands_from_rows(rows) + [(tool_name, command)]
 
+        _reserve_price_rule_id(command)
         preview = preview_commands(commands, user_login)
         revision = base_revision + 1
         digest = _hash_payload(revision, commands, preview.semantic_diff)
@@ -453,7 +480,7 @@ def stage_write(
                     user_login,
                     call_id,
                     tool_name,
-                    _json(command_arguments(command)),
+                    _json(_stored_arguments(command)),
                     len(rows),
                 ),
             )
@@ -525,6 +552,13 @@ def stage_write_batch(
             existing_rows = _owned_items(cursor, change_set_id, user_login)
             base_revision = int(change_set["revision"])
 
+        stored_commands = {str(row["call_id"]): command for row, (_name, command) in zip(existing_rows, _commands_from_rows(existing_rows))}
+        for candidate_id, _name, candidate in candidates:
+            if isinstance(candidate, SavePriceRuleCommand) and candidate.rule_id is None:
+                stored = stored_commands.get(candidate_id)
+                if isinstance(stored, SavePriceRuleCommand):
+                    candidate._reserved_rule_id = stored._reserved_rule_id
+                _reserve_price_rule_id(candidate)
         preview, accepted, rejected = _preview_batch_candidates(
             candidates,
             user_login,
@@ -542,7 +576,7 @@ def stage_write_batch(
             name, command = existing
             if (
                 str(row["tool_name"]) != name
-                or dict(row["arguments"]) != command_arguments(command)
+                or dict(row["arguments"]) != _stored_arguments(command)
             ):
                 raise Conflict(
                     "Tool call ID was reused with different arguments"
@@ -601,7 +635,7 @@ def stage_write_batch(
                         user_login,
                         call_id,
                         name,
-                        _json(command_arguments(command)),
+                        _json(_stored_arguments(command)),
                         sort_order,
                     ),
                 )
@@ -725,21 +759,18 @@ def apply_change_set(
         lock_scopes(cursor, scopes)
         lock_scope_tables(cursor, scopes)
         before_exact = snapshot_scopes(cursor, scopes, for_update=True)
+        results = []
         for name, command in commands:
             required_tier(name)
-            _dispatch_checked(
+            results.append(_dispatch_checked(
                 cursor,
                 f"agent:{user_login}"[:100],
                 command,
-            )
+            ).value)
         after_exact = snapshot_scopes(cursor, scopes, for_update=False)
         validate_snapshot_state(before_exact, expected_scopes=scopes)
         validate_snapshot_state(after_exact, expected_scopes=scopes)
-        semantic_diff = diff_states(
-            before_exact,
-            after_exact,
-            ignored_columns=VOLATILE_PREVIEW_COLUMNS,
-        )
+        semantic_diff = _preview_diff(before_exact, after_exact, results)
         actual_hash = _hash_payload(revision, commands, semantic_diff)
         if actual_hash != confirmed_hash:
             raise PreviewDrift({

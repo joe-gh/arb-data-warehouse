@@ -421,7 +421,10 @@ async def test_retry_terminalizes_job_when_linked_change_set_was_discarded(tmp_p
         job["mapping_hash"],
     )
     assert change_set is not None
-    spreadsheet.staging.discard_change_set(change_set["id"], "admin-one")
+    # Simulate a set discarded by an earlier process. The current public
+    # discard operation correctly refuses a still-building spreadsheet set.
+    with database.cursor(write=True, actor="fixture") as cursor:
+        cursor.execute("UPDATE logo.agent_change_set SET status = 'discarded' WHERE id = %s", (change_set["id"],))
 
     with pytest.raises(Conflict, match="no longer pending"):
         confirm_spreadsheet_mapping(

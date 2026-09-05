@@ -86,14 +86,13 @@ def _fixture_rule_id():
 
 def test_price_rule_activation_requires_preview_then_round_trips():
     rule_id = _fixture_rule_id()
-    _reject("set_price_rule_active", {"rule_id": rule_id, "active": True}, InvalidCommand)
     _reject("set_price_rule_active", {"rule_id": 999999, "active": False}, NotFound)
-    _admin("UPDATE woo.price_rule SET last_previewed_at = now() WHERE rule_id = %s", (rule_id,))
     scope = (MutationScope("price_rule_row", {"rule_id": rule_id}),)
     def on():
         assert _admin("SELECT active FROM woo.price_rule WHERE rule_id=%s", (rule_id,)) == [(True,)]
     staged = _round_trip("set_price_rule_active", {"rule_id": rule_id, "active": True}, scope, "pr-on", during=on)
     assert staged["preview_results"][0]["was_active"] is False
+    assert "price_rule_impacts" in staged["preview_diff"]
     assert _admin("SELECT active FROM woo.price_rule WHERE rule_id=%s", (rule_id,)) == [(False,)]
 
 

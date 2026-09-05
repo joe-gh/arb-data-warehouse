@@ -40,6 +40,7 @@ from auth import (
 )
 from authorization import AccessContext
 from commands import (
+    SavePriceRuleCommand,
     ApplyToColorsCommand,
     CopyStyleCommand,
     DeactivateAssignmentCommand,
@@ -2212,67 +2213,22 @@ def delete_sync_block(
 # SAME function, so preview == reality by construction.
 # ---------------------------------------------------------------------------
 
-PRICE_EFFECT_TYPES = ("percent", "flat", "set_price", "price_level", "margin_over_cost")
-PRICE_LEVEL_KEYS = ("msrp", "corp1", "corp2", "corp3", "wholesale", "employee", "base")
+PRICE_EFFECT_TYPES = mutations.PRICE_EFFECT_TYPES
+PRICE_LEVEL_KEYS = mutations.PRICE_LEVEL_KEYS
 
 
-class PriceRuleBody(BaseModel):
-    rule_id: Optional[int] = None
-    name: str = Field(min_length=1, max_length=200)
-    active: bool = False
-    priority: int = Field(default=100, ge=1, le=100000)
-    stackable: bool = False
-    stores: List[str] = []
-    store_tiers: List[str] = []
-    styles: List[str] = []
-    brands: List[str] = []
-    categories: List[str] = []
-    excl_stores: List[str] = []
-    excl_styles: List[str] = []
-    excl_brands: List[str] = []
-    excl_categories: List[str] = []
-    effect_type: str
-    effect_value: Optional[Decimal] = None
-    price_level_key: Optional[str] = None
-    basis: str = Field(default="current", max_length=16)
-    rounding: str = Field(default="none", max_length=8)
-    floor_price: Optional[Decimal] = None
-    ceiling_price: Optional[Decimal] = None
-    cap_at_msrp: bool = False
-    effective_from: Optional[str] = None    # YYYY-MM-DD or empty
-    effective_until: Optional[str] = None
-    note: str = Field(default="", max_length=2000)
+class PriceRuleBody(SavePriceRuleCommand):
+    pass
 
 
 def _clean_list(values, upper=False, maxlen=100, maxitems=5000, field="list"):
-    out = []
-    seen = set()
-    for v in values or []:
-        v = " ".join(str(v).split())
-        if len(v) > maxlen:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{field}: entry exceeds {maxlen} characters: {v[:40]}...")
-        if upper:
-            v = v.upper()
-        if v and v not in seen:
-            seen.add(v)
-            out.append(v)
-    if len(out) > maxitems:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field}: too many entries ({len(out)}; max {maxitems})")
-    return out
-
-
-def _parse_rule_date(value, field):
-    value = (value or "").strip()
-    if not value:
-        return None
     try:
-        return datetime.date.fromisoformat(value)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"{field} must be YYYY-MM-DD")
+        return mutations._clean_list(values, upper=upper, maxlen=maxlen, maxitems=maxitems, field=field)
+    except InvalidCommand as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+_parse_rule_date = mutations._parse_rule_date
 
 
 @router.get("/price-rules")
@@ -2307,169 +2263,30 @@ def price_rules(user: Dict[str, str] = Depends(require_user)):
 
 @router.get("/price-rules/dimensions")
 def price_rule_dimensions(user: Dict[str, str] = Depends(require_user)):
-    del user
-    with database.cursor() as cursor:
-        cursor.execute(
-            "SELECT DISTINCT brand FROM woo.store_product_state WHERE NULLIF(btrim(brand),'') IS NOT NULL ORDER BY 1 LIMIT 1000")
-        brands = [r["brand"] for r in cursor.fetchall()]
-        cursor.execute(
-            "SELECT DISTINCT category FROM woo.store_product_state WHERE NULLIF(btrim(category),'') IS NOT NULL ORDER BY 1 LIMIT 200")
-        categories = [r["category"] for r in cursor.fetchall()]
-        cursor.execute("SELECT tier_name FROM woo.pricing_tier ORDER BY sort_order, tier_name")
-        tiers = [r["tier_name"] for r in cursor.fetchall()]
-    return {"brands": brands, "categories": categories, "tiers": tiers}
+    return _read_service(read_queries.list_price_rule_dimensions)
 
 
 # Widest magnitude woo.price_rule's numeric(12,4) columns can hold.
-MAX_RULE_VALUE = Decimal("9999999")
+MAX_RULE_VALUE = mutations.MAX_RULE_VALUE
 
 # Fields whose change alters WHAT the rule does (vs name/note labeling). A
 # material edit clears the preview stamp and forces the rule inactive - the
 # server-side counterpart of "preview required before activating".
-MATERIAL_RULE_FIELDS = (
-    "priority", "stackable", "stores", "store_tiers", "styles", "brands",
-    "categories", "excl_stores", "excl_styles", "excl_brands",
-    "excl_categories", "effect_type", "effect_value", "price_level_key",
-    "basis", "rounding", "floor_price", "ceiling_price", "cap_at_msrp",
-    "effective_from", "effective_until",
-)
+MATERIAL_RULE_FIELDS = mutations.MATERIAL_RULE_FIELDS
 
 
-def _rule_material_changed(old, new) -> bool:
-    for field in MATERIAL_RULE_FIELDS:
-        a, b = old.get(field), new[field]
-        if isinstance(a, list) or isinstance(b, list):
-            if set(a or []) != set(b or []):
-                return True
-        elif field in ("effect_value", "floor_price", "ceiling_price"):
-            if (a is None) != (b is None):
-                return True
-            if a is not None and Decimal(a) != Decimal(b):
-                return True
-        elif a != b:
-            return True
-    return False
+_rule_material_changed = mutations._rule_material_changed
 
 
 @router.put("/price-rules")
 def save_price_rule(body: PriceRuleBody, user: Dict[str, str] = Depends(require_csrf)):
-    if body.effect_type not in PRICE_EFFECT_TYPES:
-        raise HTTPException(status_code=400, detail="Unknown effect type")
-    if body.effect_type == "price_level":
-        if (body.price_level_key or "") not in PRICE_LEVEL_KEYS:
-            raise HTTPException(status_code=400, detail="price_level_key required for price_level effect")
-    elif body.effect_value is None:
-        raise HTTPException(status_code=400, detail="effect_value required for this effect type")
-    if body.effect_value is not None:
-        if abs(body.effect_value) > MAX_RULE_VALUE:
-            raise HTTPException(status_code=400, detail="effect_value is out of range")
-        if body.effect_type == "set_price" and body.effect_value <= 0:
-            raise HTTPException(status_code=400, detail="set_price must be greater than 0")
-        if body.effect_type == "margin_over_cost" and body.effect_value <= 0:
-            raise HTTPException(status_code=400, detail="margin_over_cost multiplier must be greater than 0")
-        if body.effect_type == "percent" and (body.effect_value <= -100 or body.effect_value > 1000):
-            raise HTTPException(status_code=400, detail="percent must be above -100 and at most 1000")
-    if body.floor_price is not None and (body.floor_price < 0 or body.floor_price > MAX_RULE_VALUE):
-        raise HTTPException(status_code=400, detail="floor_price must be between 0 and 9,999,999")
-    if body.ceiling_price is not None and (body.ceiling_price < 0 or body.ceiling_price > MAX_RULE_VALUE):
-        raise HTTPException(status_code=400, detail="ceiling_price must be between 0 and 9,999,999")
-    if (body.floor_price is not None and body.ceiling_price is not None
-            and body.ceiling_price < body.floor_price):
-        raise HTTPException(status_code=400, detail="The never-above price is below the never-below price")
-    basis = (body.basis or "current").strip().lower()
-    if body.effect_type not in ("percent", "flat"):
-        basis = "current"
-    if basis != "current" and basis not in PRICE_LEVEL_KEYS:
-        raise HTTPException(status_code=400, detail="Unknown price basis")
-    rounding = (body.rounding or "none").strip().lower()
-    if rounding not in ("none", "99", "95", "00"):
-        raise HTTPException(status_code=400, detail="Unknown rounding choice")
-    frm = _parse_rule_date(body.effective_from, "effective_from")
-    until = _parse_rule_date(body.effective_until, "effective_until")
-    if frm and until and until < frm:
-        raise HTTPException(status_code=400, detail="effective_until is before effective_from")
-    values = {
-        "rule_id": body.rule_id,
-        "name": " ".join(body.name.split()),
-        "priority": body.priority,
-        "stackable": body.stackable,
-        "stores": _clean_list(body.stores, upper=True, field="stores") or None,
-        "store_tiers": _clean_list(body.store_tiers, field="store_tiers") or None,
-        "styles": _clean_list(body.styles, upper=True, field="styles") or None,
-        "brands": _clean_list(body.brands, field="brands") or None,
-        "categories": _clean_list(body.categories, field="categories") or None,
-        "excl_stores": _clean_list(body.excl_stores, upper=True, field="excl_stores") or None,
-        "excl_styles": _clean_list(body.excl_styles, upper=True, field="excl_styles") or None,
-        "excl_brands": _clean_list(body.excl_brands, field="excl_brands") or None,
-        "excl_categories": _clean_list(body.excl_categories, field="excl_categories") or None,
-        "effect_type": body.effect_type,
-        "effect_value": body.effect_value,
-        "price_level_key": body.price_level_key if body.effect_type == "price_level" else None,
-        "basis": basis,
-        "rounding": rounding,
-        "floor_price": body.floor_price,
-        "ceiling_price": body.ceiling_price,
-        "cap_at_msrp": bool(body.cap_at_msrp),
-        "effective_from": frm,
-        "effective_until": until,
-        "note": body.note.strip(),
-    }
-    deactivated = False
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
-        if values["rule_id"]:
-            cursor.execute(
-                "SELECT * FROM woo.price_rule WHERE rule_id=%s FOR UPDATE",
-                (values["rule_id"],),
-            )
-            old = cursor.fetchone()
-            if not old:
-                raise HTTPException(status_code=404, detail="Rule not found")
-            material = _rule_material_changed(old, values)
-            # Save can KEEP a rule active (label-only edits) or deactivate it,
-            # but never activate - activation goes through /toggle, which
-            # checks the preview stamp.
-            new_active = bool(body.active) and bool(old["active"]) and not material
-            deactivated = bool(old["active"]) and bool(body.active) and not new_active
-            cursor.execute(
-                """
-                UPDATE woo.price_rule SET
-                    name=%(name)s, active=%(active)s, priority=%(priority)s, stackable=%(stackable)s,
-                    stores=%(stores)s, store_tiers=%(store_tiers)s, styles=%(styles)s,
-                    brands=%(brands)s, categories=%(categories)s,
-                    excl_stores=%(excl_stores)s, excl_styles=%(excl_styles)s,
-                    excl_brands=%(excl_brands)s, excl_categories=%(excl_categories)s,
-                    effect_type=%(effect_type)s, effect_value=%(effect_value)s,
-                    price_level_key=%(price_level_key)s, basis=%(basis)s, rounding=%(rounding)s,
-                    floor_price=%(floor_price)s, ceiling_price=%(ceiling_price)s, cap_at_msrp=%(cap_at_msrp)s,
-                    effective_from=%(effective_from)s, effective_until=%(effective_until)s,
-                    last_previewed_at=CASE WHEN %(material)s THEN NULL ELSE last_previewed_at END,
-                    note=%(note)s, updated_at=now(), updated_by=%(actor)s
-                 WHERE rule_id=%(rule_id)s RETURNING rule_id, active
-                """,
-                {**values, "active": new_active, "material": material,
-                 "actor": user["user_login"]},
-            )
-            row = cursor.fetchone()
-        else:
-            # New rules are born inactive with no preview stamp.
-            cursor.execute(
-                """
-                INSERT INTO woo.price_rule (name, active, priority, stackable, stores, store_tiers,
-                    styles, brands, categories, excl_stores, excl_styles, excl_brands, excl_categories,
-                    effect_type, effect_value, price_level_key, basis, rounding,
-                    floor_price, ceiling_price, cap_at_msrp, effective_from, effective_until, note, updated_by)
-                VALUES (%(name)s, false, %(priority)s, %(stackable)s, %(stores)s, %(store_tiers)s,
-                    %(styles)s, %(brands)s, %(categories)s, %(excl_stores)s, %(excl_styles)s,
-                    %(excl_brands)s, %(excl_categories)s, %(effect_type)s, %(effect_value)s,
-                    %(price_level_key)s, %(basis)s, %(rounding)s, %(floor_price)s, %(ceiling_price)s,
-                    %(cap_at_msrp)s, %(effective_from)s, %(effective_until)s, %(note)s, %(actor)s)
-                RETURNING rule_id, active
-                """,
-                {**values, "actor": user["user_login"]},
-            )
-            row = cursor.fetchone()
-    return {"ok": True, "rule_id": row["rule_id"], "active": row["active"],
-            "deactivated": deactivated}
+        try:
+            return mutations.save_price_rule(cursor, user["user_login"], SavePriceRuleCommand(**body.model_dump())).value
+        except InvalidCommand as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except NotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 class PriceRuleToggleBody(BaseModel):
@@ -2542,203 +2359,21 @@ class PriceRulePreviewBody(BaseModel):
 @router.post("/price-rules/preview")
 def preview_price_rule(body: PriceRulePreviewBody, user: Dict[str, str] = Depends(require_csrf)):
     with database.cursor() as cursor:
-        cursor.execute("SELECT * FROM woo.price_rule WHERE rule_id=%s", (body.rule_id,))
-        rule = cursor.fetchone()
-        if not rule:
-            raise HTTPException(status_code=404, detail="Rule not found")
-        # Candidate pre-filter from the rule's own targeting keeps the preview
-        # fast; the evaluator then applies the FULL active chain per candidate.
-        # Base = base_price (the PRE-rule price the transform preserves), never
-        # the projected `price` column - that one already has active rules
-        # baked in, and evaluating from it would double-apply them.
-        where = ["s.is_active", "s.kind = 'variation'", "s.price IS NOT NULL"]
-        params: dict = {"rid": body.rule_id, "lim": 50001}
-        if rule["stores"] or rule["store_tiers"]:
-            where.append(
-                "(s.fdm4_store = ANY(%(stores)s) OR EXISTS (SELECT 1 FROM woo.store_pricing_tier spt"
-                " WHERE spt.fdm4_store = s.fdm4_store AND spt.tier_name = ANY(%(tiers)s)))")
-            params["stores"] = rule["stores"] or []
-            params["tiers"] = rule["store_tiers"] or []
-        if rule["styles"]:
-            where.append("upper(btrim(s.style_code)) = ANY(%(styles)s)")
-            params["styles"] = rule["styles"]
-        if rule["brands"]:
-            where.append("s.brand = ANY(%(brands)s)")
-            params["brands"] = rule["brands"]
-        if rule["categories"]:
-            where.append("s.category = ANY(%(cats)s)")
-            params["cats"] = rule["categories"]
-        if rule.get("excl_stores"):
-            where.append("NOT (s.fdm4_store = ANY(%(xstores)s))")
-            params["xstores"] = rule["excl_stores"]
-        if rule.get("excl_styles"):
-            where.append("NOT (upper(btrim(s.style_code)) = ANY(%(xstyles)s))")
-            params["xstyles"] = rule["excl_styles"]
-        if rule.get("excl_brands"):
-            where.append("NOT (s.brand = ANY(%(xbrands)s))")
-            params["xbrands"] = rule["excl_brands"]
-        if rule.get("excl_categories"):
-            where.append("NOT (s.category = ANY(%(xcats)s))")
-            params["xcats"] = rule["excl_categories"]
-        cursor.execute("SET LOCAL statement_timeout = '120s'")
-        cursor.execute(
-            f"""
-            WITH cand AS (
-                SELECT s.fdm4_store, s.style_code, s.sku, s.color, s.size,
-                       COALESCE(s.base_price, s.price) AS price,
-                       s.price_levels, s.brand, s.category, s.def_cost,
-                       (s.price_levels ->> 'msrp')::numeric AS msrp
-                  FROM woo.store_product_state s
-                 WHERE {' AND '.join(where)}
-                 LIMIT %(lim)s
-            ), hits AS (
-                SELECT c.*, rp.final_price, rp.applied_rule_ids
-                  FROM cand c
-                  CROSS JOIN LATERAL woo.eval_price_rules(
-                      c.fdm4_store, c.style_code, c.brand, c.category,
-                      c.price, c.price_levels, c.def_cost,
-                      current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
-                 WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
-            )
-            SELECT (SELECT count(*) FROM cand)                                    AS candidates,
-                   count(*)                                                        AS affected,
-                   count(DISTINCT fdm4_store)                                      AS stores,
-                   count(*) FILTER (WHERE msrp IS NOT NULL AND final_price > msrp) AS above_msrp,
-                   count(*) FILTER (WHERE final_price <> price)                    AS changed,
-                   round(min(final_price - price), 4)                              AS min_delta,
-                   round(max(final_price - price), 4)                              AS max_delta,
-                   round(avg(final_price - price), 4)                              AS avg_delta
-              FROM hits
-            """,
-            params,
-        )
-        summary = dict(cursor.fetchone())
-        cursor.execute(
-            f"""
-            WITH cand AS (
-                SELECT s.fdm4_store, s.style_code, s.sku, s.color, s.size,
-                       COALESCE(s.base_price, s.price) AS price,
-                       s.price_levels, s.brand, s.category, s.def_cost,
-                       (s.price_levels ->> 'msrp')::numeric AS msrp
-                  FROM woo.store_product_state s
-                 WHERE {' AND '.join(where)}
-                 LIMIT %(lim)s
-            )
-            SELECT c.fdm4_store, c.style_code, c.sku, c.color, c.size,
-                   c.price AS before_price, rp.final_price AS after_price, c.msrp,
-                   (c.msrp IS NOT NULL AND rp.final_price > c.msrp) AS over_msrp,
-                   rp.applied_rule_ids
-              FROM cand c
-              CROSS JOIN LATERAL woo.eval_price_rules(
-                  c.fdm4_store, c.style_code, c.brand, c.category,
-                  c.price, c.price_levels, c.def_cost,
-                  current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
-             WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
-             ORDER BY abs(rp.final_price - c.price) DESC
-             LIMIT %(sample)s
-            """,
-            {**params, "sample": body.sample_limit},
-        )
-        sample = [dict(r) for r in cursor.fetchall()]
-        cursor.execute(
-            f"""
-            WITH cand AS (
-                SELECT s.fdm4_store, s.style_code,
-                       COALESCE(s.base_price, s.price) AS price,
-                       s.price_levels, s.brand,
-                       s.category, s.def_cost
-                  FROM woo.store_product_state s
-                 WHERE {' AND '.join(where)}
-                 LIMIT %(lim)s
-            )
-            SELECT c.fdm4_store, count(*) AS affected
-              FROM cand c
-              CROSS JOIN LATERAL woo.eval_price_rules(
-                  c.fdm4_store, c.style_code, c.brand, c.category,
-                  c.price, c.price_levels, c.def_cost,
-                  current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
-             WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
-             GROUP BY 1 ORDER BY 2 DESC LIMIT 30
-            """,
-            params,
-        )
-        per_store = [dict(r) for r in cursor.fetchall()]
-        # Price-frozen stores among the affected: the hourly sync will not
-        # change their live prices, so the rule has no visible effect there.
-        cursor.execute(
-            "SELECT DISTINCT fdm4_store FROM woo.sync_exclusion WHERE active AND style_code = ''")
-        frozen_all = {r["fdm4_store"] for r in cursor.fetchall()}
-        affected_stores = {p["fdm4_store"] for p in per_store} | set(rule["stores"] or [])
-        frozen_targets = sorted(affected_stores & frozen_all)
-    summary["truncated"] = summary.get("candidates", 0) is not None and summary["candidates"] >= 50001
-    # Record the preview server-side - this is what /toggle checks before
-    # allowing activation. Guarded by updated_at so a rule edited while the
-    # preview ran does not get a stamp for numbers it no longer matches.
-    preview_recorded = False
-    with database.cursor(write=True, actor=user["user_login"]) as wcur:
-        wcur.execute(
-            """
-            UPDATE woo.price_rule SET last_previewed_at = now()
-             WHERE rule_id = %s AND updated_at = %s RETURNING rule_id
-            """,
-            (body.rule_id, rule["updated_at"]),
-        )
-        preview_recorded = wcur.fetchone() is not None
-    return {"ok": True, "rule_id": body.rule_id, "summary": summary,
-            "store_count": summary.get("stores"),
-            "per_store": per_store, "sample": sample,
-            "frozen_targets": frozen_targets,
-            "preview_recorded": preview_recorded}
+        try:
+            result = read_queries.price_rule_impact(cursor, body.rule_id, body.sample_limit, include_version=True)
+        except read_queries.QueryNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+    updated_at = result.pop("rule_updated_at")
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        cursor.execute("UPDATE woo.price_rule SET last_previewed_at = now() WHERE rule_id = %s AND updated_at = %s RETURNING rule_id",
+                       (body.rule_id, updated_at))
+        result["preview_recorded"] = cursor.fetchone() is not None
+    return result
 
 
 @router.get("/price-rules/check")
-def check_price(
-    store: str = Query(..., min_length=1, max_length=100),
-    style: str = Query(..., min_length=1, max_length=100),
-    user: Dict[str, str] = Depends(require_user),
-):
-    """The composed answer: what will this style cost on this store with every
-    active rule, priority, and stacking applied - the same math as the sync."""
-    del user
-    store_v = _clean(store, "store").upper()
-    style_v = _clean(style, "style").upper()
-    with database.cursor() as cursor:
-        cursor.execute("SET LOCAL statement_timeout = '30s'")
-        cursor.execute(
-            """
-            SELECT s.sku, s.color, s.size,
-                   COALESCE(s.base_price, s.price) AS base_price,
-                   s.price AS current_price,
-                   (s.price_levels ->> 'msrp')::numeric AS msrp,
-                   rp.final_price, rp.applied_rule_ids
-              FROM woo.store_product_state s
-              CROSS JOIN LATERAL woo.eval_price_rules(
-                  s.fdm4_store, s.style_code, s.brand, s.category,
-                  COALESCE(s.base_price, s.price), s.price_levels, s.def_cost,
-                  current_date, NULL, NULL) rp
-             WHERE s.fdm4_store = %s AND upper(btrim(s.style_code)) = %s
-               AND s.is_active AND s.kind = 'variation' AND s.price IS NOT NULL
-             ORDER BY s.color, s.size
-             LIMIT 500
-            """,
-            (store_v, style_v),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        rule_ids = sorted({rid for r in rows for rid in (r.get("applied_rule_ids") or [])})
-        names = {}
-        if rule_ids:
-            cursor.execute(
-                "SELECT rule_id, name FROM woo.price_rule WHERE rule_id = ANY(%s)",
-                (rule_ids,),
-            )
-            names = {r["rule_id"]: r["name"] for r in cursor.fetchall()}
-        cursor.execute(
-            "SELECT 1 FROM woo.sync_exclusion WHERE active AND style_code = '' AND fdm4_store = %s LIMIT 1",
-            (store_v,),
-        )
-        frozen = cursor.fetchone() is not None
-    return {"store": store_v, "style": style_v, "rows": rows,
-            "rule_names": names, "frozen": frozen}
+def check_price(store: str = Query(..., min_length=1, max_length=100), style: str = Query(..., min_length=1, max_length=100), user: Dict[str, str] = Depends(require_user)):
+    return _read_service(read_queries.check_price_rules, store=store, style=style)
 
 
 # ---------------------------------------------------------------------------
@@ -2830,50 +2465,7 @@ def _mix_item_count(cursor, store: str) -> int:
 
 
 def _mix_style_universe(cursor, store: str, style: str):
-    """Known color channels and sizes for one style: state rows (any activity,
-    so channels removed from the mix stay editable) plus candidate colors the
-    filtered state no longer carries."""
-    cursor.execute(
-        """
-        SELECT upper(btrim(COALESCE(s.color_code, ''))) AS color,
-               max(COALESCE(NULLIF(btrim(s.color), ''), s.color_code)) AS color_name,
-               count(*) FILTER (WHERE s.is_active) AS variations,
-               jsonb_agg(DISTINCT jsonb_build_object(
-                   'code', upper(btrim(COALESCE(s.size_code, ''))),
-                   'label', COALESCE(NULLIF(btrim(s.size), ''), s.size_code)
-               )) FILTER (WHERE COALESCE(btrim(s.size_code), '') <> '') AS sizes
-          FROM woo.store_product_state s
-         WHERE s.fdm4_store = %s AND upper(btrim(s.style_code)) = %s
-           AND s.kind = 'variation'
-           AND COALESCE(btrim(s.color_code), '') <> ''
-         GROUP BY 1
-         ORDER BY 1
-        """,
-        (store, style),
-    )
-    available = []
-    seen = set()
-    for row in cursor.fetchall():
-        available.append({
-            "color": row["color"],
-            "color_name": row["color_name"],
-            "variations": int(row["variations"]),
-            "sizes": row["sizes"] or [],
-        })
-        seen.add(row["color"])
-    cursor.execute(
-        "SELECT colors FROM woo.store_mix_candidate WHERE fdm4_store=%s AND upper(btrim(style_code))=%s",
-        (store, style),
-    )
-    cand = cursor.fetchone()
-    for color in (cand["colors"] if cand and cand["colors"] else []):
-        color = _mix_norm(color)
-        if color and color not in seen:
-            seen.add(color)
-            available.append({
-                "color": color, "color_name": color, "variations": 0, "sizes": [],
-            })
-    return available
+    return read_queries.mix_style_universe(cursor, store, style)
 
 
 def _mix_clean_style_config(colors, size_excludes, available):
@@ -3206,33 +2798,11 @@ def mix_styles_list(
 
 
 @router.get("/product-mix/style")
-def mix_style_detail(
-    store: str = Query(min_length=1, max_length=100),
-    style: str = Query(min_length=1, max_length=100),
-    user: Dict[str, str] = Depends(require_user),
-):
-    del user
-    store = _mix_norm(store)
-    style = _mix_norm(style)
-    with database.cursor() as cursor:
-        _mix_registry(cursor, store)
-        available = _mix_style_universe(cursor, store, style)
-        cursor.execute(
-            """
-            SELECT colors, size_excludes, source, added_by, added_at
-              FROM woo.store_mix_item
-             WHERE fdm4_store = %s AND style_code = %s
-            """,
-            (store, style),
-        )
-        item = cursor.fetchone()
-    return {
-        "ok": True, "store": store, "style_code": style,
-        "in_mix": item is not None,
-        "colors": item["colors"] if item else None,
-        "size_excludes": item["size_excludes"] if item else None,
-        "available": available,
-    }
+def mix_style_detail(store: str = Query(min_length=1, max_length=100), style: str = Query(min_length=1, max_length=100), user: Dict[str, str] = Depends(require_user)):
+    try:
+        return _read_service(read_queries.get_style_mix, store=store, style=style)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 @router.put("/product-mix/style")
@@ -4407,106 +3977,7 @@ def legacy_import_images(
 
 @router.get("/health/overview")
 def health_overview(user: Dict[str, str] = Depends(require_user)):
-    del user
-    now = datetime.datetime.now(datetime.timezone.utc)
-    out: Dict[str, Any] = {"ok": True, "generated_at": now.isoformat()}
-    with database.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT id, status, started_at, finished_at,
-                   EXTRACT(EPOCH FROM (finished_at - started_at))::int AS duration_s,
-                   rows_loaded, refresh_version,
-                   left(COALESCE(note, ''), 200) AS note,
-                   left(COALESCE(error, ''), 400) AS error
-              FROM woo.sync_control
-             WHERE op = 'pull'
-             ORDER BY id DESC
-             LIMIT 12
-            """
-        )
-        runs = [dict(r) for r in cursor.fetchall()]
-        cursor.execute(
-            """
-            SELECT count(*) FILTER (WHERE status = 'success') AS ok_24h,
-                   count(*) FILTER (WHERE status NOT IN ('success', 'running', 'requested')) AS failed_24h
-              FROM woo.sync_control
-             WHERE op = 'pull' AND requested_at > now() - interval '24 hours'
-            """
-        )
-        day = dict(cursor.fetchone())
-        out["pipeline"] = {"runs": runs, "ok_24h": int(day["ok_24h"] or 0), "failed_24h": int(day["failed_24h"] or 0)}
-
-        cursor.execute(
-            """
-            SELECT max(row_version) AS max_version,
-                   max(changed_at) AS latest_change,
-                   count(*) FILTER (WHERE is_active) AS active_rows,
-                   count(*) AS total_rows,
-                   count(*) FILTER (WHERE is_active AND kind = 'parent') AS parents,
-                   count(*) FILTER (WHERE is_active AND kind = 'variation') AS variations,
-                   count(*) FILTER (WHERE changed_at > now() - interval '24 hours') AS changed_24h
-              FROM woo.store_product_state
-            """
-        )
-        out["state"] = dict(cursor.fetchone())
-
-        cursor.execute(
-            "SELECT rule_id, left(name, 120) AS name FROM woo.price_rule WHERE active ORDER BY priority, rule_id LIMIT 20"
-        )
-        rule_rows = [dict(r) for r in cursor.fetchall()]
-        cursor.execute("SELECT count(*) AS n FROM woo.price_rule WHERE active")
-        active_rule_count = int(cursor.fetchone()["n"])
-        cursor.execute(
-            """
-            SELECT count(DISTINCT fdm4_store) AS stores,
-                   count(*) FILTER (WHERE style_code = '') AS whole_store,
-                   count(*) FILTER (WHERE style_code <> '') AS styles
-              FROM woo.sync_exclusion
-             WHERE active
-            """
-        )
-        blocks = dict(cursor.fetchone())
-        cursor.execute(
-            "SELECT fdm4_store, mode FROM woo.store_mix_store WHERE active ORDER BY fdm4_store LIMIT 50"
-        )
-        mix_rows = [dict(r) for r in cursor.fetchall()]
-        cursor.execute("SELECT count(*) AS n FROM woo.store_pricing_tier")
-        tiers = int(cursor.fetchone()["n"] or 0)
-        out["features"] = {
-            "price_rules": {"active": active_rule_count, "rules": rule_rows},
-            "sync_blocks": blocks,
-            "mix_stores": mix_rows,
-            "tier_assignments": tiers,
-        }
-
-        cursor.execute(
-            """
-            SELECT (SELECT count(*) FROM pim.ingest_event) AS events,
-                   (SELECT max(received_at) FROM pim.ingest_event) AS latest_event,
-                   (SELECT count(*) FROM pim.product_state) AS products
-            """
-        )
-        out["pim"] = dict(cursor.fetchone())
-
-        # The feed registry ships separately; degrade gracefully until the
-        # table exists on this database.
-        cursor.execute("SELECT to_regclass('woo.feed_consumer') IS NOT NULL AS present")
-        feeds_present = bool(cursor.fetchone()["present"])
-        consumers: List[Dict[str, Any]] = []
-        if feeds_present:
-            cursor.execute(
-                """
-                SELECT name, left(COALESCE(url, ''), 300) AS url, active,
-                       last_ping_at, left(COALESCE(last_ping_status, ''), 60) AS last_ping_status,
-                       last_pull_at, last_pull_version,
-                       left(COALESCE(note, ''), 200) AS note
-                  FROM woo.feed_consumer
-                 ORDER BY name
-                """
-            )
-            consumers = [dict(r) for r in cursor.fetchall()]
-        out["feeds"] = {"available": feeds_present, "consumers": consumers}
-    return out
+    return _read_service(read_queries.get_health_overview)
 
 
 # ---- Shared with the assistant: logo cost, extra customers, default cost,

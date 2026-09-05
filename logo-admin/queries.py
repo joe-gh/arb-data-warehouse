@@ -1,5 +1,7 @@
 """Bounded, cursor-owned read services shared by HTTP and the agent."""
 
+import datetime
+import mix_service
 import html
 import re
 import threading
@@ -859,6 +861,14 @@ def search_designs(
                       color_scheme_id
         )
         SELECT left(btrim(d.design_id), 256) AS design_id,
+               left(COALESCE(d.description, ''), 1024) AS fdm4_description,
+               left(COALESCE(d.web_description, ''), 1024) AS web_description,
+               (lower(btrim(COALESCE(d.description, ''))) = lower(%(exact)s)
+                OR lower(btrim(COALESCE(d.web_description, ''))) = lower(%(exact)s)
+                OR EXISTS (SELECT 1 FROM logo.display_name exact_name
+                            WHERE exact_name.design_id = btrim(d.design_id)
+                              AND exact_name.fdm4_store IN (%(store)s, '')
+                              AND lower(btrim(exact_name.name)) = lower(%(exact)s))) AS exact_name_match,
                left(
                    COALESCE(
                        NULLIF(btrim(dname.name), ''),
@@ -2100,3 +2110,483 @@ def get_sync_status(cursor, *, store: Optional[str] = None) -> dict:
         "logos_enabled": bool(settings_row["enabled"]) if settings_row else True,
     }
     return out
+
+
+def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_version: bool = False) -> dict:
+    sample_limit = max(1, min(int(sample_limit), 1000))
+    cursor.execute("SELECT * FROM woo.price_rule WHERE rule_id=%s", (rule_id,))
+    rule = cursor.fetchone()
+    if not rule:
+        raise QueryNotFound("Rule not found")
+    # Candidate pre-filter from the rule's own targeting keeps the preview
+    # fast; the evaluator then applies the FULL active chain per candidate.
+    # Base = base_price (the PRE-rule price the transform preserves), never
+    # the projected `price` column - that one already has active rules
+    # baked in, and evaluating from it would double-apply them.
+    where = ["s.is_active", "s.kind = 'variation'", "s.price IS NOT NULL"]
+    params: dict = {"rid": rule_id, "lim": 50001}
+    if rule["stores"] or rule["store_tiers"]:
+        where.append(
+            "(s.fdm4_store = ANY(%(stores)s) OR EXISTS (SELECT 1 FROM woo.store_pricing_tier spt"
+            " WHERE spt.fdm4_store = s.fdm4_store AND spt.tier_name = ANY(%(tiers)s)))")
+        params["stores"] = rule["stores"] or []
+        params["tiers"] = rule["store_tiers"] or []
+    if rule["styles"]:
+        where.append("upper(btrim(s.style_code)) = ANY(%(styles)s)")
+        params["styles"] = rule["styles"]
+    if rule["brands"]:
+        where.append("s.brand = ANY(%(brands)s)")
+        params["brands"] = rule["brands"]
+    if rule["categories"]:
+        where.append("s.category = ANY(%(cats)s)")
+        params["cats"] = rule["categories"]
+    if rule.get("excl_stores"):
+        where.append("NOT (s.fdm4_store = ANY(%(xstores)s))")
+        params["xstores"] = rule["excl_stores"]
+    if rule.get("excl_styles"):
+        where.append("NOT (upper(btrim(s.style_code)) = ANY(%(xstyles)s))")
+        params["xstyles"] = rule["excl_styles"]
+    if rule.get("excl_brands"):
+        where.append("NOT (s.brand = ANY(%(xbrands)s))")
+        params["xbrands"] = rule["excl_brands"]
+    if rule.get("excl_categories"):
+        where.append("NOT (s.category = ANY(%(xcats)s))")
+        params["xcats"] = rule["excl_categories"]
+    cursor.execute("SET LOCAL statement_timeout = '120s'")
+    cursor.execute(
+        f"""
+        WITH cand AS (
+            SELECT s.fdm4_store, s.style_code, s.sku, s.color, s.size,
+                   COALESCE(s.base_price, s.price) AS price,
+                   s.price_levels, s.brand, s.category, s.def_cost,
+                   (s.price_levels ->> 'msrp')::numeric AS msrp
+              FROM woo.store_product_state s
+             WHERE {' AND '.join(where)}
+             ORDER BY s.fdm4_store, s.style_code, s.sku
+             LIMIT %(lim)s
+        ), hits AS (
+            SELECT c.*, rp.final_price, rp.applied_rule_ids
+              FROM cand c
+              CROSS JOIN LATERAL woo.eval_price_rules(
+                  c.fdm4_store, c.style_code, c.brand, c.category,
+                  c.price, c.price_levels, c.def_cost,
+                  current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
+             WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
+        )
+        SELECT (SELECT count(*) FROM cand)                                    AS candidates,
+               count(*)                                                        AS affected,
+               count(DISTINCT fdm4_store)                                      AS stores,
+               count(*) FILTER (WHERE msrp IS NOT NULL AND final_price > msrp) AS above_msrp,
+               count(*) FILTER (WHERE final_price <> price)                    AS changed,
+               round(min(final_price - price), 4)                              AS min_delta,
+               round(max(final_price - price), 4)                              AS max_delta,
+               round(avg(final_price - price), 4)                              AS avg_delta
+          FROM hits
+        """,
+        params,
+    )
+    summary = dict(cursor.fetchone())
+    cursor.execute(
+        f"""
+        WITH cand AS (
+            SELECT s.fdm4_store, s.style_code, s.sku, s.color, s.size,
+                   COALESCE(s.base_price, s.price) AS price,
+                   s.price_levels, s.brand, s.category, s.def_cost,
+                   (s.price_levels ->> 'msrp')::numeric AS msrp
+              FROM woo.store_product_state s
+             WHERE {' AND '.join(where)}
+             ORDER BY s.fdm4_store, s.style_code, s.sku
+             LIMIT %(lim)s
+        )
+        SELECT c.fdm4_store, c.style_code, c.sku, c.color, c.size,
+               c.price AS before_price, rp.final_price AS after_price, c.msrp,
+               (c.msrp IS NOT NULL AND rp.final_price > c.msrp) AS over_msrp,
+               rp.applied_rule_ids
+          FROM cand c
+          CROSS JOIN LATERAL woo.eval_price_rules(
+              c.fdm4_store, c.style_code, c.brand, c.category,
+              c.price, c.price_levels, c.def_cost,
+              current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
+         WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
+         ORDER BY abs(rp.final_price - c.price) DESC, c.fdm4_store, c.style_code, c.sku
+         LIMIT %(sample)s
+        """,
+        {**params, "sample": sample_limit},
+    )
+    sample = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(
+        f"""
+        WITH cand AS (
+            SELECT s.fdm4_store, s.style_code,
+                   COALESCE(s.base_price, s.price) AS price,
+                   s.price_levels, s.brand,
+                   s.category, s.def_cost
+              FROM woo.store_product_state s
+             WHERE {' AND '.join(where)}
+             ORDER BY s.fdm4_store, s.style_code, s.sku
+             LIMIT %(lim)s
+        )
+        SELECT c.fdm4_store, count(*) AS affected
+          FROM cand c
+          CROSS JOIN LATERAL woo.eval_price_rules(
+              c.fdm4_store, c.style_code, c.brand, c.category,
+              c.price, c.price_levels, c.def_cost,
+              current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
+         WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
+         GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 30
+        """,
+        params,
+    )
+    per_store = [dict(r) for r in cursor.fetchall()]
+    # Price-frozen stores among the affected: the hourly sync will not
+    # change their live prices, so the rule has no visible effect there.
+    cursor.execute(
+        "SELECT DISTINCT fdm4_store FROM woo.sync_exclusion WHERE active AND style_code = ''")
+    frozen_all = {r["fdm4_store"] for r in cursor.fetchall()}
+    affected_stores = {p["fdm4_store"] for p in per_store} | set(rule["stores"] or [])
+    frozen_targets = sorted(affected_stores & frozen_all)
+    summary["truncated"] = summary.get("candidates", 0) is not None and summary["candidates"] >= 50001
+    result = {"ok": True, "rule_id": rule_id, "summary": summary,
+              "store_count": summary.get("stores"), "per_store": per_store,
+              "sample": sample, "frozen_targets": frozen_targets}
+    if include_version:
+        result["rule_updated_at"] = rule["updated_at"]
+    return result
+
+
+def list_price_rule_dimensions(cursor) -> dict:
+    cursor.execute(
+        "SELECT DISTINCT brand FROM woo.store_product_state WHERE NULLIF(btrim(brand),'') IS NOT NULL ORDER BY 1 LIMIT 1000")
+    brands = [r["brand"] for r in cursor.fetchall()]
+    cursor.execute(
+        "SELECT DISTINCT category FROM woo.store_product_state WHERE NULLIF(btrim(category),'') IS NOT NULL ORDER BY 1 LIMIT 200")
+    categories = [r["category"] for r in cursor.fetchall()]
+    cursor.execute("SELECT tier_name FROM woo.pricing_tier ORDER BY sort_order, tier_name LIMIT 500")
+    tiers = [r["tier_name"] for r in cursor.fetchall()]
+    return {"brands": brands, "categories": categories, "tiers": tiers}
+
+
+def check_price_rules(cursor, *, store: str, style: str) -> dict:
+    store_v = _clean(store, "store").upper()
+    style_v = _clean(style, "style").upper()
+    cursor.execute("SET LOCAL statement_timeout = '30s'")
+    cursor.execute(
+        """
+        SELECT s.sku, s.color, s.size,
+               COALESCE(s.base_price, s.price) AS base_price,
+               s.price AS current_price,
+               (s.price_levels ->> 'msrp')::numeric AS msrp,
+               rp.final_price, rp.applied_rule_ids
+          FROM woo.store_product_state s
+          CROSS JOIN LATERAL woo.eval_price_rules(
+              s.fdm4_store, s.style_code, s.brand, s.category,
+              COALESCE(s.base_price, s.price), s.price_levels, s.def_cost,
+              current_date, NULL, NULL) rp
+         WHERE s.fdm4_store = %s AND upper(btrim(s.style_code)) = %s
+           AND s.is_active AND s.kind = 'variation' AND s.price IS NOT NULL
+         ORDER BY s.color, s.size
+         LIMIT 500
+        """,
+        (store_v, style_v),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    rule_ids = sorted({rid for r in rows for rid in (r.get("applied_rule_ids") or [])})
+    names = {}
+    if rule_ids:
+        cursor.execute(
+            "SELECT rule_id, name FROM woo.price_rule WHERE rule_id = ANY(%s)",
+            (rule_ids,),
+        )
+        names = {r["rule_id"]: r["name"] for r in cursor.fetchall()}
+    cursor.execute(
+        "SELECT 1 FROM woo.sync_exclusion WHERE active AND style_code = '' AND fdm4_store = %s LIMIT 1",
+        (store_v,),
+    )
+    frozen = cursor.fetchone() is not None
+    return {"store": store_v, "style": style_v, "rows": rows,
+            "rule_names": names, "frozen": frozen}
+
+
+def get_health_overview(cursor) -> dict:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = {"ok": True, "generated_at": now.isoformat()}
+    cursor.execute(
+        """
+        SELECT id, status, started_at, finished_at,
+               EXTRACT(EPOCH FROM (finished_at - started_at))::int AS duration_s,
+               rows_loaded, refresh_version,
+               left(COALESCE(note, ''), 200) AS note,
+               left(COALESCE(error, ''), 400) AS error
+          FROM woo.sync_control
+         WHERE op = 'pull'
+         ORDER BY id DESC
+         LIMIT 12
+        """
+    )
+    runs = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT count(*) FILTER (WHERE status = 'success') AS ok_24h,
+               count(*) FILTER (WHERE status NOT IN ('success', 'running', 'requested')) AS failed_24h
+          FROM woo.sync_control
+         WHERE op = 'pull' AND requested_at > now() - interval '24 hours'
+        """
+    )
+    day = dict(cursor.fetchone())
+    out["pipeline"] = {"runs": runs, "ok_24h": int(day["ok_24h"] or 0), "failed_24h": int(day["failed_24h"] or 0)}
+
+    cursor.execute(
+        """
+        SELECT max(row_version) AS max_version,
+               max(changed_at) AS latest_change,
+               count(*) FILTER (WHERE is_active) AS active_rows,
+               count(*) AS total_rows,
+               count(*) FILTER (WHERE is_active AND kind = 'parent') AS parents,
+               count(*) FILTER (WHERE is_active AND kind = 'variation') AS variations,
+               count(*) FILTER (WHERE changed_at > now() - interval '24 hours') AS changed_24h
+          FROM woo.store_product_state
+        """
+    )
+    out["state"] = dict(cursor.fetchone())
+
+    cursor.execute(
+        "SELECT rule_id, left(name, 120) AS name FROM woo.price_rule WHERE active ORDER BY priority, rule_id LIMIT 20"
+    )
+    rule_rows = [dict(r) for r in cursor.fetchall()]
+    cursor.execute("SELECT count(*) AS n FROM woo.price_rule WHERE active")
+    active_rule_count = int(cursor.fetchone()["n"])
+    cursor.execute(
+        """
+        SELECT count(DISTINCT fdm4_store) AS stores,
+               count(*) FILTER (WHERE style_code = '') AS whole_store,
+               count(*) FILTER (WHERE style_code <> '') AS styles
+          FROM woo.sync_exclusion
+         WHERE active
+        """
+    )
+    blocks = dict(cursor.fetchone())
+    cursor.execute(
+        "SELECT fdm4_store, mode FROM woo.store_mix_store WHERE active ORDER BY fdm4_store LIMIT 50"
+    )
+    mix_rows = [dict(r) for r in cursor.fetchall()]
+    cursor.execute("SELECT count(*) AS n FROM woo.store_pricing_tier")
+    tiers = int(cursor.fetchone()["n"] or 0)
+    out["features"] = {
+        "price_rules": {"active": active_rule_count, "rules": rule_rows},
+        "sync_blocks": blocks,
+        "mix_stores": mix_rows,
+        "tier_assignments": tiers,
+    }
+
+    cursor.execute(
+        """
+        SELECT (SELECT count(*) FROM pim.ingest_event) AS events,
+               (SELECT max(received_at) FROM pim.ingest_event) AS latest_event,
+               (SELECT count(*) FROM pim.product_state) AS products
+        """
+    )
+    out["pim"] = dict(cursor.fetchone())
+
+    # The feed registry ships separately; degrade gracefully until the
+    # table exists on this database.
+    cursor.execute("SELECT to_regclass('woo.feed_consumer') IS NOT NULL AS present")
+    feeds_present = bool(cursor.fetchone()["present"])
+    consumers: List[Dict[str, Any]] = []
+    if feeds_present:
+        cursor.execute(
+            """
+            SELECT name, left(COALESCE(url, ''), 300) AS url, active,
+                   last_ping_at, left(COALESCE(last_ping_status, ''), 60) AS last_ping_status,
+                   last_pull_at, last_pull_version,
+                   left(COALESCE(note, ''), 200) AS note
+              FROM woo.feed_consumer
+             ORDER BY name LIMIT 100
+            """
+        )
+        consumers = [dict(r) for r in cursor.fetchall()]
+    out["feeds"] = {"available": feeds_present, "consumers": consumers}
+    return out
+
+
+def mix_style_universe(cursor, store: str, style: str):
+    """Known color channels and sizes for one style: state rows (any activity,
+    so channels removed from the mix stay editable) plus candidate colors the
+    filtered state no longer carries."""
+    cursor.execute(
+        """
+        SELECT upper(btrim(COALESCE(s.color_code, ''))) AS color,
+               max(COALESCE(NULLIF(btrim(s.color), ''), s.color_code)) AS color_name,
+               count(*) FILTER (WHERE s.is_active) AS variations,
+               jsonb_agg(DISTINCT jsonb_build_object(
+                   'code', upper(btrim(COALESCE(s.size_code, ''))),
+                   'label', COALESCE(NULLIF(btrim(s.size), ''), s.size_code)
+               )) FILTER (WHERE COALESCE(btrim(s.size_code), '') <> '') AS sizes
+          FROM woo.store_product_state s
+         WHERE s.fdm4_store = %s AND upper(btrim(s.style_code)) = %s
+           AND s.kind = 'variation'
+           AND COALESCE(btrim(s.color_code), '') <> ''
+         GROUP BY 1
+         ORDER BY 1
+        """,
+        (store, style),
+    )
+    available = []
+    seen = set()
+    for row in cursor.fetchall():
+        available.append({
+            "color": row["color"],
+            "color_name": row["color_name"],
+            "variations": int(row["variations"]),
+            "sizes": row["sizes"] or [],
+        })
+        seen.add(row["color"])
+    cursor.execute(
+        "SELECT colors FROM woo.store_mix_candidate WHERE fdm4_store=%s AND upper(btrim(style_code))=%s",
+        (store, style),
+    )
+    cand = cursor.fetchone()
+    for color in (cand["colors"] if cand and cand["colors"] else []):
+        color = mix_service.norm(color)
+        if color and color not in seen:
+            seen.add(color)
+            available.append({
+                "color": color, "color_name": color, "variations": 0, "sizes": [],
+            })
+    return available
+
+def get_style_mix(cursor, *, style: str, store: Optional[str] = None, limit: int = 100) -> dict:
+    style = mix_service.norm(_clean(style, "style"))
+    limit = max(1, min(int(limit), 200))
+    if store is not None:
+        store = mix_service.norm(_clean(store, "store"))
+        registry = mix_service.registry(cursor, store)
+        available = mix_style_universe(cursor, store, style)
+        cursor.execute("SELECT colors, size_excludes, source, added_by, added_at FROM woo.store_mix_item WHERE fdm4_store = %s AND style_code = %s", (store, style))
+        item = cursor.fetchone()
+        return {"ok": True, "store": store, "style_code": style,
+                "in_mix": item is not None, "mode": registry["mode"],
+                "colors": item["colors"] if item else None,
+                "size_excludes": item["size_excludes"] if item else None,
+                "source": item["source"] if item else None,
+                "added_by": item["added_by"] if item else None,
+                "added_at": item["added_at"] if item else None,
+                "available": available[:500], "truncated": len(available) > 500}
+    cursor.execute("""
+        WITH live AS (
+            SELECT fdm4_store, count(*) FILTER (WHERE kind = 'variation') AS products
+              FROM woo.store_product_state
+             WHERE upper(btrim(style_code)) = %s AND is_active GROUP BY fdm4_store
+        ), listed AS (
+            SELECT * FROM woo.store_mix_item WHERE style_code = %s
+        )
+        SELECT COALESCE(l.fdm4_store, i.fdm4_store) AS store,
+               COALESCE(l.products, 0) AS live_products,
+               COALESCE(m.active, false) AS mix_enabled, m.mode,
+               i.style_code IS NOT NULL AS in_saved_list, i.source,
+               i.added_by, i.added_at,
+               CASE WHEN m.active AND m.mode = 'list' THEN i.style_code IS NOT NULL
+                    ELSE l.fdm4_store IS NOT NULL END AS in_mix,
+               CASE WHEN m.active AND m.mode = 'list' THEN COALESCE(i.source, 'excluded')
+                    ELSE 'fdm4' END AS supplied_by
+          FROM live l FULL JOIN listed i USING (fdm4_store)
+          LEFT JOIN woo.store_mix_store m ON m.fdm4_store = COALESCE(l.fdm4_store, i.fdm4_store)
+         ORDER BY 1 LIMIT %s
+    """, (style, style, limit + 1))
+    rows = [dict(row) for row in cursor.fetchall()]
+    return {"style_code": style, "stores": rows[:limit], "truncated": len(rows) > limit}
+
+
+def preview_fill_missing_colors(cursor, *, store: str, styles: list[str]) -> dict:
+    if not styles or len(styles) > 50:
+        raise QueryValidationError("Name between 1 and 50 styles")
+    return fill_gaps_plan(cursor, fdm4_store=store, styles=styles)
+
+
+def _category_env(env):
+    import categories_service
+    from categories_service import TargetNotConfigured
+    try:
+        categories_service.get_target(env)
+    except TargetNotConfigured as exc:
+        raise QueryNotFound(f"Environment '{env}' is not configured") from exc
+
+
+def _bounded_category_value(value, limit):
+    if isinstance(value, dict):
+        return {str(k)[:200]: _bounded_category_value(v, limit) for k, v in list(value.items())[:100]}
+    if isinstance(value, list):
+        return [_bounded_category_value(v, limit) for v in value[:limit]]
+    if isinstance(value, str):
+        return value[:1024]
+    return value
+
+
+def cat_tree(cursor, *, env: str, limit: int = 200) -> dict:
+    import categories_draft
+    _category_env(env)
+    limit = max(1, min(int(limit), 500))
+    nodes = categories_draft.list_nodes(cursor)
+    stats = categories_draft.slug_stats(cursor, env)
+    by_id = {node["node_id"]: node for node in nodes}
+    rows = []
+    for node in nodes[:limit]:
+        parts, seen, current = [], set(), node
+        while current and current["node_id"] not in seen:
+            seen.add(current["node_id"])
+            parts.append(str(current["name"]))
+            current = by_id.get(current["parent_id"])
+        rows.append({"node_id": node["node_id"], "slug": node["slug"],
+                     "path": " / ".join(reversed(parts))[:2048],
+                     **stats.get(node["slug"], {"stores": 0, "products": 0})})
+    return {"env": env, "paths": rows, "total": len(nodes), "truncated": len(nodes) > limit}
+
+
+def cat_mapping_status(cursor, *, env: str, limit: int = 100) -> dict:
+    import categories_mapping
+    _category_env(env)
+    limit = max(1, min(int(limit), 200))
+    result = categories_mapping.mapping_status(cursor, env)
+    undecided = [row for row in result["slugs"] if not row["action"]]
+    empty = [row for row in result["slugs"] if not row["products"]]
+    return {"env": env, "summary": result["summary"],
+            "undecided": _bounded_category_value(undecided, limit),
+            "empty": _bounded_category_value(empty, limit),
+            "undecided_count": len(undecided), "empty_count": len(empty),
+            "truncated": len(undecided) > limit or len(empty) > limit}
+
+
+def cat_plan_check(cursor, *, env: str, blog_ids: Optional[list[int]] = None, limit: int = 100) -> dict:
+    import categories_planner
+    _category_env(env)
+    limit = max(1, min(int(limit), 200))
+    if blog_ids is not None and len(blog_ids) > 200:
+        raise QueryValidationError("At most 200 stores per plan check")
+    cursor.execute("SET LOCAL statement_timeout = '120s'")
+    result = categories_planner.preview(cursor, env, blog_ids)
+    bounded = _bounded_category_value(result, limit)
+    bounded["truncated"] = bounded != result
+    bounded["store_count"] = len(result["blogs"])
+    return bounded
+
+
+def cat_runs(cursor, *, env: Optional[str] = None, run_id: Optional[int] = None, limit: int = 50) -> dict:
+    import categories_runs
+    limit = max(1, min(int(limit), 200))
+    if env is not None:
+        _category_env(env)
+    runs = categories_runs.list_runs(cursor, env)
+    fields = ("run_id", "env", "status", "created_at", "created_by", "started_at", "finished_at", "worker_stale", "heartbeat_age")
+    result = {"runs": [{k: row[k] for k in fields if k in row} for row in runs[:limit]],
+              "truncated": len(runs) > limit or len(runs) == 50}
+    if run_id is not None:
+        run = categories_runs.get_run(cursor, run_id)
+        if env is not None and run["env"] != env:
+            raise QueryNotFound("Run not found in this environment")
+        jobs = run["jobs"]
+        result["run"] = {k: run[k] for k in fields if k in run}
+        result["run"]["jobs"] = [
+            {k: job[k] for k in ("job_id", "blog_id", "blog_path", "status", "stats", "attempt", "started_at", "finished_at", "has_snapshot") if k in job}
+            for job in jobs[:limit]]
+        result["run"]["job_count"] = len(jobs)
+        result["truncated"] = result["truncated"] or len(jobs) > limit
+    return _bounded_category_value(result, limit)

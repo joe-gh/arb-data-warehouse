@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Literal, Optional, Type, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class Command(BaseModel):
@@ -249,7 +249,7 @@ class SetLogoDefaultCostCommand(Command):
 
 class SetPriceRuleActiveCommand(Command):
     rule_id: int = Field(ge=1, description="Price rule id from list_price_rules.")
-    active: bool = Field(description="True switches the rule on (only allowed after it was previewed in the app since its last edit); False switches it off.")
+    active: bool = Field(description="True includes the price impact in human confirmation and activates on apply; False switches it off.")
 
 
 class DeletePriceRuleCommand(Command):
@@ -276,7 +276,50 @@ class RemoveMixStylesCommand(Command):
     styles: List[str] = Field(min_length=1, max_length=50, description="Style codes to drop from the store's curated list (the products leave the store on the next update). " + STYLE_LIST_DESC)
 
 
+class SavePriceRuleCommand(Command):
+    rule_id: Optional[int] = Field(default=None, ge=1, description="Existing rule id to edit; null creates a new inactive rule unless active is true.")
+    _reserved_rule_id: Optional[int] = PrivateAttr(default=None)
+    name: str = Field(min_length=1, max_length=200, description="Label shown in the price-rule list.")
+    active: bool = Field(default=False, description="True includes the price impact in human confirmation and activates on apply; false saves inactive.")
+    priority: int = Field(default=100, ge=1, le=100000, description="Lower priorities run first; preserve the existing value when editing.")
+    stackable: bool = Field(default=False, description="True lets later matching rules also apply.")
+    stores: List[str] = Field(default=[], max_length=5000, description="Full list of store codes; empty clears this filter. Preserve existing filters when editing.")
+    store_tiers: List[str] = Field(default=[], max_length=5000, description="Full list of pricing tier names; empty clears this filter. Preserve existing filters when editing.")
+    styles: List[str] = Field(default=[], max_length=5000, description="Full list of style codes; empty clears this filter. Preserve existing filters when editing.")
+    brands: List[str] = Field(default=[], max_length=5000, description="Full list of brand names; empty clears this filter. Preserve existing filters when editing.")
+    categories: List[str] = Field(default=[], max_length=5000, description="Full list of category names; empty clears this filter. Preserve existing filters when editing.")
+    excl_stores: List[str] = Field(default=[], max_length=5000, description="Full list of store codes; empty clears this filter. Preserve existing filters when editing.")
+    excl_styles: List[str] = Field(default=[], max_length=5000, description="Full list of style codes; empty clears this filter. Preserve existing filters when editing.")
+    excl_brands: List[str] = Field(default=[], max_length=5000, description="Full list of brand names; empty clears this filter. Preserve existing filters when editing.")
+    excl_categories: List[str] = Field(default=[], max_length=5000, description="Full list of category names; empty clears this filter. Preserve existing filters when editing.")
+    effect_type: str = Field(max_length=32, description="percent, flat, set_price, price_level or margin_over_cost.")
+    effect_value: Optional[Decimal] = Field(default=None, description="Percent adjustment, flat dollars, set price, or cost multiplier; required except for price_level.")
+    price_level_key: Optional[str] = Field(default=None, max_length=32, description="For price_level: msrp, corp1, corp2, corp3, wholesale, employee or base.")
+    basis: str = Field(default="current", max_length=16, description="For percent/flat: current price or a price-level key; other effects use current.")
+    rounding: str = Field(default="none", max_length=8, description="Price ending: none, 99, 95 or 00.")
+    floor_price: Optional[Decimal] = Field(default=None, description="Optional minimum price, zero or greater.")
+    ceiling_price: Optional[Decimal] = Field(default=None, description="Optional maximum price, at least the floor.")
+    cap_at_msrp: bool = Field(default=False, description="Cap the final price at MSRP when available.")
+    effective_from: Optional[str] = Field(default=None, max_length=32, description="First effective date, YYYY-MM-DD; null has no start date.")
+    effective_until: Optional[str] = Field(default=None, max_length=32, description="Last effective date, YYYY-MM-DD; null has no end date.")
+    note: str = Field(default="", max_length=2000, description="Operator note; empty clears the note.")
+
+
+class FillMissingColorsEntry(Command):
+    style: str = Field(min_length=1, max_length=100, description="Style whose own logos are copied.")
+    source_color: str = Field(min_length=1, max_length=100, description="Source garment color chosen from preview_fill_missing_colors.")
+    colors: Optional[List[str]] = Field(default=None, max_length=500, description="Target garment color codes; null fills all missing colors on this style.")
+
+
+class FillMissingColorsCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    entries: List[FillMissingColorsEntry] = Field(min_length=1, max_length=50, description="One source per style, at most 50 styles.")
+    overwrite: bool = Field(default=False, description="False keeps occupied slots; true replaces slots on explicitly named target colors.")
+
+
 MutationCommand = Union[
+    SavePriceRuleCommand,
+    FillMissingColorsCommand,
     SaveAssignmentCommand,
     DeactivateAssignmentCommand,
     HardDeleteAssignmentCommand,
@@ -316,6 +359,8 @@ MutationCommand = Union[
 
 
 COMMAND_MODELS: Dict[str, Type[Command]] = {
+    "save_price_rule": SavePriceRuleCommand,
+    "fill_missing_colors": FillMissingColorsCommand,
     "save_assignment": SaveAssignmentCommand,
     "deactivate_assignment": DeactivateAssignmentCommand,
     "hard_delete_assignment": HardDeleteAssignmentCommand,

@@ -19,6 +19,8 @@ from tool_registry import (
 
 EXPECTED_WRITES = set(COMMAND_MODELS)
 EXPECTED_SCOPES = {
+    "save_price_rule": frozenset({"price_rule_row"}),
+    "fill_missing_colors": frozenset({"assignment_store"}),
     "save_assignment": frozenset({"assignment_option_row"}),
     "deactivate_assignment": frozenset({"assignment_option_row"}),
     "hard_delete_assignment": frozenset({"assignment_option_row"}),

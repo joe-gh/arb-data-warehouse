@@ -14,6 +14,8 @@ from authorization import (
     required_tier,
 )
 from commands import (
+    SavePriceRuleCommand,
+    FillMissingColorsCommand,
     COMMAND_MODELS,
     AddMixStylesCommand,
     DeletePriceRuleCommand,
@@ -57,6 +59,17 @@ import queries
 import mutations
 import snapshots
 from read_commands import (
+    PreviewPriceRuleCommand,
+    CheckPriceRulesCommand,
+    ListPriceRuleDimensionsCommand,
+    PreviewFillMissingColorsCommand,
+    GetStyleMixCommand,
+    GetHealthOverviewCommand,
+    CatTreeCommand,
+    CatMappingStatusCommand,
+    CatPlanCheckCommand,
+    CatRunsCommand,
+
     FindSimilarStylesCommand,
     GetAssignmentVocabCommand,
     GetAuditLogCommand,
@@ -122,6 +135,8 @@ class AgentWriteContract:
 
 
 APPROVED_AGENT_WRITE_NAMES = frozenset({
+    "save_price_rule",
+    "fill_missing_colors",
     "save_assignment",
     "deactivate_assignment",
     "hard_delete_assignment",
@@ -160,6 +175,17 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
 })
 
 APPROVED_AGENT_READ_NAMES = frozenset({
+    "preview_price_rule",
+    "check_price_rules",
+    "list_price_rule_dimensions",
+    "preview_fill_missing_colors",
+    "get_style_mix",
+    "get_health_overview",
+    "cat_tree",
+    "cat_mapping_status",
+    "cat_plan_check",
+    "cat_runs",
+
     "list_stores",
     "list_styles",
     "get_style",
@@ -320,7 +346,68 @@ def _get_sync_status(cursor, command, settings):
     return wp_bridge.sync_status_report(cursor, _model_arguments(command).get("store"))
 
 
+def _preview_price_rule(cursor, command, settings):
+    del settings
+    return queries.price_rule_impact(cursor, **_model_arguments(command))
+
+
+def _check_price_rules(cursor, command, settings):
+    del settings
+    return queries.check_price_rules(cursor, **_model_arguments(command))
+
+
+def _list_price_rule_dimensions(cursor, command, settings):
+    del settings
+    return queries.list_price_rule_dimensions(cursor, **_model_arguments(command))
+
+
+def _preview_fill_missing_colors(cursor, command, settings):
+    del settings
+    return queries.preview_fill_missing_colors(cursor, **_model_arguments(command))
+
+
+def _get_style_mix(cursor, command, settings):
+    del settings
+    return queries.get_style_mix(cursor, **_model_arguments(command))
+
+
+def _get_health_overview(cursor, command, settings):
+    del settings
+    return queries.get_health_overview(cursor, **_model_arguments(command))
+
+
+def _cat_tree(cursor, command, settings):
+    del settings
+    return queries.cat_tree(cursor, **_model_arguments(command))
+
+
+def _cat_mapping_status(cursor, command, settings):
+    del settings
+    return queries.cat_mapping_status(cursor, **_model_arguments(command))
+
+
+def _cat_plan_check(cursor, command, settings):
+    del settings
+    return queries.cat_plan_check(cursor, **_model_arguments(command))
+
+
+def _cat_runs(cursor, command, settings):
+    del settings
+    return queries.cat_runs(cursor, **_model_arguments(command))
+
+
 CANONICAL_AGENT_READ_CONTRACTS = {
+    "preview_price_rule": (PreviewPriceRuleCommand, _preview_price_rule),
+    "check_price_rules": (CheckPriceRulesCommand, _check_price_rules),
+    "list_price_rule_dimensions": (ListPriceRuleDimensionsCommand, _list_price_rule_dimensions),
+    "preview_fill_missing_colors": (PreviewFillMissingColorsCommand, _preview_fill_missing_colors),
+    "get_style_mix": (GetStyleMixCommand, _get_style_mix),
+    "get_health_overview": (GetHealthOverviewCommand, _get_health_overview),
+    "cat_tree": (CatTreeCommand, _cat_tree),
+    "cat_mapping_status": (CatMappingStatusCommand, _cat_mapping_status),
+    "cat_plan_check": (CatPlanCheckCommand, _cat_plan_check),
+    "cat_runs": (CatRunsCommand, _cat_runs),
+
     "list_stores": (ListStoresCommand, _list_stores),
     "list_styles": (ListStylesCommand, _list_styles),
     "get_style": (GetStyleCommand, _get_style),
@@ -375,6 +462,8 @@ def _canonical_write_contract(
 # cannot silently widen or rewire the model-facing write surface.
 CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
     MappingProxyType({
+        "save_price_rule": _canonical_write_contract(SavePriceRuleCommand, mutations.save_price_rule, "price_rule_row"),
+        "fill_missing_colors": _canonical_write_contract(FillMissingColorsCommand, mutations.fill_missing_colors, "assignment_store"),
         "save_assignment": _canonical_write_contract(
             SaveAssignmentCommand,
             mutations.save_assignment,
@@ -865,7 +954,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     _write_spec(
         "set_price_rule_active",
-        "Switch a price rule on or off without touching its settings (list_price_rules shows ids). Switching on is refused until the rule was previewed in the app since its last edit. Stages a proposal; the person confirms.",
+        "Switch a price rule on or off. With active=true, includes evaluated price impact in human confirmation and stamps the preview while activating in the apply transaction. Refuses unknown rules and requires fresh confirmation if the impact changes.",
         SetPriceRuleActiveCommand,
         mutations.set_price_rule_active,
     ),
@@ -899,6 +988,18 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         RemoveMixStylesCommand,
         mutations.remove_mix_styles,
     ),
+    _read_spec("preview_price_rule", 'Show the products and stores affected by a price rule, with a bounded sample of before and after prices. Does not save a preview stamp or activate anything.', PreviewPriceRuleCommand, _preview_price_rule),
+    _read_spec("check_price_rules", 'Check which active price rules apply to one store and style and show the resulting prices. Does not change rules.', CheckPriceRulesCommand, _check_price_rules),
+    _read_spec("list_price_rule_dimensions", 'List valid brands, categories and pricing tiers for targeting price rules. Does not change targeting.', ListPriceRuleDimensionsCommand, _list_price_rule_dimensions),
+    _read_spec("preview_fill_missing_colors", 'Plan filling missing garment colors for up to 50 styles from their own logos. When configured colors differ, a person must choose a source; no logos are changed.', PreviewFillMissingColorsCommand, _preview_fill_missing_colors),
+    _read_spec("get_style_mix", 'Show which stores carry a style and whether it follows FDM4 or a curated list. With a store, show its color and size settings. Does not change the mix.', GetStyleMixCommand, _get_style_mix),
+    _read_spec("get_health_overview", 'Show a bounded overview of warehouse pipeline runs, product state, pricing, freezes and feed consumers. Does not start any work.', GetHealthOverviewCommand, _get_health_overview),
+    _read_spec("cat_tree", 'Read category draft paths with per-slug store and product counts from an environment snapshot. Capped; requires category-view access. Never changes the draft.', CatTreeCommand, _cat_tree),
+    _read_spec("cat_mapping_status", 'Read category mapping totals and capped lists of undecided and empty rows. Requires category-view access; never changes mappings.', CatMappingStatusCommand, _cat_mapping_status),
+    _read_spec("cat_plan_check", 'Check the category plan for blockers, warnings, totals and per-store changes. Capped; requires category-view access. Never creates or starts a run.', CatPlanCheckCommand, _cat_plan_check),
+    _read_spec("cat_runs", 'Read recent category runs and optionally one run’s capped per-store job summary. Requires category-view access. Never starts, retries or changes a run.', CatRunsCommand, _cat_runs),
+    _write_spec("save_price_rule", "Create or edit a price rule; rejects invalid effects, targeting, dates and price bounds. With active=true, includes the evaluated impact in human confirmation and stamps the preview while activating in the apply transaction. Material edits saved inactive clear the prior preview stamp.", SavePriceRuleCommand, mutations.save_price_rule),
+    _write_spec("fill_missing_colors", "Copy each style's own source-color logos onto missing garment colors, up to 50 styles. Requires an explicit source color, refuses unknown styles and oversized store snapshots, and records an undoable fill-gaps batch in the editor history.", FillMissingColorsCommand, mutations.fill_missing_colors),
 )
 
 
@@ -1143,6 +1244,13 @@ def get_agent_tool(name: str, writes_enabled: bool = False, write_tools=None) ->
     raise UnknownTool("Unknown or unavailable tool")
 
 
+def _assert_read_access(name, context, settings):
+    if name in {"cat_tree", "cat_mapping_status", "cat_plan_check", "cat_runs"}:
+        login = context.user_login.strip().lower()
+        if not settings.catmgr_enabled or (settings.catmgr_view_users and login not in settings.catmgr_view_users):
+            raise UnknownTool("Not found")
+
+
 def execute_read_tool(
     name: str,
     arguments: dict,
@@ -1151,7 +1259,7 @@ def execute_read_tool(
 ) -> dict:
     """Validate and execute one read without ASGI or dependency overrides."""
 
-    del context
+    _assert_read_access(name, context, settings)
     spec = get_agent_tool(name, writes_enabled=False)
     if spec.kind != "read" or spec.handler is None:
         raise UnknownTool("Unknown or unavailable tool")
@@ -1185,6 +1293,7 @@ def execute_agent_tool(
     required_tier(name)
     command = spec.command_model.model_validate(arguments)
     if spec.kind == "read":
+        _assert_read_access(name, context, settings)
         if spec.handler is None:
             raise UnknownTool("Unknown or unavailable tool")
         with database.cursor() as cursor:

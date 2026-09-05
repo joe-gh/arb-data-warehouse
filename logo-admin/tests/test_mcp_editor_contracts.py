@@ -126,3 +126,17 @@ def test_discovery_tool_shapes(monkeypatch):
     assert calls[2][0:2] == ("GET", "/api/styles/coverage")
     assert calls[2][2]["params"] == {"store": "S_TEST", "unconfigured_only": True}
     assert calls[3][2]["params"]["unconfigured_only"] is False
+
+
+def test_missing_read_proxies_use_existing_get_routes(monkeypatch):
+    calls = _recorder(monkeypatch)
+    assert {"get_stock_rules", "list_sync_blocks", "get_product_mix"} <= set(mcp_server.tool_names())
+    mcp_server.get_stock_rules("shirt", 25)
+    mcp_server.list_sync_blocks()
+    mcp_server.get_product_mix("S_TEST", "STYLE", 10, 20)
+    assert calls == [
+        ("GET", "/api/stock-overrides/brands", {}),
+        ("GET", "/api/stock-overrides", {"params": {"q": "shirt", "limit": 25}}),
+        ("GET", "/api/sync-blocks", {}),
+        ("GET", "/api/product-mix", {"params": {"store": "S_TEST", "q": "STYLE", "limit": 10, "offset": 20}}),
+    ]

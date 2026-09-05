@@ -35,6 +35,12 @@ ASSISTANT_DOCUMENT = """
 </head>
 <body>
   <div id="toast-region"></div>
+  <button id="sb-add"></button><input id="sb-search"><input id="sb-whole" type="checkbox">
+  <button id="so-add"></button><input id="so-search">
+  <button id="mix-style-save"></button><input id="mix-style-all-colors" type="checkbox">
+  <button id="pr-new"></button><button id="pr-save"></button>
+  <select id="pr-effect-type"></select><input id="pr-search">
+  <select id="pr-status-filter"></select>
   <button id="assistant-toggle" type="button" aria-expanded="false">Assistant</button>
   <div id="assistant-backdrop" hidden></div>
   <aside id="assistant-panel" data-writes-enabled="true" hidden aria-hidden="true">
@@ -792,3 +798,30 @@ def test_every_review_and_mapping_card_is_navigable_after_keyset_pagination(
     assert page.locator("#assistant-mapping a").count() == 0
     assert _snapshot(page)["reviewTruncated"] is False
     assert _snapshot(page)["mappingTruncated"] is False
+
+
+def test_price_impact_is_visible_and_mapping_resolutions_are_inert_text(assistant_page):
+    page = assistant_page
+    _open_sessions(page, [{"id": SESSION_A, "title": "Session A"}])
+    page.get_by_role("button", name="Session A", exact=True).click()
+    session = _take_request(page, contains=f"/api/agent/sessions/{SESSION_A}", method="GET")
+    _respond(page, session,
+        _session_payload(SESSION_A, change_sets=[_change_set_record(CHANGE_SETS[0])], spreadsheet_jobs=[_mapping_record(MAPPING_JOBS[0])]))
+    request = _take_request(page, exact=f"/api/agent/change-sets/{CHANGE_SETS[0]}", method="GET")
+    payload = _change_set_detail(CHANGE_SETS[0], "price")
+    payload["change_set"]["preview_diff"]["price_rule_impacts"] = [{
+        "rule_id": 19, "summary": {"affected": 4, "changed": 4, "truncated": False}, "store_count": 1,
+        "sample": [{"fdm4_store": "S_TEST", "style_code": "STYLE-1", "sku": "<img src=x onerror=alert(1)>", "before_price": 10, "after_price": 11}],
+    }]
+    _respond(page, request, payload)
+    page.get_by_text("Price impact for rule 19", exact=True).wait_for()
+    assert "4 products across 1 stores; 4 prices change." in page.locator("#assistant-review").inner_text()
+    assert page.locator("#assistant-review img").count() == 0
+    assert page.locator("#assistant-review").get_by_role("button", name="Confirm changes", exact=True).is_visible()
+    request = _take_request(page, exact=f"/api/agent/spreadsheets/{MAPPING_JOBS[0]}", method="GET")
+    mapping = _mapping_detail(MAPPING_JOBS[0], "Names")
+    mapping["mapping"]["_resolutions"] = [{"row": 2, "field": "design_id", "input": "<svg/onload=alert(1)>", "code": "DESIGN-1"}]
+    _respond(page, request, mapping)
+    page.get_by_text("Resolved from name", exact=True).wait_for()
+    assert "DESIGN-1" in page.locator("#assistant-mapping").inner_text()
+    assert page.locator("#assistant-mapping svg").count() == 0

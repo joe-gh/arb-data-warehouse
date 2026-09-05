@@ -20,6 +20,8 @@ from commands import (
 
 
 EXPECTED_COMMANDS = {
+    "save_price_rule",
+    "fill_missing_colors",
     # assignments
     "save_assignment",
     "deactivate_assignment",

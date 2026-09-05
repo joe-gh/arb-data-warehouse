@@ -70,3 +70,12 @@ def test_public_state_ids_are_validated_before_becoming_route_segments():
     assert "HASH_PATTERN" in source
     assert "encodeURIComponent(displayedChangeSet.id)" in source
     assert "encodeURIComponent(displayedJob.id)" in source
+
+
+def test_price_impact_and_resolved_names_are_shown_before_confirmation():
+    source = _assistant_javascript()
+    review = source[source.index("function renderChangeSet"):source.index("function renderChangeSet") + 13000]
+    assert review.index("price_rule_impacts") < review.index('"Confirm changes"')
+    assert '["Store", "Style", "SKU", "Before", "After"]' in review
+    assert 'job.mapping?._resolutions' in source
+    assert '"Resolved from name"' in source
