@@ -1035,7 +1035,10 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 .main-nav__link--quiet:hover, .main-nav__link--quiet.is-active { color: #fff; }
 .main-nav__link, .main-nav__trigger, .brand strong, .brand small { white-space: nowrap; }
 @media (max-width: 1500px) {
-  .combobox--header { flex: 1 1 260px; max-width: 390px; }
+  /* The avatar already shows who is signed in; the name is what squeezed the
+     store picker down to its minimum on laptop screens. */
+  .user-menu__name { display: none; }
+  .combobox--header { flex: 1 1 300px; max-width: 390px; }
   .main-nav { margin-left: .6rem; }
   .main-nav__link, .main-nav__trigger { padding-inline: .55rem; }
   .header-actions { gap: .55rem; }
