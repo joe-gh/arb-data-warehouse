@@ -225,6 +225,54 @@
     if (type !== "error") window.setTimeout(() => node.remove(), 6500);
   }
 
+  // Success toast with an Undo button for one-click changes that go live on
+  // the next hourly update (colour light/dark chips, freeze and stock
+  // switches, brand rules). `undo` reverses the change by re-issuing the
+  // inverse request; it runs at most once and the toast stays up longer than
+  // a plain success so there is time to catch a slip.
+  function toastUndo(message, undo, { seconds = 10 } = {}) {
+    const node = document.createElement("div");
+    node.className = "toast toast--undo";
+    node.setAttribute("role", "status");
+    const content = document.createElement("span");
+    content.textContent = message;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toast__undo";
+    button.textContent = "Undo";
+    let used = false;
+    button.addEventListener("click", async () => {
+      if (used) return;
+      used = true;
+      button.disabled = true;
+      button.textContent = "Undoing…";
+      try {
+        await undo();
+        node.remove();
+        toast("Undone.");
+      } catch (error) {
+        node.remove();
+        toast(`Couldn't undo: ${error?.message || error}`, "error");
+      }
+    });
+    const close = document.createElement("button");
+    close.type = "button";
+    close.setAttribute("aria-label", "Dismiss notification");
+    close.textContent = "×";
+    close.addEventListener("click", () => node.remove());
+    node.append(content, button, close);
+    els.toastRegion.append(node);
+    window.setTimeout(() => node.remove(), seconds * 1000);
+    return node;
+  }
+
+  // Plain-English count: plural("store", 3) -> "3 stores", plural("style", 1) -> "1 style".
+  function plural(word, count, pluralWord = null) {
+    const n = Number(count) || 0;
+    const label = n === 1 ? word : (pluralWord || `${word}s`);
+    return `${n.toLocaleString()} ${label}`;
+  }
+
   // Standard list error state: friendly message + a working Retry button.
   function renderErrorState(container, message, retryFn) {
     if (!container) return;
@@ -534,8 +582,14 @@
 
   function syncHeaderStore() {
     const el = $("#header-store-search");
-    if (el && document.activeElement !== el) {
-      el.value = state.store ? `${storeDisplayFor(state.store)} (${state.store})` : "";
+    const label = state.store ? `${storeDisplayFor(state.store)} (${state.store})` : "";
+    if (el && document.activeElement !== el) el.value = label;
+    if (el) {
+      // The header box is narrow and cuts long names off, so the full
+      // "name (code)" rides along as the tooltip; with no store picked the
+      // explanatory tooltip from the markup comes back.
+      if (el.dataset.helpTitle === undefined) el.dataset.helpTitle = el.title || "";
+      el.title = label || el.dataset.helpTitle;
     }
     const hv = $("#header-store-value");
     if (hv) hv.value = state.store || "";
@@ -566,7 +620,8 @@
     els.styleSearch.placeholder = store ? "Search style code or name" : "Choose a store first";
     els.storeSettingsButton.disabled = !store;
     els.exportLink.href = store ? `/api/export?${new URLSearchParams({ store })}` : "/api/export";
-    els.exportScope.textContent = store ? `CSV for ${storeDisplayFor(store)}` : "CSV for all stores";
+    els.exportScope.textContent = store ? `CSV · ${storeDisplayFor(store)}` : "CSV · all stores";
+    els.exportScope.title = els.exportScope.textContent;
     els.empty.hidden = false;
     els.workspace.hidden = true;
     els.ownershipWarning.hidden = true;
@@ -606,13 +661,22 @@
         mixState.selected = new Set();
       }
     }
-    if (!store) return;
+    if (!store) {
+      // Cleared from another view's picker: the heading, the browse list and
+      // the Sync store label must not keep describing the old store.
+      syncSelectionHeading();
+      renderStyleBrowse([]);
+      syncSyncStoreLabel();
+      return;
+    }
     window.localStorage.setItem("logoAdminStore", store);
     els.selectionStatus.textContent = `Loading styles for ${storeDisplayFor(store)}...`;
     await searchStyles("");
     els.selectionStatus.textContent = state.styles.length === 0 && els.styleAssignedOnly?.checked
       ? `No styles with logos yet for ${storeDisplayFor(store)} - untick "Assigned only" to browse the full catalog.`
-      : `${state.styles.length} style${state.styles.length === 1 ? "" : "s"} found for ${storeDisplayFor(store)}.`;
+      : `${plural("style", state.styles.length)} found for ${storeDisplayFor(store)}. The first ${Math.min(state.styles.length, STYLE_BROWSE_LIMIT)} are listed below; type to search all of them.`;
+    // The Bulk Operations page reads the same store; its open job follows.
+    if (document.body.dataset.view === "bulk") bulkStoreAdopt();
   }
 
   async function searchStyles(query, target = "main") {
@@ -629,6 +693,13 @@
       if (target === "main") {
         state.styles = styles;
         renderStyleOptions(styles, els.styleOptions, els.styleSearch, selectStyle);
+        // An empty search is the store's full list: it feeds the browse list
+        // under the empty state, the panel heading and the Sync store count.
+        if (!query.trim()) {
+          renderStyleBrowse(styles);
+          syncSelectionHeading();
+          syncSyncStoreLabel();
+        }
       } else {
         renderStyleOptions(styles.filter((item) => styleCode(item) !== state.style), els.copyOptions, els.copySearch, (record) => {
           els.copySource.value = styleCode(record);
@@ -656,12 +727,74 @@
         appendOption(list, {
           title: styleCode(record),
           subtitle: styleName(record),
-          meta: assignments ? `${assignments} assignment${assignments === 1 ? "" : "s"}` : colors ? `${colors} colors` : "",
+          meta: assignments ? plural("logo", assignments) : colors ? plural("color", colors) : "",
           onSelect: () => { select(record); setOptionsOpen(input, list, false); },
         });
       });
     }
     setOptionsOpen(input, list, true);
+  }
+
+  // The style list is alphabetical (the styles feed carries no change date),
+  // so the browse list under the empty state shows the first few in that
+  // order and points at the search box for the rest.
+  const STYLE_BROWSE_LIMIT = 25;
+
+  function renderStyleBrowse(styles) {
+    const wrap = $("#style-browse");
+    const list = $("#style-browse-list");
+    const hint = $("#style-browse-hint");
+    if (!wrap || !list || !hint) return;
+    const rows = Array.isArray(styles) ? styles.slice(0, STYLE_BROWSE_LIMIT) : [];
+    list.replaceChildren();
+    if (!state.store || !rows.length) {
+      wrap.hidden = true;
+      hint.textContent = "";
+      return;
+    }
+    const total = styles.length;
+    hint.textContent = total > rows.length
+      ? `Showing the first ${rows.length} of ${plural("style", total)}, A to Z. Type in the search box to search all ${total}.`
+      : `${plural("style", total)} for ${storeDisplayFor(state.store)}, A to Z. Pick one to open it.`;
+    rows.forEach((record) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "style-browse__item";
+      button.setAttribute("role", "listitem");
+      const code = document.createElement("strong");
+      code.textContent = styleCode(record);
+      button.append(code);
+      const name = styleName(record);
+      if (name) {
+        const small = document.createElement("small");
+        small.textContent = name;
+        button.append(small);
+      }
+      const count = Number(record?.assignment_count || 0);
+      button.title = count ? `${plural("logo", count)} on ${styleCode(record)}` : `Open ${styleCode(record)}`;
+      button.addEventListener("click", () => selectStyle(record));
+      list.append(button);
+    });
+    wrap.hidden = false;
+  }
+
+  // Panel heading: the prompt while something is still to choose, then the
+  // chosen store and style once both are set.
+  function syncSelectionHeading() {
+    const heading = $("#selection-title");
+    if (!heading) return;
+    if (!state.store) heading.textContent = "Choose a storefront and style";
+    else if (!state.style) heading.textContent = `${storeDisplayFor(state.store)} · choose a style`;
+    else heading.textContent = `${storeDisplayFor(state.store)} · ${state.style}`;
+  }
+
+  // "Sync store · 59 styles": the count is the current style list, which is
+  // what a whole-store sync pushes. Empty while no store or list is known.
+  function syncSyncStoreLabel() {
+    const count = $("#sync-store-count");
+    if (!count) return;
+    const total = state.store ? (state.styles || []).length : 0;
+    count.textContent = total ? ` · ${plural("style", total)}` : "";
   }
 
   async function selectStyle(record) {
@@ -670,6 +803,7 @@
     setOptionsOpen(els.styleSearch, els.styleOptions, false);
     state.style = code;
     state.styleRecord = record;
+    syncSelectionHeading();
     els.styleSearch.value = `${code}${styleName(record) ? ` - ${styleName(record)}` : ""}`;
     updateUrl();
     noteBatch(null);
@@ -845,7 +979,7 @@
         const colorCell = document.createElement("div");
         colorCell.className = "grid-cell grid-cell--color";
         if (subIndex === 0) {
-          colorCell.append(handle("color", `Drag to move ${colorName(color)} in the editor`));
+          colorCell.append(handle("color", `Drag to move ${colorName(color)} up or down in this editor - shoppers do not see this order`));
           const swatch = document.createElement("span");
           swatch.className = "color-swatch";
           if (accent) swatch.style.backgroundColor = accent;
@@ -866,7 +1000,7 @@
           colorCell.append(marker);
         }
         if (rowNumbers.length > 1 && colorAssignments.length) {
-          colorCell.append(handle("row", "Drag to reorder this logo row"));
+          colorCell.append(handle("row", "Drag to reorder this logo row - shoppers see the rows in this order"));
         }
         if (colorAssignments.some((a) => Number(a.option_row) === optionRow)) {
           const copyRow = document.createElement("button");
@@ -927,8 +1061,8 @@
           const clear = document.createElement("button");
           clear.type = "button";
           clear.className = "clear-color";
-          clear.textContent = `Clear color (${colorAssignments.length})`;
-          clear.title = `Permanently delete every logo assignment on ${colorName(color)}`;
+          clear.textContent = `Remove ${plural("logo", colorAssignments.length)} from this color`;
+          clear.title = `Permanently delete every logo on ${colorName(color)} - you will be asked to confirm`;
           clear.addEventListener("click", (e) => clearColor(color, colorAssignments.length, e.currentTarget));
           label.append(clear);
         }
@@ -940,7 +1074,7 @@
           copy.title = `Copy every logo row on ${colorName(color)} to the clipboard`;
           copy.addEventListener("click", () => {
             setClipboard({ kind: "color", source: { store: state.store, style: state.style, color: code }, rows: clipboardRows(code) });
-            toast(`Copied ${colorName(color)} (${colorAssignments.length} logos).`);
+            toast(`Copied ${colorName(color)} - ${plural("logo", colorAssignments.length)}.`);
           });
           label.append(copy);
         }
@@ -963,6 +1097,7 @@
       els.grid.append(group);
     });
     attachGridSortables();
+    syncDragTip();
   }
 
   function reorderAllColors() {
@@ -970,6 +1105,24 @@
     if (!box) return true;
     try { box.checked = localStorage.getItem(REORDER_ALL_KEY) !== "false"; } catch (e) {}
     return box.checked;
+  }
+
+  // The drag-to-reorder tip shows until "Got it" is pressed; the choice is
+  // remembered in this browser like the reorder checkbox. The drag handles
+  // keep the same instruction in their tooltips for later.
+  const DRAG_TIP_KEY = "logo-admin:drag-tip-dismissed";
+
+  function syncDragTip() {
+    const tip = $("#drag-tip");
+    if (!tip) return;
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(DRAG_TIP_KEY) === "true"; } catch (e) {}
+    tip.hidden = dismissed;
+  }
+
+  function dismissDragTip() {
+    try { localStorage.setItem(DRAG_TIP_KEY, "true"); } catch (e) {}
+    syncDragTip();
   }
 
   function attachGridSortables() {
@@ -1019,7 +1172,7 @@
   async function clearColor(color, count, btn = null) {
     const accepted = await confirmAction({
       title: `Clear all rows for ${colorName(color)}?`,
-      message: `This permanently deletes ${count} logo assignment${count === 1 ? "" : "s"} on ${colorName(color)} (${colorCode(color)}) from the warehouse. The next sync removes them from the website. Every deletion is recorded in the Activity log.`,
+      message: `This permanently deletes ${plural("logo", count)} on ${colorName(color)} (${colorCode(color)}) from the warehouse. The next sync removes them from the website. Every deletion is recorded in the Activity log.`,
       actionLabel: "Delete all rows",
       danger: true,
     });
@@ -1034,7 +1187,7 @@
       });
       const result = await api(`/api/assignments-by-color?${params}`, { method: "DELETE" });
       const removed = Number(result.removed ?? 0);
-      toast(`Removed ${removed} assignment${removed === 1 ? "" : "s"} from ${colorName(color)}.`);
+      toast(`Removed ${plural("logo", removed)} from ${colorName(color)}.`);
       await refreshStyle();
     } catch (error) {
       toast(error.message, "error");
@@ -1077,7 +1230,7 @@
       ? `${assignmentCode} - ${assignmentDesc}`
       : assignmentCode;
     const scheme = document.createElement("small");
-    scheme.textContent = `Scheme ${text(assignment.color_scheme_id, "-")} · ${text(assignment.location, "No placement")}`;
+    scheme.textContent = `${schemeLabel(assignment.color_scheme_id)} · ${text(assignment.location, "No position")}`;
     const flags = document.createElement("span");
     flags.className = "assignment-flags";
     if (bool(assignment.optional)) flags.append(miniTag("Optional"));
@@ -1497,7 +1650,7 @@
     const totalColors = (state.detail?.colors || []).length;
     const accepted = await confirmAction({
       title: "Apply to every garment color?",
-      message: `Copy ${text(assignment.logo_code, "this logo")} (row ${state.editing.optionRow ?? 1}, position ${state.editing.position}) to ${totalColors ? `all ${totalColors} available colors` : "every available color"}. Occupied slots are preserved.`,
+      message: `Copy ${text(assignment.logo_code, "this logo")} (row ${state.editing.optionRow ?? 1}, position ${state.editing.position}) to ${totalColors ? `all ${totalColors} available colors` : "every available color"}. Colors that already have a logo are kept.`,
       actionLabel: "Apply to all colors",
       danger: false,
     });
@@ -1652,6 +1805,20 @@
     if (h) h.textContent = title;
   }
 
+  // Says what the CSV needs and which store it lands in before the file
+  // picker opens; choosing a file then runs the import exactly as before.
+  function openImportIntro() {
+    const dialog = $("#import-intro-dialog");
+    if (!dialog) { els.importFile.click(); return; }
+    const target = $("#import-intro-store", dialog);
+    if (target) {
+      target.innerHTML = state.store
+        ? `Rows go into <strong>${escapeHtml(storeDisplayFor(state.store))}</strong>, the store selected in the header. A row whose <code>fdm4_store</code> names a different store is not imported.`
+        : "No store is selected in the header, so each row goes into the store named in its <code>fdm4_store</code> column - possibly many stores at once.";
+    }
+    openDialog(dialog);
+  }
+
   async function importCsv() {
     if (importRunning) { toast("An import is already running - wait for it to finish.", "error"); return; }
     if (mirrorRunning) { toast("Image mirroring is running - wait for it to finish before importing.", "error"); return; }
@@ -1725,6 +1892,51 @@
     }
   }
 
+  // The image mirror rewrites every store at once, so the confirm asks for
+  // the word MIRROR to be typed instead of accepting a single click.
+  function confirmMirrorLegacyImages() {
+    const dialog = $("#legacy-images-dialog");
+    const ack = $("#legacy-images-ack");
+    const run = $("#legacy-images-run");
+    if (!dialog || !ack || !run) {
+      return confirmAction({
+        title: "Mirror legacy images for every store?",
+        message: "One-time migration. Run it only when the site team asks. It copies every image from the old logo sheets into the warehouse and updates the image link on every store's logo rows.",
+        actionLabel: "Mirror every store",
+        danger: true,
+      });
+    }
+    ack.value = "";
+    run.disabled = true;
+    openDialog(dialog);
+    ack.focus();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (answer) => {
+        if (settled) return;
+        settled = true;
+        ack.removeEventListener("input", check);
+        ack.removeEventListener("keydown", enter);
+        run.removeEventListener("click", yes);
+        dialog.removeEventListener("close", no);
+        closeDialog(dialog);
+        resolve(answer);
+      };
+      const check = () => { run.disabled = ack.value.trim().toUpperCase() !== "MIRROR"; };
+      const enter = (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (!run.disabled) finish(true);
+      };
+      const yes = () => finish(true);
+      const no = () => finish(false);
+      ack.addEventListener("input", check);
+      ack.addEventListener("keydown", enter);
+      run.addEventListener("click", yes);
+      dialog.addEventListener("close", no);
+    });
+  }
+
   let mirrorRunning = false;
 
   async function mirrorLegacyImages() {
@@ -1734,12 +1946,7 @@
       return;
     }
     if (importRunning) { toast("A CSV import is running - wait for it to finish first.", "error"); return; }
-    const accepted = await confirmAction({
-      title: "Mirror legacy images for ALL stores?",
-      message: "This is a global migration, not a page. It copies every legacy sheet image into the warehouse and rewrites the image link on every store's logo assignments - tens of thousands of rows across all stores at once, no matter which store is selected. It is safe to re-run (already-mirrored images are skipped), and storefronts only change when a store is next synced.",
-      actionLabel: "Mirror all stores",
-      danger: true,
-    });
+    const accepted = await confirmMirrorLegacyImages();
     if (!accepted) return;
     mirrorRunning = true;
     setImportDialogTitle("Legacy migration", "Mirror legacy images");
@@ -1756,7 +1963,7 @@
           totals[key] += Number(result[key] || 0);
         });
         const nowRemaining = Number(result.remaining || 0);
-        els.importResults.innerHTML = `<p><span class="spinner" aria-hidden="true"></span> Mirrored ${totals.downloaded + totals.reused} image(s)... ${nowRemaining} remaining</p>`;
+        els.importResults.innerHTML = `<p><span class="spinner" aria-hidden="true"></span> Mirrored ${plural("image", totals.downloaded + totals.reused)}... ${nowRemaining} remaining</p>`;
         if (!nowRemaining) { remaining = 0; break; }
         // No forward progress (every remaining URL failed) - stop and report.
         if (remaining !== -1 && nowRemaining >= remaining) { remaining = nowRemaining; break; }
@@ -1764,7 +1971,7 @@
       }
       const leftover = Math.max(remaining, 0);
       renderResult(els.importResults, { ...totals, remaining: leftover },
-        leftover ? `Legacy image mirror stopped early - ${leftover} image(s) remaining, run it again to continue` : "Legacy image mirror finished");
+        leftover ? `Legacy image mirror stopped early - ${plural("image", leftover)} remaining, run it again to continue` : "Legacy image mirror finished");
       toast(leftover ? `Image mirroring stopped early - ${leftover} remaining. Run it again to continue.` : "Legacy image mirroring finished.");
       if (state.style) await refreshStyle();
     } catch (error) {
@@ -1803,6 +2010,98 @@
       ${errors.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Row</th><th>Reason</th><th>Detail</th></tr></thead><tbody>${errors.map((item, index) => `<tr><td>${escapeHtml(item.row ?? item.line ?? index + 1)}</td><td>${escapeHtml(item.reason ?? item.error ?? "Unresolved")}</td><td>${escapeHtml(item.detail ?? item.message ?? "")}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
   }
 
+  // The reason filter already carries the plain names; the table reuses them.
+  function reportReasonLabels() {
+    const labels = {};
+    $$("option", els.reportReason).forEach((option) => {
+      if (option.value) labels[option.value] = option.textContent.trim();
+    });
+    return labels;
+  }
+
+  const REPORT_FIELD_NAMES = {
+    fdm4_store: "store", product_style: "style", garment_color_code: "color code", product_color: "color",
+    option_row: "choice", position: "position", design_id: "design", logo_code: "logo code",
+    color_scheme_id: "color version", color_scheme: "color version", location: "placement",
+    optional: "optional", background: "background", cost_override: "cost override", cost: "cost",
+    sort_order: "sort order", image_url: "image link", image: "image", active: "active",
+  };
+  const REPORT_RESOLUTIONS = {
+    "prefix+scheme": "logo code and color version",
+    "global prefix+scheme fallback": "logo code and color version across every customer",
+    "global prefix-only fallback": "logo code only across every customer",
+  };
+
+  function reportFieldName(field) {
+    return REPORT_FIELD_NAMES[field] || text(field).replaceAll("_", " ");
+  }
+
+  function sentenceCase(value) {
+    const s = text(value).trim();
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+  }
+
+  // Turns a stored detail such as "row=12; updated_by=jo; prefix+scheme;
+  // design_ids=5500,5501" into a sentence plus a "Row 12 · by jo" note.
+  // Shapes this does not recognise fall back to the raw text.
+  function reportDetail(reason, rawDetail) {
+    let detail = text(rawDetail).trim();
+    let row = "";
+    let by = "";
+    let m = detail.match(/^row=(\d+);\s*/);
+    if (m) { row = m[1]; detail = detail.slice(m[0].length); }
+    m = detail.match(/^updated_by=([^;]*);\s*/);
+    if (m) { by = m[1].trim(); detail = detail.slice(m[0].length); }
+    const codes = (list) => text(list).split(",").map((s) => s.trim()).filter(Boolean).slice(0, 20).join(", ");
+    const codeList = /^[\w .-]+(,[\w .-]+)*$/;
+    let plain = "";
+    if ((m = detail.match(/^(.*?);\s*design_ids=([^;]+)$/))) {
+      plain = `Matched by ${REPORT_RESOLUTIONS[m[1].trim()] || m[1].trim()}; possible designs ${codes(m[2])}`;
+    } else if (reason === "ambiguous_design" && codeList.test(detail)) {
+      plain = `More than one design matches: ${codes(detail)}`;
+    } else if (reason === "ambiguous_color" && codeList.test(detail)) {
+      plain = `More than one color code matches this color name: ${codes(detail)}`;
+    } else if ((m = detail.match(/^color_scheme=(.*)$/))) {
+      plain = m[1].trim() ? `No design carries this logo code in color version ${m[1].trim()}` : "No design carries this logo code";
+    } else if ((m = detail.match(/^design_id=([^;]+);\s*color_scheme=([^;]*);\s*no sheet image and no PREVIEW\/THUMB art$/))) {
+      plain = `Design ${m[1].trim()} in color version ${m[2].trim() || "(none)"} has no sheet image and no preview art`;
+    } else if ((m = detail.match(/^normalized color name:\s*(.*)$/))) {
+      plain = `No color code matches the color name “${m[1].trim()}”`;
+    } else if (detail === "empty logo_code") {
+      plain = "The row has no logo code";
+    } else if ((m = detail.match(/^unknown FDM4 store (.+)$/))) {
+      plain = `${m[1]} is not a known FDM4 store`;
+    } else if ((m = detail.match(/^unknown design_id (.+)$/))) {
+      plain = `Design ${m[1]} does not exist`;
+    } else if ((m = detail.match(/^color (.+) is not active for store\/style$/))) {
+      plain = `Color ${m[1]} is not active for this store and style`;
+    } else if ((m = detail.match(/^design (.+) has no color scheme (.+)$/))) {
+      plain = `Design ${m[1]} has no color version ${m[2]}`;
+    } else if ((m = detail.match(/^logo_code (.+) does not match design (.+) \/ scheme (.*)$/))) {
+      plain = `Logo code ${m[1]} does not match design ${m[2]} in color version ${m[3].trim() || "(none)"}`;
+    } else if (/^position 2\/3 requires/.test(detail)) {
+      plain = "An add-on logo in position 2 or 3 needs an active main logo in position 1 of the same choice";
+    } else if (detail === "row store does not match selected store") {
+      plain = "The row names a different store than the one selected for the import";
+    } else if (/^duplicate assignment key/.test(detail)) {
+      plain = "The same store, style, color, choice and position appears more than once in the file";
+    } else if (detail === "row contains more fields than the CSV header") {
+      plain = "The row has more fields than the header row";
+    } else if (detail === "selected store does not exist") {
+      plain = "The selected store does not exist";
+    } else if (detail === "fdm4_store and product_style are required") {
+      plain = "The row needs both a store and a style";
+    } else if ((m = detail.match(/^database rejected row \((.+)\)$/))) {
+      plain = `The database rejected the row (${m[1]})`;
+    } else if ((m = detail.match(/^([a-z_]+) (is invalid|must be true or false|must be an integer|is outside the supported range|must be numeric.*|may have at most .*|must be a scalar|has an invalid port|must be an absolute HTTP\(S\) URL)$/))) {
+      plain = sentenceCase(`${reportFieldName(m[1])} ${m[2]}`.replace("an absolute HTTP(S) URL", "a full web address starting with http or https"));
+    } else {
+      plain = sentenceCase(detail);
+    }
+    const meta = [row ? `Row ${row}` : "", by ? `by ${by}` : ""].filter(Boolean).join(" · ");
+    return { plain, meta };
+  }
+
   async function loadReports(event) {
     event?.preventDefault();
     const params = new URLSearchParams({ limit: "500" });
@@ -1829,7 +2128,13 @@
         return;
       }
       if (quickFilter) { quickFilter.hidden = false; quickFilter.value = ""; }
-      els.reportResults.innerHTML = `<table class="data-table"><thead><tr><th>Imported</th><th>Store / style</th><th>Product color</th><th>Logo</th><th>Reason</th><th>Detail</th></tr></thead><tbody>${reports.map((row) => `<tr><td>${escapeHtml(formatDate(row.imported_at))}</td><td><strong>${escapeHtml(row.fdm4_store)}</strong><br><code>${escapeHtml(row.product_style)}</code></td><td>${escapeHtml(row.product_color)}</td><td><code>${escapeHtml(row.logo_code)}</code></td><td>${escapeHtml(row.reason)}</td><td>${escapeHtml(row.detail)}</td></tr>`).join("")}</tbody></table>`;
+      const reasonLabels = reportReasonLabels();
+      els.reportResults.innerHTML = `<table class="data-table"><thead><tr><th>Imported</th><th>Store / style</th><th>Product color</th><th>Logo</th><th>Reason</th><th>Detail</th></tr></thead><tbody>${reports.map((row) => {
+        const store = text(row.fdm4_store);
+        const storeName = store ? storeDisplayFor(store) : "";
+        const detail = reportDetail(text(row.reason), row.detail);
+        return `<tr><td>${escapeHtml(formatDate(row.imported_at))}</td><td><strong>${escapeHtml(storeName || "-")}</strong>${storeName && storeName !== store ? ` <small class="muted">${escapeHtml(store)}</small>` : ""}<br><code>${escapeHtml(row.product_style)}</code></td><td>${escapeHtml(row.product_color)}</td><td><code>${escapeHtml(row.logo_code)}</code></td><td title="${escapeHtml(row.reason)}">${escapeHtml(reasonLabels[row.reason] || text(row.reason).replaceAll("_", " "))}</td><td>${escapeHtml(detail.plain)}${detail.meta ? `<br><small class="muted">${escapeHtml(detail.meta)}</small>` : ""}</td></tr>`;
+      }).join("")}</tbody></table>`;
     } catch (error) {
       els.reportResults.innerHTML = `<div class="grid-empty">${escapeHtml(error.message)}</div>`;
       els.reportCount.textContent = "";
@@ -1851,6 +2156,9 @@
     sync_requested: "Sync to website",
     ownership_enabled: "Logo sync turned on",
     ownership_disabled: "Logo sync turned off",
+    color_class_created: "Garment color classified",
+    color_class_updated: "Garment color classification updated",
+    color_class_deleted: "Garment color classification removed",
   };
 
   function auditValue(value) {
@@ -1872,17 +2180,21 @@
         : "";
       return [styles, outcome].filter(Boolean).join(" · ");
     }
+    // Logo display name when the server found one; the code stays alongside.
+    const logoName = text(entry.logo_name).trim();
     if (detail.changes && typeof detail.changes === "object") {
-      return Object.entries(detail.changes)
-        .map(([key, change]) => `${key}: ${auditValue(change?.from)} → ${auditValue(change?.to)}`)
+      const changes = Object.entries(detail.changes)
+        .map(([key, change]) => `${reportFieldName(key)}: ${auditValue(change?.from)} → ${auditValue(change?.to)}`)
         .join("; ");
+      return logoName ? `${logoName} · ${changes}` : changes;
     }
     const row = detail.new || detail.old;
     if (row && typeof row === "object") {
+      const code = row.logo_code ? `${row.logo_code}${row.color_scheme_id ? `/${row.color_scheme_id}` : ""}` : "";
       return [
-        row.logo_code ? `logo ${row.logo_code}${row.color_scheme_id ? `/${row.color_scheme_id}` : ""}` : "",
+        logoName ? `${logoName}${code ? ` (${code})` : ""}` : (code ? `logo ${code}` : ""),
         row.design_id ? `design ${row.design_id}` : "",
-        row.location ? `at ${row.location}` : "",
+        row.location ? text(row.location) : "",
       ].filter(Boolean).join(" · ");
     }
     return "";
@@ -1890,7 +2202,11 @@
 
   function auditTarget(entry) {
     const parts = [];
-    if (entry.garment_color_code) parts.push(entry.garment_color_code);
+    if (entry.garment_color_code) {
+      // Color name first, code in brackets; the code alone when no name is known.
+      const colorName = text(entry.garment_color_name).trim();
+      parts.push(colorName && colorName !== entry.garment_color_code ? `${colorName} (${entry.garment_color_code})` : entry.garment_color_code);
+    }
     if (entry.option_row) parts.push(`choice ${entry.option_row}`);
     if (entry.position) parts.push(`position ${entry.position}`);
     return parts.join(" · ") || "-";
@@ -2331,6 +2647,14 @@
     elements.status.className = `assistant-status${kind ? ` assistant-status--${kind}` : ""}`;
   }
 
+  // Example questions shown in the empty state; clicking one fills the
+  // composer and the person still presses Send.
+  const ASSISTANT_EXAMPLES = [
+    "Which stores have logo sync turned off?",
+    "What is the price of style 18500 on Davey Tree?",
+    "Which garment colors still need a light or dark decision?",
+  ];
+
   function emptyAssistantMessages(elements) {
     elements.messages.replaceChildren();
     const empty = agentNode("div", "assistant-empty");
@@ -2340,10 +2664,18 @@
         "span",
         "",
         assistantState.writesEnabled
-          ? "I can inspect bounded warehouse data. Any proposed change will be staged for your review."
-          : "I can inspect bounded warehouse data. Changes are disabled during this read-only pilot.",
+          ? "Ask about stores, logos, prices, products or categories. If I suggest a change you see it first and choose whether to apply it."
+          : "Ask about stores, logos, prices, products or categories. Changes are turned off during this read-only pilot.",
       ),
     );
+    const examples = agentNode("div", "assistant-examples");
+    ASSISTANT_EXAMPLES.forEach((question) => {
+      const button = agentNode("button", "button button--secondary button--small assistant-example", question);
+      button.type = "button";
+      button.dataset.example = question;
+      examples.append(button);
+    });
+    empty.append(examples);
     elements.messages.append(empty);
   }
 
@@ -3052,7 +3384,7 @@
     box.append(agentNode("h4", "", `This sheet will: ${MAPPING_COMMAND_LABELS[command] || command || "(unknown)"}`));
     const counts = mapping?._command_counts || {};
     for (const [name, count] of Object.entries(counts)) {
-      box.append(agentNode("p", "", `${MAPPING_COMMAND_LABELS[name] || name}: ${count} row(s)`));
+      box.append(agentNode("p", "", `${MAPPING_COMMAND_LABELS[name] || name}: ${plural("row", count)}`));
     }
     const columns = mapping?.columns && typeof mapping.columns === "object" ? mapping.columns : {};
     const constants = mapping?.constants && typeof mapping.constants === "object" ? mapping.constants : {};
@@ -3832,6 +4164,10 @@
     elements.review.hidden = true;
     elements.mapping.replaceChildren();
     elements.mapping.hidden = true;
+    if (elements.spreadsheetInstruction) {
+      elements.spreadsheetInstruction.value = "";
+      elements.spreadsheetInstruction.closest(".assistant-instruction")?.setAttribute("hidden", "");
+    }
     emptyAssistantMessages(elements);
     setAssistantStatus(elements, "New chat ready.");
     resetAssistantInteraction(elements);
@@ -3950,11 +4286,22 @@
       }
     });
     elements.stop.addEventListener("click", () => assistantState.controller?.abort());
+    // Example questions in the empty state fill the composer (delegated, so
+    // the server-rendered and the rebuilt empty state behave the same).
+    elements.messages.addEventListener("click", (event) => {
+      const example = event.target?.closest?.(".assistant-example");
+      if (!example || !elements.messages.contains(example)) return;
+      elements.input.value = text(example.dataset.example || example.textContent).trim();
+      elements.input.focus();
+    });
     if (elements.attach && elements.file) {
       elements.attach.addEventListener("click", () => elements.file.click());
       elements.file.addEventListener("change", () => {
         const file = elements.file.files?.[0];
-        if (file) uploadAssistantSpreadsheet(elements, file);
+        if (!file) return;
+        // The note field stays out of the way until a spreadsheet is attached.
+        elements.spreadsheetInstruction?.closest(".assistant-instruction")?.removeAttribute("hidden");
+        uploadAssistantSpreadsheet(elements, file);
       });
     }
     document.addEventListener("keydown", (event) => {
@@ -4257,33 +4604,38 @@
     }
   }
 
-  async function loadBulkHistory() {
-    const box = $("#bulk-history");
-    if (!box || !state.store) return;
+  // The same list renders in the bulk apply panel and in the history card on
+  // the Bulk Operations page: one request, every container present, so an
+  // undo pressed in one place refreshes the other.
+  async function loadBulkHistory(target = null) {
+    const boxes = (target ? [target] : [$("#bulk-history"), $("#bulk-ops-history")]).filter(Boolean);
+    if (!boxes.length || !state.store) return;
+    const render = (html) => boxes.forEach((box) => { box.innerHTML = html; });
     try {
       const payload = await api(`/api/bulk-apply/batches?${new URLSearchParams({ store: state.store, limit: "10" })}`);
       const batches = envelope(payload, "batches");
       if (!batches.length) {
-        box.textContent = "No bulk batches for this store yet.";
+        render(`<p class="muted">No bulk runs for ${escapeHtml(storeDisplayFor(state.store))} yet.</p>`);
         return;
       }
+      const scopeWords = { match: "same color as copied", all: "all colors", light: "light colors", dark: "dark colors" };
       // Non-bulk-apply batches (reorder, paste, copy, design swap) journal
       // through the same table with their kind in `target`.
       const describe = (batch) => {
         const target = batch.target || {};
         if (target.kind === "reorder") return `<strong>Reorder</strong><br><small>${escapeHtml(target.style)} · ${escapeHtml(target.apply_to === "style" ? "all matching colors" : target.color)}</small>`;
-        if (target.kind === "paste") return `<strong>Paste</strong><br><small>${escapeHtml(target.style)} · ${escapeHtml(String((target.colors || []).length))} color(s)</small>`;
-        if (target.kind === "paste_batch") return `<strong>Batch paste</strong><br><small>${escapeHtml(String((target.styles || []).length))} styles · ${escapeHtml(target.color_scope)}</small>`;
-        if (target.kind === "copy_style_batch") return `<strong>Copy style</strong><br><small>${escapeHtml(target.source_style)} → ${escapeHtml(String((target.styles || []).length))} styles · ${escapeHtml(target.color_match)} · ${escapeHtml(target.mode)}</small>`;
-        if (target.kind === "design_swap") return `<strong>Replace design</strong><br><small>${escapeHtml(target.from.design_id)}${target.from.color_scheme_id ? `/${escapeHtml(target.from.color_scheme_id)}` : ""} → ${escapeHtml(target.to.logo_code)}-${escapeHtml(target.to.color_scheme_id)} (${escapeHtml(target.to.design_id)}) · ${escapeHtml(String((target.styles || []).length))} style(s)</small>`;
-        return `<code>${escapeHtml(batch.logo_code)}-${escapeHtml(batch.color_scheme)}</code><br><small>${escapeHtml(batch.placement)}</small>`;
+        if (target.kind === "paste") return `<strong>Paste</strong><br><small>${escapeHtml(target.style)} · ${escapeHtml(plural("color", (target.colors || []).length))}</small>`;
+        if (target.kind === "paste_batch") return `<strong>Paste to many styles</strong><br><small>${escapeHtml(plural("style", (target.styles || []).length))} · ${escapeHtml(scopeWords[target.color_scope] || target.color_scope)}</small>`;
+        if (target.kind === "copy_style_batch") return `<strong>Copy one style's logos</strong><br><small>${escapeHtml(target.source_style)} → ${escapeHtml(plural("style", (target.styles || []).length))} · ${escapeHtml(target.color_match)} · ${escapeHtml(target.mode)}</small>`;
+        if (target.kind === "design_swap") return `<strong>Replace design</strong><br><small>${escapeHtml(target.from.design_id)}${target.from.color_scheme_id ? `/${escapeHtml(target.from.color_scheme_id)}` : ""} → ${escapeHtml(target.to.logo_code)}-${escapeHtml(target.to.color_scheme_id)} (${escapeHtml(target.to.design_id)}) · ${escapeHtml(plural("style", (target.styles || []).length))}</small>`;
+        return `<strong>Bulk apply</strong><br><small><code>${escapeHtml(batch.logo_code)}-${escapeHtml(batch.color_scheme)}</code> · ${escapeHtml(batch.placement)}</small>`;
       };
-      box.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>What</th><th>Rows</th><th>Actor</th><th>Status</th></tr></thead><tbody>${batches.map((batch) => `<tr><td>${escapeHtml(formatDate(batch.created_at))}</td><td>${describe(batch)}</td><td>${escapeHtml(batch.applied)}</td><td>${escapeHtml(batch.created_by)}</td><td>${batch.undone_at ? `Undone ${escapeHtml(formatDate(batch.undone_at))}` : `<button type="button" class="button button--ghost button--small bulk-history-undo" data-batch="${escapeHtml(batch.batch_id)}">Undo</button>`}</td></tr>`).join("")}</tbody></table></div>`;
-      $$(".bulk-history-undo", box).forEach((button) => {
+      render(`<div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>What</th><th>Logos written</th><th>Who</th><th>Status</th></tr></thead><tbody>${batches.map((batch) => `<tr><td>${escapeHtml(formatDate(batch.created_at))}</td><td>${describe(batch)}</td><td>${escapeHtml(batch.applied)}</td><td>${escapeHtml(batch.created_by)}</td><td>${batch.undone_at ? `Undone ${escapeHtml(formatDate(batch.undone_at))}` : `<button type="button" class="button button--ghost button--small bulk-history-undo" data-batch="${escapeHtml(batch.batch_id)}">Undo</button>`}</td></tr>`).join("")}</tbody></table></div>`);
+      boxes.forEach((box) => $$(".bulk-history-undo", box).forEach((button) => {
         button.addEventListener("click", () => bulkUndo(Number(button.dataset.batch), button));
-      });
+      }));
     } catch (error) {
-      box.innerHTML = `<div class="grid-empty">${escapeHtml(friendlyLoadError("the bulk history", error))}</div>`;
+      render(`<div class="grid-empty">${escapeHtml(friendlyLoadError("the bulk history", error))}</div>`);
     }
   }
 
@@ -4404,7 +4756,7 @@
     const crossStore = data.source.store !== state.store;
     const confirmed = await confirmAction({
       title: `Paste ${data.rows.length} logo${data.rows.length === 1 ? "" : "s"}`,
-      message: `Paste onto ${colors.length} color${colors.length === 1 ? "" : "s"} of ${state.style}${crossStore ? ` in ${storeDisplayFor(state.store)} (a different store - each row is checked for design ownership)` : ""}. ${overwrite ? "Occupied slots are overwritten." : "Occupied slots are skipped."}${asNewRows ? " Rows are added after the existing ones." : ""} You can undo from Bulk history.`,
+      message: `Paste onto ${colors.length} color${colors.length === 1 ? "" : "s"} of ${state.style}${crossStore ? ` in ${storeDisplayFor(state.store)} (a different store - each row is checked for design ownership)` : ""}. ${overwrite ? "Colors that already have a logo are overwritten." : "Occupied slots are skipped."}${asNewRows ? " Rows are added after the existing ones." : ""} You can undo from Bulk history.`,
       actionLabel: "Paste", danger: overwrite,
     });
     if (!confirmed) return;
@@ -4415,7 +4767,7 @@
       const parts = [`${result.created} created`, `${result.updated} updated`];
       if (result.skipped_occupied) parts.push(`${result.skipped_occupied} occupied skipped`);
       if (result.skipped_invalid) parts.push(`${result.skipped_invalid} invalid`);
-      if (result.skipped_missing_color) parts.push(`${result.skipped_missing_color} color(s) not in this style`);
+      if (result.skipped_missing_color) parts.push(`${plural("color", result.skipped_missing_color)} not in this style`);
       toast(`Pasted: ${parts.join(", ")}.`, result.skipped_invalid ? "error" : "success");
       if (result.problems?.length) console.warn("paste problems", result.problems);
       noteBatch(result.batch_id, "paste");
@@ -4539,7 +4891,7 @@
     const scope = $("#batch-scope").value;
     const overwrite = $("#clipboard-overwrite")?.checked === true;
     const confirmed = await confirmAction({ title: `Paste to ${styles.length} styles`,
-      message: `${data.rows.length} logo${data.rows.length === 1 ? "" : "s"} → ${scope === "match" ? `color ${data.source.color}` : `${scope} colors`} of each selected style in ${storeDisplayFor(state.store)}: ${styleSample(styles)}. ${overwrite ? "Occupied slots are overwritten." : "Occupied slots are skipped."} One undo batch.`, actionLabel: "Paste", danger: overwrite });
+      message: `${data.rows.length} logo${data.rows.length === 1 ? "" : "s"} → ${scope === "match" ? `color ${data.source.color}` : `${scope} colors`} of each selected style in ${storeDisplayFor(state.store)}: ${styleSample(styles)}. ${overwrite ? "Colors that already have a logo are overwritten." : "Occupied slots are skipped."} One undo batch.`, actionLabel: "Paste", danger: overwrite });
     if (!confirmed) return;
     try {
       const result = await api("/api/assignments/paste-batch", { method: "POST", body: {
@@ -4599,7 +4951,7 @@
         ? `<tr><td><code>${escapeHtml(t.style)}</code></td><td colspan="4" class="muted">${escapeHtml(t.error)}</td></tr>`
         : `<tr><td><code>${escapeHtml(t.style)}</code></td><td>${t.mappings.map((m) => `${escapeHtml(m.target_color)} ← ${escapeHtml(m.source_color)}${m.via === "exact" ? "" : ` <span class="badge">${escapeHtml(m.via)}</span>`}`).join(", ") || "<span class='muted'>none</span>"}</td><td>${escapeHtml(t.unmatched.join(", "))}</td><td>${escapeHtml(String(t.rows))}</td><td>${escapeHtml(String(t.existing))}</td></tr>`).join("")}</tbody></table>`;
       const errors = plan.targets.filter((t) => t.error).length;
-      $("#copy-many-summary").textContent = `${plan.total_rows} logo slot(s) across ${plan.targets.length - errors} style(s)${errors ? `; ${errors} skipped` : ""}.`;
+      $("#copy-many-summary").textContent = `${plural("logo", plan.total_rows)} across ${plural("style", plan.targets.length - errors)}${errors ? `; ${errors} skipped` : ""}.`;
       $("#copy-many-run").disabled = plan.total_rows === 0;
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -4613,7 +4965,7 @@
     if (!copyManyState.plan) return;
     const confirmed = await confirmAction({
       title: `Copy ${state.style} to ${inputs.target_styles.length} styles`,
-      message: `${copyManyState.plan.total_rows} logo slots. ${inputs.mode === "replace" ? "Each mapped color on the targets is CLEARED first." : inputs.mode === "overwrite" ? "Occupied slots are overwritten." : "Occupied slots are kept."} One undo batch.`,
+      message: `${copyManyState.plan.total_rows} logo slots. ${inputs.mode === "replace" ? "Each mapped color on the targets is CLEARED first." : inputs.mode === "overwrite" ? "Colors that already have a logo are overwritten." : "Colors that already have a logo are kept."} One undo batch.`,
       actionLabel: "Copy", danger: inputs.mode !== "merge",
     });
     if (!confirmed) return;
@@ -4909,22 +5261,32 @@
     const rows = ownershipState.rows
       .map((r) => ({ ...r, label: storeDisplayFor(r.fdm4_store) }))
       .filter((r) => !q || `${r.fdm4_store} ${r.label}`.toLowerCase().includes(q))
-      .sort((a, b) => (Number(b.owned) - Number(a.owned)) || a.label.localeCompare(b.label));
+      .sort((a, b) => a.label.localeCompare(b.label));
     const total = ownershipState.rows.length;
     const on = ownershipState.rows.filter((r) => r.owned).length;
-    $("#ownership-count").textContent = total ? `${on} of ${total} stores sync their logos from this app` : "";
+    $("#ownership-count").textContent = total ? `${on} of ${plural("store", total)} sync their logos from this app` : "";
     if (!rows.length) {
       box.innerHTML = total ? '<div class="grid-empty">No stores match your filter.</div>' : '<div class="grid-empty">No mapped stores found.</div>';
       return;
     }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>Logo sync</th><th></th></tr></thead><tbody>${rows.map((r) => `
+    // Two sections, On then Off, each with its count (and "of N" while a
+    // filter hides some of the stores).
+    const groups = [
+      { title: "On", hint: "Logos come from this app", rows: rows.filter((r) => r.owned), all: on },
+      { title: "Off", hint: "Still on the old logo sheets", rows: rows.filter((r) => !r.owned), all: total - on },
+    ];
+    box.innerHTML = groups.filter((g) => g.rows.length).map((g) => `
+      <section class="ownership-group" aria-label="${g.title} (${g.rows.length})">
+        <h3 class="ownership-group__title">${g.title} <span class="ownership-group__count">(${g.rows.length}${q && g.rows.length !== g.all ? ` of ${g.all}` : ""})</span> <small class="muted">${g.hint}</small></h3>
+        <table class="data-table"><thead><tr><th>Store</th><th>Logo sync</th><th></th></tr></thead><tbody>${g.rows.map((r) => `
       <tr data-store="${escapeHtml(r.fdm4_store)}">
         <td><strong>${escapeHtml(r.label)}</strong><br><code>${escapeHtml(r.fdm4_store)}</code></td>
-        <td>${r.owned ? '<span class="chip dark">On - synced from this app</span>' : '<span class="chip">Off - still on the old logo sheets</span>'}</td>
+        <td>${r.owned ? '<span class="sync-badge sync-badge--on">On · synced from this app</span>' : '<span class="sync-badge">Off · still on the old logo sheets</span>'}</td>
         <td class="name-actions">${r.owned
           ? '<button class="button button--small button--ghost own-off" type="button">Turn off</button>'
           : '<button class="button button--small button--primary own-on" type="button">Turn on...</button>'}</td>
-      </tr>`).join("")}</tbody></table>`;
+      </tr>`).join("")}</tbody></table>
+      </section>`).join("");
     $$(".own-on", box).forEach((b) => b.addEventListener("click", () => enableOwnership(b.closest("tr").dataset.store, b)));
     $$(".own-off", box).forEach((b) => b.addEventListener("click", () => disableOwnership(b.closest("tr").dataset.store, b)));
   }
@@ -5102,7 +5464,8 @@
     els.copySearch.addEventListener("focus", () => searchStyles(els.copySearch.value, "copy"));
     bindListKeyboard(els.copySearch, els.copyOptions);
     els.copyForm.addEventListener("submit", copyStyle);
-    $("#import-button").addEventListener("click", () => els.importFile.click());
+    $("#import-button").addEventListener("click", openImportIntro);
+    $("#import-intro-choose")?.addEventListener("click", () => { closeDialog($("#import-intro-dialog")); els.importFile.click(); });
     els.importFile.addEventListener("change", importCsv);
     $("#legacy-import-button").addEventListener("click", () => {
       els.legacyResults.innerHTML = "";
@@ -5252,6 +5615,8 @@
       try { localStorage.setItem(REORDER_ALL_KEY, event.target.checked ? "true" : "false"); } catch (e) {}
     });
     reorderAllColors(); // show the remembered choice before the first drag
+    $("#drag-tip-dismiss")?.addEventListener("click", dismissDragTip);
+    syncDragTip();
 
     // Assignment clipboard
     $("#clipboard-clear")?.addEventListener("click", () => setClipboard(null));
@@ -5264,6 +5629,8 @@
     $$("#bulk-jobs .dash-card").forEach((card) => card.addEventListener("click", () => openBulkJob(card.dataset.bulkJob)));
     $("#bulk-flow-back")?.addEventListener("click", closeBulkFlow);
     $("#bulk-store")?.addEventListener("change", bulkStoreChanged);
+    $("#bulk-history-open")?.addEventListener("click", () => toggleBulkHistoryCard());
+    $("#bulk-history-refresh")?.addEventListener("click", () => loadBulkHistory($("#bulk-ops-history")));
     $("#fill-refresh")?.addEventListener("click", loadFillPlan);
     $("#fill-apply")?.addEventListener("click", applyFill);
     $("#fill-undo")?.addEventListener("click", undoFill);
@@ -5302,18 +5669,18 @@
   }
 
   // ===== Bulk Operations view: job launcher + flows =====
-  const bulkOpsState = { job: null, fill: null, fillBatchId: null, coverage: null };
+  const bulkOpsState = { job: null, fill: null, fillBatchId: null, coverage: null, loadedStore: "" };
 
   const BULK_JOBS = {
     fill: { title: "Fill missing colors", panel: "#bulk-flow-fill" },
     coverage: { title: "Coverage report", panel: "#bulk-flow-coverage" },
     paste: { title: "Paste logos to many styles", panel: "#bulk-flow-targets",
-      hint: "Copy a color in the Logo editor first - the clipboard travels with you. Select target styles, pick a color scope, then press Paste clipboard." },
+      hint: "Copy a color in the Logo editor first - the clipboard travels with you. Select target styles, choose which colors receive it, then press Paste clipboard." },
     bulkapply: { title: "Bulk apply a logo", panel: "#bulk-flow-targets",
-      hint: "Select target styles, then “Bulk Apply to selection…” picks the logo and placement (light/dark aware)." },
+      hint: "Select target styles, then “Bulk Apply to selection…” picks the logo and position. The white or black version is picked automatically for each garment color." },
     activate: { title: "Activate / deactivate styles", panel: "#bulk-flow-targets",
-      hint: "Select styles, then Set active or Set inactive. This flips every logo assignment on each selected style." },
-    copy: { title: "Copy style config to many", panel: "#bulk-flow-targets",
+      hint: "Select styles, then Set active or Set inactive. This flips every logo on each selected style." },
+    copy: { title: "Copy one style's logos to others", panel: "#bulk-flow-targets",
       hint: "Select target styles, then “Copy open style to selection…” copies the style currently open in the Logo editor." },
   };
 
@@ -5324,6 +5691,11 @@
       `<option value="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} (${escapeHtml(s.fdm4_store)})</option>`);
     select.innerHTML = `<option value="">Choose a store…</option>${options.join("")}`;
     select.value = state.store || "";
+    // The header picker already shows the active store. This copy only shows
+    // while no store is chosen, or when the two disagree, so there is one
+    // obvious place to pick a store and no duplicate the rest of the time.
+    const field = select.closest(".bulk-store-field");
+    if (field) field.hidden = Boolean(state.store) && select.value === state.store;
   }
 
   async function initBulkView() {
@@ -5331,16 +5703,51 @@
     bulkStoreSync();
     renderBatchBar();
     if (!bulkOpsState.job) closeBulkFlow();
+    // The store may have changed on another view while a job stayed open.
+    else if (bulkOpsState.loadedStore !== state.store) await bulkStoreAdopt();
   }
 
+  // The page-level select hands the store to the shared selection, whose
+  // tail calls bulkStoreAdopt() while this view is open. Re-picking the store
+  // that is already active reloads the open job instead.
   async function bulkStoreChanged(event) {
     const store = event.target.value;
-    if (!store || store === state.store) return;
-    await selectStore(store);
+    if (!store) return;
+    if (store !== state.store) {
+      await selectStore(store);
+      if (bulkOpsState.loadedStore === state.store) return;
+    }
+    await bulkStoreAdopt();
+  }
+
+  // Point the open job and the history card at the active store.
+  async function bulkStoreAdopt() {
     bulkStoreSync();
+    bulkOpsState.loadedStore = state.store;
+    const historyCard = $("#bulk-history-card");
+    if (historyCard && !historyCard.hidden) await loadBulkHistory($("#bulk-ops-history"));
     if (bulkOpsState.job === "fill") await loadFillPlan();
     else if (bulkOpsState.job === "coverage") await loadCoverage();
     else if (bulkOpsState.job) { renderBatchBar(); await loadBatchRows(); }
+  }
+
+  // "Show bulk history" on the Bulk Operations page: the list the bulk apply
+  // panel shows, in a card under the intro, with the same Undo buttons.
+  async function toggleBulkHistoryCard(force = null) {
+    const card = $("#bulk-history-card");
+    const button = $("#bulk-history-open");
+    if (!card || !button) return;
+    const open = force === null ? card.hidden : Boolean(force);
+    card.hidden = !open;
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.textContent = open ? "Hide bulk history" : "Show bulk history";
+    if (!open) return;
+    const box = $("#bulk-ops-history");
+    if (!state.store) {
+      if (box) box.innerHTML = '<p class="muted">Choose a store to see its bulk history.</p>';
+      return;
+    }
+    await loadBulkHistory(box);
   }
 
   async function openBulkJob(job) {
@@ -5355,6 +5762,7 @@
       const el = $(id); if (el) el.hidden = id !== def.panel;
     });
     if (def.hint) $("#bulk-targets-hint").textContent = def.hint;
+    bulkOpsState.loadedStore = state.store;
     if (job === "fill") await loadFillPlan();
     else if (job === "coverage") await loadCoverage();
     else { renderBatchBar(); await loadBatchRows(); }
@@ -5384,7 +5792,7 @@
       if (item && source) slots += source.rows * item.targets.length;
     });
     $("#fill-preview-line").textContent = entries.length
-      ? `${entries.length} style${entries.length === 1 ? "" : "s"} · up to ${slots} logo slot${slots === 1 ? "" : "s"} filled · occupied slots are skipped`
+      ? `${plural("style", entries.length)} · up to ${plural("logo", slots)} added · colors that already have a logo are never changed`
       : "Check the styles to fill.";
     $("#fill-apply").disabled = !entries.length || Boolean(bulkOpsState.fill?.truncated);
   }
@@ -5407,14 +5815,14 @@
     // A preview past the server's row cap is incomplete: a style whose rows
     // were cut off would look like it has no source. Never fill from it.
     const cutOff = Boolean(plan.truncated);
-    $("#fill-summary").textContent = `${storeDisplayFor(state.store)}: ${plan.copyable.length} fixable style${plan.copyable.length === 1 ? "" : "s"}, ${plan.no_source.length} with no logos anywhere.`
+    $("#fill-summary").textContent = `${storeDisplayFor(state.store)}: ${plural("fixable style", plan.copyable.length)}, ${plan.no_source.length} with no logos anywhere.`
       + (cutOff ? " The preview was cut off at the server limit - it is incomplete, so Fill is disabled. Preview fewer styles at a time." : "");
     const box = $("#fill-copyable");
     if (!plan.copyable.length) {
       box.innerHTML = '<div class="grid-empty">No fixable gaps - every style that has logos covers all of its colors.</div>';
     } else {
-      box.innerHTML = `<table class="data-table"><thead><tr><th></th><th>Style</th><th>Name</th><th>Missing colors</th><th>Copy from</th><th>Slots</th></tr></thead><tbody>${plan.copyable.map((item) => {
-        const options = item.sources.map((s) => `<option value="${escapeHtml(s.color)}"${s.color === item.auto_source ? " selected" : ""}>${escapeHtml(s.color)} (${s.rows} logo${s.rows === 1 ? "" : "s"})</option>`).join("");
+      box.innerHTML = `<table class="data-table"><thead><tr><th></th><th>Style</th><th>Name</th><th>Colors without a logo</th><th>Copy from</th><th>Logos to add</th></tr></thead><tbody>${plan.copyable.map((item) => {
+        const options = item.sources.map((s) => `<option value="${escapeHtml(s.color)}"${s.color === item.auto_source ? " selected" : ""}>${escapeHtml(s.color)} (${escapeHtml(plural("logo", s.rows))})</option>`).join("");
         const chooser = item.needs_choice ? `<option value="" selected>Choose…</option>${options}` : options;
         const note = item.needs_choice ? '<br><small class="muted">Configured colors differ - pick the source.</small>' : "";
         return `<tr class="fill-row" data-style="${escapeHtml(item.style)}"><td><input type="checkbox" class="fill-check"${item.needs_choice ? "" : " checked"}></td><td><code>${escapeHtml(item.style)}</code></td><td>${escapeHtml(item.name)}</td><td>${item.targets.map((c) => `<code>${escapeHtml(c)}</code>`).join(" ")}</td><td><select class="fill-source">${chooser}</select>${note}</td><td>${item.slots ?? "—"}</td></tr>`;
@@ -5431,7 +5839,7 @@
     const wrap = $("#fill-nosource-wrap");
     wrap.hidden = !noSource.length;
     if (noSource.length) {
-      $("#fill-nosource-count").textContent = `${noSource.length} style${noSource.length === 1 ? "" : "s"} with no logos anywhere (nothing to copy from - often PPE or gear)`;
+      $("#fill-nosource-count").textContent = `${plural("style", noSource.length)} with no logos anywhere - nothing to copy from, often gear that never takes a logo`;
       $("#fill-nosource").innerHTML = `<table class="data-table"><thead><tr><th>Style</th><th>Name</th><th>Colors without logos</th></tr></thead><tbody>${noSource.map((s) => `<tr><td><code>${escapeHtml(s.style)}</code></td><td>${escapeHtml(s.name)}</td><td>${(s.unconfigured || []).map((c) => `<code>${escapeHtml(c)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table>`;
     }
     renderFillPreviewLine();
@@ -5441,8 +5849,8 @@
     const entries = fillSelection().map((entry) => ({ style: entry.style, source_color: entry.source }));
     if (!entries.length) return;
     const confirmed = await confirmAction({
-      title: `Fill ${entries.length} style${entries.length === 1 ? "" : "s"}`,
-      message: `Copies each style's own logos onto its missing colors in ${storeDisplayFor(state.store)}. Occupied slots are skipped. One undo batch covers the whole run.`,
+      title: `Fill ${plural("style", entries.length)}`,
+      message: `Copies each style's own logos onto its missing colors in ${storeDisplayFor(state.store)}. Colors that already have a logo are never changed. One Undo covers the whole run.`,
       actionLabel: "Fill",
     });
     if (!confirmed) return;
@@ -5453,9 +5861,9 @@
       bulkOpsState.fillBatchId = result.batch_id;
       const undo = $("#fill-undo");
       undo.hidden = false;
-      undo.textContent = `Undo fill (${result.created + result.updated} slots)`;
+      undo.textContent = `Undo fill · ${plural("logo", result.created + result.updated)}`;
       noteBatch(result.batch_id, "fill missing colors");
-      toast(`Filled ${result.created} slot${result.created === 1 ? "" : "s"} across ${entries.length} style${entries.length === 1 ? "" : "s"}.`);
+      toast(`Added ${plural("logo", result.created)} across ${plural("style", entries.length)}.`);
       await loadFillPlan();
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -5469,7 +5877,7 @@
     if (!bulkOpsState.fillBatchId) return;
     try {
       const result = await api("/api/bulk-apply/undo", { method: "POST", body: { batch_id: bulkOpsState.fillBatchId } });
-      toast(`Undo restored ${result.restored} slot${result.restored === 1 ? "" : "s"}.`);
+      toast(`Undo put back ${plural("logo", result.restored)}.`);
       bulkOpsState.fillBatchId = null;
       $("#fill-undo").hidden = true;
       await loadFillPlan();
@@ -5480,6 +5888,29 @@
   }
 
   // ---- Coverage report ----
+  // Garment color names travel with each report row as `color_names`
+  // (code → name); a row without the map falls back to the code alone.
+  function coverageColorNames(row) {
+    return row?.color_names && typeof row.color_names === "object" ? row.color_names : {};
+  }
+
+  function coverageColorHtml(row, code) {
+    const name = text(coverageColorNames(row)[code]).trim();
+    return name && name !== code
+      ? `<span class="coverage-color">${escapeHtml(name)} <code>${escapeHtml(code)}</code></span>`
+      : `<code>${escapeHtml(code)}</code>`;
+  }
+
+  function coverageFraction(row) {
+    const done = Number(row.colors_configured ?? 0);
+    const total = Number(row.colors_total ?? 0);
+    return `${done} of ${plural("color", total)} ${done === 1 ? "has" : "have"} a logo`;
+  }
+
+  function coverageTableHtml(rows) {
+    return `<table class="data-table"><thead><tr><th>Style</th><th>Name</th><th>Coverage</th><th>Colors without a logo</th></tr></thead><tbody>${rows.map((r) => `<tr><td><button type="button" class="link-button coverage-open" data-style="${escapeHtml(styleCode(r))}" data-name="${escapeHtml(styleName(r))}" title="Open ${escapeHtml(styleCode(r))} in Logo Configuration">${escapeHtml(styleCode(r))}</button></td><td>${escapeHtml(styleName(r))}</td><td>${escapeHtml(coverageFraction(r))}</td><td>${(r.unconfigured || []).map((c) => coverageColorHtml(r, c)).join(" ")}</td></tr>`).join("")}</tbody></table>`;
+  }
+
   async function loadCoverage() {
     const box = $("#coverage-table");
     box.innerHTML = '<div class="grid-empty">Loading…</div>';
@@ -5488,21 +5919,46 @@
       const payload = await api(`/api/styles/coverage?${new URLSearchParams({ store: state.store, unconfigured_only: "true" })}`);
       const rows = envelope(payload, "styles");
       bulkOpsState.coverage = rows;
-      $("#coverage-summary").textContent = `${storeDisplayFor(state.store)}: ${rows.length} style${rows.length === 1 ? "" : "s"} with at least one logo-less color${payload.truncated ? " (list truncated - narrow it in the fill job)" : ""}.`;
-      box.innerHTML = rows.length
-        ? `<table class="data-table"><thead><tr><th>Style</th><th>Name</th><th>Configured</th><th>Colors without logos</th></tr></thead><tbody>${rows.map((r) => `<tr><td><code>${escapeHtml(styleCode(r))}</code></td><td>${escapeHtml(styleName(r))}</td><td>${escapeHtml(String(r.colors_configured ?? 0))}/${escapeHtml(String(r.colors_total ?? 0))}</td><td>${(r.unconfigured || []).map((c) => `<code>${escapeHtml(c)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table>`
-        : '<div class="grid-empty">Every live style covers all of its colors.</div>';
+      // Styles with no logo on any color are usually gear that never takes
+      // one (PPE, accessories). They sit in their own group at the bottom so
+      // the fixable styles are the list people work through.
+      const fixable = rows.filter((r) => Number(r.colors_configured ?? 0) > 0);
+      const bare = rows.filter((r) => Number(r.colors_configured ?? 0) === 0);
+      $("#coverage-summary").textContent = `${storeDisplayFor(state.store)}: ${plural("style", rows.length)} with at least one color that has no logo - ${fixable.length} fixable, ${bare.length} with no logos anywhere.`
+        + (payload.truncated ? " The list was cut off at the server limit; narrow it in the fill job." : "");
+      if (!rows.length) {
+        box.innerHTML = '<div class="grid-empty">Every live style covers all of its colors.</div>';
+      } else {
+        box.innerHTML = (fixable.length
+          ? coverageTableHtml(fixable)
+          : '<div class="grid-empty">No fixable gaps - every style that has logos covers all of its colors.</div>')
+          + (bare.length
+            ? `<div class="coverage-group"><h4 class="coverage-group__title">No logos on any color</h4><p class="muted text-small">${escapeHtml(plural("style", bare.length))} with no logo on any color - often gear that never takes a logo. Nothing to copy from, so the fill job skips them.</p>${coverageTableHtml(bare)}</div>`
+            : "");
+      }
+      $$(".coverage-open", box).forEach((button) => button.addEventListener("click", () => openStyleFromBulk(button.dataset.style, button.dataset.name)));
       $("#coverage-export").disabled = !rows.length;
     } catch (error) {
       renderErrorState(box, friendlyLoadError("the coverage report", error), loadCoverage);
     }
   }
 
+  // Jump from a bulk list to the style in Logo Configuration.
+  async function openStyleFromBulk(code, name = "") {
+    if (!state.store || !code) return;
+    switchView("logo");
+    await selectStyle({ product_style: code, name: text(name) });
+  }
+
   function exportCoverage() {
     const rows = bulkOpsState.coverage || [];
-    const lines = ["style,name,colors_configured,colors_total,unconfigured"].concat(rows.map((r) =>
-      [styleCode(r), `"${String(styleName(r)).replace(/"/g, '""')}"`, r.colors_configured ?? 0,
-       r.colors_total ?? 0, `"${(r.unconfigured || []).join(" ")}"`].join(",")));
+    const csv = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const lines = ["style,name,colors_configured,colors_total,unconfigured,unconfigured_names"].concat(rows.map((r) => {
+      const names = coverageColorNames(r);
+      const codes = r.unconfigured || [];
+      return [styleCode(r), csv(styleName(r)), r.colors_configured ?? 0, r.colors_total ?? 0,
+        csv(codes.join(" ")), csv(codes.map((c) => text(names[c], c)).join("; "))].join(",");
+    }));
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -5540,8 +5996,11 @@
     banner.hidden = false;
     banner.classList.toggle("cat-env-banner--prod", target.env === "prod");
     banner.classList.toggle("cat-env-banner--dev", target.env !== "prod");
-    $("#cat-env-banner-label").textContent =
-      target.env === "prod" ? "PRODUCTION" : "DEVELOPMENT";
+    const label = $("#cat-env-banner-label");
+    label.textContent = target.env === "prod" ? "PRODUCTION" : "DEVELOPMENT";
+    // The website details (version, lock, plugins) belong to one
+    // environment; loadCatWpStatus fills them in once it has checked.
+    label.removeAttribute("title");
     $("#cat-env-banner-host").textContent = target.host;
   }
 
@@ -5570,16 +6029,24 @@
   async function loadCatWpStatus() {
     const el = $("#cat-wp-status");
     if (!el || !catState.env) return;
-    el.textContent = "Checking WordPress\u2026";
+    const badge = $("#cat-env-banner-label");
+    el.textContent = "Checking the websites\u2026";
+    el.removeAttribute("title");
     try {
       const data = await api(`/api/categories/wp-status?env=${encodeURIComponent(catState.env)}`);
       const s = data.status || {};
-      el.textContent =
-        `WordPress ${s.wp_version || "?"} \u00b7 freeze ${s.freeze ? "ON" : "off"}` +
+      // Version, lock and plugin details matter to whoever runs the servers,
+      // so they sit on the environment badge; the page just says reachable.
+      const detail =
+        `WordPress ${s.wp_version || "?"} \u00b7 category editing ${s.freeze ? "locked" : "unlocked"}` +
         ` \u00b7 Redirection ${s.redirection_active ? "active" : "absent"}` +
         ` \u00b7 WP Rocket ${s.rocket_present ? "present" : "absent"}`;
+      el.textContent = "Websites reachable";
+      if (badge) badge.title = detail;
     } catch (error) {
-      el.textContent = `WordPress unreachable: ${errorMessage(error)}`;
+      el.textContent = "Websites not reachable";
+      el.title = errorMessage(error);
+      if (badge) badge.title = `Websites not reachable: ${errorMessage(error)}`;
     }
   }
 
@@ -5594,7 +6061,7 @@
       // when there is nothing at all to show (the wp-status strip already
       // reports an unreachable WordPress).
       if (!catState.snapshots.length) {
-        toast(friendlyLoadError("the WordPress blog list", error), "error");
+        toast(friendlyLoadError("the store list", error), "error");
       }
     }
     renderCatSnapshotTable();
@@ -5634,15 +6101,15 @@
     box.innerHTML = `
       <table class="table cat-table">
         <thead><tr>
-          <th><input type="checkbox" id="cat-select-all" aria-label="Select all blogs"></th>
-          <th>Site #</th><th>Store</th><th>Copy #</th><th>Categories</th>
+          <th><input type="checkbox" id="cat-select-all" aria-label="Select all stores"></th>
+          <th>Site</th><th>Store</th><th title="Copy number, increases each time a store is refreshed">Copy</th><th>Categories</th>
           <th>Products in categories</th><th>Copied</th><th></th>
         </tr></thead>
         <tbody>
           ${rows.map((b) => {
             const snap = snaps.get(b.blog_id);
             return `<tr>
-              <td><input type="checkbox" class="cat-row-check" data-blog="${b.blog_id}" ${catState.selected.has(b.blog_id) ? "checked" : ""} aria-label="Select blog ${b.blog_id}"></td>
+              <td><input type="checkbox" class="cat-row-check" data-blog="${b.blog_id}" ${catState.selected.has(b.blog_id) ? "checked" : ""} aria-label="Select store ${b.blog_id}"></td>
               <td>${b.blog_id}</td>
               <td>${escapeHtml(decodeEntities(b.name || ""))} <span class="muted">${escapeHtml(b.path || (snap ? snap.blog_path : "") || "")}</span></td>
               <td>${snap ? snap.version : '<span class="muted">-</span>'}</td>
@@ -5693,9 +6160,9 @@
             body: { env: catState.env, blog_ids: [blogId] },
           });
           const row = (result.results || [])[0];
-          if (!row || row.ok === false) failures.push(`blog ${blogId}: ${row ? row.error : "no result"}`);
+          if (!row || row.ok === false) failures.push(`store ${blogId}: ${row ? row.error : "no result"}`);
         } catch (error) {
-          failures.push(`blog ${blogId}: ${errorMessage(error)}`);
+          failures.push(`store ${blogId}: ${errorMessage(error)}`);
         }
         done += 1;
       }
@@ -6053,7 +6520,7 @@
         if (catApplyAllowed()) button.disabled = false;
       }
       if (chip) {
-        chip.textContent = catRunState.freeze ? "wp-admin editing: locked" : "wp-admin editing: open";
+        chip.textContent = catRunState.freeze ? "Category editing on the websites: locked" : "Category editing on the websites: unlocked";
         chip.className = `chip ${catRunState.freeze ? "chip--frozen-warn" : "chip--muted"}`;
       }
     } catch (error) {
@@ -6062,7 +6529,7 @@
       const button = $("#cat-freeze-toggle");
       const chip = $("#cat-freeze-state");
       if (button) { button.textContent = "Lock state unknown (WordPress unreachable)"; button.disabled = true; button.classList.remove("is-on"); }
-      if (chip) { chip.textContent = "wp-admin editing: unknown"; chip.className = "chip chip--muted"; }
+      if (chip) { chip.textContent = "Category editing on the websites: unknown"; chip.className = "chip chip--muted"; }
     }
   }
 
@@ -6080,9 +6547,9 @@
       if (["queued", "running"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="pause" data-run="${run.run_id}"${dis}>Pause</button>`);
       if (["paused", "failed"].includes(run.status) || run.worker_stale) controls.push(`<button class="button button--ghost button--small cat-run-ctl" data-act="resume" data-run="${run.run_id}"${dis}>${run.worker_stale ? "Recover" : "Resume"}</button>`);
       if (["paused", "queued", "failed"].includes(run.status)) controls.push(`<button class="button button--ghost button--small cat-danger cat-run-ctl" data-act="cancel" data-run="${run.run_id}"${dis}>Cancel</button>`);
-      const statusLabel = { completed_with_skips: "completed - PARTIAL (blogs skipped)", completed_unverified: "completed - UNVERIFIED" }[run.status] || run.status;
-      const statusTitle = { completed_with_skips: "At least one blog was skipped: the migration is incomplete on those stores. Retry or restore them from the run details.",
-                            completed_unverified: "Every phase landed but a post-apply export could not be fetched for at least one blog, so the result was not verified. Run a drift audit." }[run.status] || "";
+      const statusLabel = { completed_with_skips: "completed - PARTIAL (stores skipped)", completed_unverified: "completed - UNVERIFIED" }[run.status] || run.status;
+      const statusTitle = { completed_with_skips: "At least one store was skipped: the changes are incomplete on those stores. Retry or restore them from the run details.",
+                            completed_unverified: "Every step landed but the result could not be read back from at least one store, so it was not verified. Press Check stores still match." }[run.status] || "";
       const heartbeat = run.status === "running"
         ? (run.worker_stale ? " \u00b7 worker heartbeat lost" : ` \u00b7 worker alive (${run.heartbeat_age ?? "?"}s ago)`)
         : "";
@@ -6090,7 +6557,7 @@
         <div class="cat-run__head">
           <strong>Run ${run.run_id}</strong>
           <span class="cat-badge cat-run--${escapeHtml(run.status)}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusLabel)}${run.worker_stale ? " (worker lost)" : ""}</span>
-          <span class="muted">${escapeHtml(String(run.env))} \u00b7 ${run.target_blogs.length} blogs \u00b7 by ${escapeHtml(run.created_by || "?")} \u00b7 ${escapeHtml(formatDate(run.created_at))}${heartbeat}</span>
+          <span class="muted">${escapeHtml(String(run.env))} \u00b7 ${plural("store", run.target_blogs.length)} \u00b7 by ${escapeHtml(run.created_by || "?")} \u00b7 ${escapeHtml(formatDate(run.created_at))}${heartbeat}</span>
           ${controls.join(" ")}
           <button class="button button--ghost button--small cat-run-open" data-run="${run.run_id}">Details</button>
         </div>
@@ -6164,12 +6631,12 @@
             ? `memberships ${progress.membership_offset || 0}/${st.membership_changes ?? "?"}`
             : progress.snapshot_taken ? "terms" : (job.status === "running" ? "capturing live state" : "");
           if (job.status === "running" && phase) resultText += `<div class="muted">phase: ${escapeHtml(phase)}</div>`;
-          if (result.live_drift) resultText += `<div class="muted">live state changed since the snapshot: ${result.live_drift.terms_changed} term(s), +${result.live_drift.memberships_added}/-${result.live_drift.memberships_removed} memberships \u2014 re-import this blog, preview again, then Retry.</div>`;
+          if (result.live_drift) resultText += `<div class="muted">the store changed after its copy was taken: ${plural("category", result.live_drift.terms_changed)}, +${result.live_drift.memberships_added}/-${result.live_drift.memberships_removed} product links \u2014 refresh this store on the Snapshots tab, check the plan again, then Retry.</div>`;
           if (result.membership_fence) resultText += `<div class="muted">refused rows: ${escapeHtml(JSON.stringify(result.membership_fence).slice(0, 160))} \u2014 re-import, preview, then Retry.</div>`;
           if (result.finalize_fence) resultText += `<div class="muted">finalize refused: ${escapeHtml(JSON.stringify(result.finalize_fence).slice(0, 200))} \u2014 fix on WordPress (or re-plan), then Retry; finalize runs again.</div>`;
           if (result.verification) resultText += `<div class="muted">did not converge: ${escapeHtml(JSON.stringify(result.verification.slice(0, 3)).slice(0, 200))} \u2014 Retry re-runs the fenced phases.</div>`;
           if (result.wp_side_unknown) resultText += `<div class="muted">WordPress may still have applied this step - wait a minute, then Retry (it adopts whatever landed).</div>`;
-          if (result.redirect_failures) resultText += ` <span class="muted">(${result.redirect_failures.length} redirect(s) failed)</span>`;
+          if (result.redirect_failures) resultText += ` <span class="muted">(${plural("redirect", result.redirect_failures.length)} failed)</span>`;
           if (result.fingerprint_unchecked) resultText += `<div class="muted">snapshot predates live-state fingerprints: the pre-apply state was not fenced.</div>`;
           if (restore) {
             const pct = restore.total ? Math.round(100 * (restore.offset || 0) / restore.total) : 100;
@@ -6223,8 +6690,8 @@
       const confirmed = await confirmAction({
         title: next ? "Lock category editing in WordPress?" : "Unlock category editing in WordPress?",
         message: next
-          ? "Store admins will not be able to add, rename or delete categories in wp-admin on any store until you unlock. Applies from this editor still work."
-          : "Store admins can edit categories in wp-admin again.",
+          ? "Store admins will not be able to add, rename or delete categories on any store website until you unlock. Applies from this editor still work."
+          : "Store admins can edit categories on the store websites again.",
         actionLabel: next ? "Lock" : "Unlock",
         danger: next,
       });
@@ -6306,6 +6773,23 @@
     const name = blog && blog.name ? decodeEntities(blog.name) : "";
     const path = (blog && blog.path) || (snap && snap.blog_path) || "";
     return name ? `${name} ${path || `#${blogId}`}` : (path || `site #${blogId}`);
+  }
+
+  const CAT_STORES_LIST_MAX = 200;
+
+  // The Stores count opens a list of the stores that have the category. The
+  // old hover-only tooltip was invisible on touch screens and could not be
+  // read at leisure or copied.
+  function openCatStoresDialog(row) {
+    const dialog = $("#cat-stores-dialog");
+    if (!dialog) return;
+    const all = Array.isArray(row.blog_ids) ? row.blog_ids : [];
+    const shown = all.slice(0, CAT_STORES_LIST_MAX);
+    $("#cat-stores-title").textContent = decodeEntities(row.sample_name || row.old_slug || "Stores");
+    $("#cat-stores-context").textContent = `${plural("store", all.length)} ${all.length === 1 ? "has" : "have"} the category ${row.old_slug || ""}`;
+    $("#cat-stores-list").innerHTML = shown.map((id) => `<li>${escapeHtml(catBlogLabel(id))}</li>`).join("")
+      + (all.length > shown.length ? `<li class="muted">and ${all.length - shown.length} more</li>` : "");
+    openDialog(dialog);
   }
 
   const CAT_MAP_QUICK = {
@@ -6467,7 +6951,8 @@
       catMapState.table = new Tabulator("#cat-mapping-table", {
         data: rows,
         layout: "fitColumns",
-        height: "55vh",
+        // Grows with its rows; only past 70vh does the grid scroll on its own.
+        maxHeight: "70vh",
         selectableRows: true,
         index: "id",
         columns: [
@@ -6484,38 +6969,57 @@
           { title: "Web address (slug)", field: "old_slug", headerFilter: "input", headerFilterPlaceholder: "Filter addresses…", widthGrow: 3, minWidth: 160 },
           { title: "Name", field: "sample_name", headerFilter: "input", headerFilterPlaceholder: "Filter names…", widthGrow: 3, minWidth: 160,
             formatter: (cell) => escapeHtml(decodeEntities(cell.getValue())) },
-          { title: "Stores", field: "blogs", hozAlign: "right", width: 84, headerTooltip: "How many stores have this category - hover a count to see which",
+          { title: "Stores", field: "blogs", hozAlign: "right", width: 84, headerTooltip: "How many stores have this category - press a count to see which",
             formatter: (cell) => {
-              const ids = cell.getRow().getData().blog_ids || [];
-              if (ids.length) {
-                cell.getElement().title = `${ids.slice(0, 20).map(catBlogLabel).join("\n")}${ids.length > 20 ? `\n… and ${ids.length - 20} more` : ""}`;
-                cell.getElement().classList.add("cat-cell-hint");
-              }
-              return String(cell.getValue() ?? "");
+              const row = cell.getRow().getData();
+              const ids = row.blog_ids || [];
+              const count = String(cell.getValue() ?? "");
+              if (!ids.length) return count;
+              // A button rather than a hover tooltip: it works on touch
+              // screens and the list can be read and copied.
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "cat-stores-button";
+              button.textContent = count;
+              button.title = "See which stores have this category";
+              button.setAttribute("aria-label", `${plural("store", ids.length)} have ${row.old_slug} - see which`);
+              button.addEventListener("click", (event) => { event.stopPropagation(); openCatStoresDialog(row); });
+              return button;
             } },
           { title: "Products", field: "products", hozAlign: "right", width: 118, headerTooltip: "Products attached to this category in the store copies, added up across the stores (any status)",
             formatter: (cell) => {
               const value = Number(cell.getValue() || 0);
               return value ? String(value) : '0 <span class="cat-badge cat-badge--empty" title="No products on any store">empty</span>';
             } },
-          { title: "Public", field: "blog1", formatter: "tickCross", width: 80, hozAlign: "center",
+          { title: "Public", field: "blog1", formatter: "tickCross", width: 112, hozAlign: "center",
             headerTooltip: "Exists on the public store (arborwear.com)",
-            headerFilter: "tickCross", headerFilterParams: { tristate: true } },
+            // A named list instead of the three-state tick box, whose
+            // "neither" state showed as an unexplained minus sign.
+            headerFilter: "list",
+            headerFilterParams: { values: { "": "all", yes: "public store only", no: "not on the public store" }, clearable: true,
+                                  elementAttributes: { title: "Show only categories on the public store", "aria-label": "Show only categories on the public store" } },
+            headerFilterFunc: (value, rowValue) => !value || (value === "yes") === Boolean(rowValue) },
           { title: "Decision", field: "action", width: 150,
             formatter: (cell) => {
               const value = cell.getValue();
-              if (value === "map") return cell.getRow().getData().implicit ? 'move <span class="cat-badge" title="Decided automatically: its web address matches a draft category">auto</span>' : "move";
+              if (value === "map") return cell.getRow().getData().implicit ? 'move <span class="cat-badge" title="Decided for you: its web address matches a draft category">suggested</span>' : "move";
               if (value === "store_custom") return "keep (this store only)";
               if (value === "delete") return "delete";
               return '<span class="cat-unmapped">undecided</span>';
             },
             headerFilter: "list",
             headerFilterParams: { values: { "": "all", map: "move", delete: "delete", store_custom: "keep (store only)" }, clearable: true } },
-          { title: "Goes to", field: "target_slug", widthGrow: 2, minWidth: 130,
+          { title: "Goes to", field: "target_slug", widthGrow: 2, minWidth: 150, variableHeight: true,
             formatter: (cell) => {
               const row = cell.getRow().getData();
               if (!row.target_slug) return "";
-              return `${escapeHtml(row.target_slug)}${row.is_primary ? ' <span class="cat-badge" title="Keeps its identity on the website; other categories moved here merge into it">surviving</span>' : ""}`;
+              // Name on one line, web address under it; the cell wraps
+              // rather than cutting the address off with an ellipsis.
+              const node = row.target_node_id ? catNodeById(row.target_node_id) : null;
+              const name = node && node.name ? node.name : row.target_slug;
+              cell.getElement().classList.add("cat-goes-to-cell");
+              cell.getElement().title = row.target_slug;
+              return `<span class="cat-goes-to"><span class="cat-goes-to__name">${escapeHtml(decodeEntities(name))}</span>${row.is_primary ? ' <span class="cat-badge" title="Keeps its web address on the website; the other categories moved here merge into it">surviving</span>' : ""}<span class="cat-goes-to__slug">${escapeHtml(row.target_slug)}</span></span>`;
             } },
           { title: "Note", field: "note", widthGrow: 1, minWidth: 90 },
         ],
@@ -6578,7 +7082,7 @@
     const what = first.action === "delete" ? "Delete"
       : first.action === "store_custom" ? "Keep for this store only"
       : first.action === "map" ? `Move into ${escapeHtml((catNodeById(first.target_node_id) || {}).name || "the chosen category")}`
-      : first.is_primary ? "Make this the surviving one" : "Apply this decision to";
+      : first.is_primary ? "Keep this one's web address" : "Apply this decision to";
     const touched = new Set(rows.map((r) => r.old_slug));
     const withProducts = selected.filter((r) => touched.has(r.old_slug) && Number(r.products || 0) > 0);
     const productTotal = withProducts.reduce((sum, r) => sum + Number(r.products || 0), 0);
@@ -6633,7 +7137,7 @@
     const selected = catMapState.table.getSelectedData();
     if (selected.length !== 1) { toast("Tick exactly one row that has been moved into a category.", "error"); return; }
     const row = selected[0];
-    if (row.action !== "map" || !row.target_node_id) { toast("Only a category that has been moved into a draft category can be the surviving one.", "error"); return; }
+    if (row.action !== "map" || !row.target_node_id) { toast("Only a category that has been moved into a draft category can keep its web address.", "error"); return; }
     try {
       catMapSetBusy("Saving\u2026");
       // Demote the node's current primary first (the API refuses two primaries).
@@ -6642,7 +7146,7 @@
         await api("/api/categories/mapping", { method: "PUT", body: { rows: [{ old_slug: current.old_slug, action: "map", target_node_id: current.target_node_id, is_primary: false }] } });
       }
       await api("/api/categories/mapping", { method: "PUT", body: { rows: [{ old_slug: row.old_slug, action: "map", target_node_id: row.target_node_id, is_primary: true }] } });
-      toast(`${row.old_slug} now keeps its identity on the website; the others moved into that category merge into it.`, "success");
+      toast(`${row.old_slug} now keeps its web address on the website; the others moved into that category merge into it.`, "success");
     } catch (error) {
       toast(errorMessage(error), "error");
     } finally {
@@ -6719,6 +7223,23 @@
     await refreshCatProducts();
   }
 
+  const CAT_SAMPLE_MAX = 12;
+
+  // A few of the styles the category will hold, as chips rather than one
+  // long comma-separated line.
+  function catSampleChipsHtml(membership) {
+    const all = Array.isArray(membership.final_sample) ? membership.final_sample : [];
+    const shown = all.slice(0, CAT_SAMPLE_MAX);
+    const more = Math.max(Number(membership.final_count || 0), all.length) - shown.length;
+    const chips = shown.length
+      ? shown.map((sku) => `<span class="cat-chip cat-chip--sample">${escapeHtml(sku)}</span>`).join("")
+      : '<span class="muted">none</span>';
+    const rest = more > 0
+      ? `<span class="cat-chip cat-chip--sample cat-chip--more" title="${escapeHtml(plural("style", more))} not shown">+${more.toLocaleString()} more</span>`
+      : "";
+    return `<span class="cat-sample"><span class="muted">Sample:</span>${chips}${rest}</span>`;
+  }
+
   async function refreshCatProducts() {
     const nodeId = catProdState.nodeId;
     const membershipBox = $("#cat-membership");
@@ -6736,7 +7257,7 @@
         <span class="cat-chip" title="Styles added by your style list">${membership.added_count} added by list</span>
         <span class="cat-chip cat-chip--minus" title="Styles your list keeps out">${membership.removed_count} kept out</span>
         <span class="cat-chip cat-chip--total" title="Styles this category will hold after apply">${membership.final_count} styles after apply</span>
-        <small class="muted cat-legend">Sample: ${membership.final_sample.slice(0, 15).map(escapeHtml).join(", ") || "(none)"}</small>`;
+        ${catSampleChipsHtml(membership)}`;
       const list = $("#cat-assignment-list");
       const rows = assignments.assignments || [];
       list.innerHTML = rows.length ? `
@@ -6836,7 +7357,7 @@
       try {
         const result = await api("/api/categories/assignments/import", { method: "POST", body: { csv } });
         const bad = (result.results || []).filter((r) => !r.ok);
-        toast(bad.length ? `Imported with ${bad.length} problem group(s).` : "CSV imported.", bad.length ? "error" : "success");
+        toast(bad.length ? `Imported with ${plural("problem group", bad.length)}.` : "CSV imported.", bad.length ? "error" : "success");
         await refreshCatProducts();
       } catch (error) {
         toast(errorMessage(error), "error");
@@ -6897,7 +7418,12 @@
     storeStats: {},       // slug -> {stores, products} for the store in view
     hasStats: false,
     onlyEmpty: false,     // "Show only empty" toggle
+    collapsed: new Set(), // folded branch keys, kept for this visit only
   };
+
+  // WooCommerce's catch-all category: products left in it have no real
+  // category yet, so the tree flags it while it still holds any.
+  const CAT_UNCATEGORIZED = /^uncategori[sz]ed$/i;
 
   function catNodeStats(n) {
     const pick = (map) => map[n.slug] || (n.previous_slug ? map[n.previous_slug] : null) || null;
@@ -7048,25 +7574,36 @@
       });
     }
 
+    const dragOn = globalView && !filtering;
     function renderList(parentKey, level) {
       const kids = (children.get(parentKey) || []).filter((n) => !visible || visible.has(n));
       const items = kids.map((n) => {
         const id = n.node_id === null || n.node_id === undefined ? "" : n.node_id;
+        const key = id === "" ? `x-${n.override_id}` : String(id);
+        const hasKids = (children.get(key) || []).some((k) => !visible || visible.has(k));
+        // A search or the empty filter shows every match, folded or not.
+        const folded = hasKids && !filtering && catTreeState.collapsed.has(key);
         const st = catTreeState.hasStats ? catNodeStats(n) : null;
+        const parked = Boolean(st && st.known && st.products > 0 && CAT_UNCATEGORIZED.test(String(n.slug || n.name || "")));
         const badges = [
           n.renamed ? '<span class="cat-badge cat-badge--rename" title="Renamed on this store">renamed</span>' : "",
           n.extra ? '<span class="cat-badge cat-badge--extra" title="Store-local category">store-only</span>' : "",
           catSlugLooksLikeCode(n.slug) ? '<span class="cat-badge cat-badge--code" title="This web address looks like a legacy code rather than a readable name. Shoppers see it in the link - consider renaming it in the panel on the right.">code slug</span>' : "",
           st && st.known && st.products === 0 ? `<span class="cat-badge cat-badge--empty" title="Exists on ${st.stores} store${st.stores === 1 ? "" : "s"} but holds no products on any of them">empty</span>` : "",
           st && !st.known ? '<span class="cat-badge cat-badge--new" title="No store has this category yet - the apply will create it">new</span>' : "",
+          parked ? `<span class="cat-badge cat-badge--attention" title="${escapeHtml(plural("product", st.products))} still sit in Uncategorized with no real category. Move their old categories on the Mapping tab, or add them to a category on the Products tab.">needs sorting</span>` : "",
         ].join("");
         const statsHtml = st ? `<span class="cat-node__stats" title="${escapeHtml(catStatsText(st))}${st.known ? " - from the store copies" : ""}">${escapeHtml(catStatsText(st))}</span>` : "";
         const deleteHtml = globalView && id !== "" ? `<button type="button" class="cat-node__delete" title="Delete this category from the draft" aria-label="Delete ${escapeHtml(n.name || "")}" tabindex="-1">&#x2715;</button>` : "";
-        const kidsHtml = renderList(id === "" ? `x-${n.override_id}` : String(id), level + 1);
+        const handleHtml = dragOn && id !== "" ? '<span class="cat-node__handle" aria-hidden="true" title="Drag to move">&#x22EE;&#x22EE;</span>' : "";
+        const caretHtml = hasKids
+          ? `<button type="button" class="cat-node__caret" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${escapeHtml(n.name || "")}" title="${folded ? "Unfold" : "Fold"} this branch" tabindex="-1"><span aria-hidden="true">${folded ? "&#x25B8;" : "&#x25BE;"}</span></button>`
+          : '<span class="cat-node__caret cat-node__caret--leaf" aria-hidden="true"></span>';
+        const kidsHtml = folded ? "" : renderList(key, level + 1);
         const selected = catTreeState.selected && catTreeState.selected.node_id === n.node_id && id !== "";
-        return `<li class="cat-node ${selected ? "is-selected" : ""}${isMatch(n) ? " is-match" : ""}" data-node="${id}" data-override="${n.override_id || ""}" role="none">
-          <div class="cat-node__row" role="treeitem" aria-level="${level}" aria-selected="${selected ? "true" : "false"}" tabindex="${selected ? "0" : "-1"}">
-            <span class="cat-node__name" title="${escapeHtml(n.slug || "")}">${catHighlight(n.name, query)}</span>
+        return `<li class="cat-node ${selected ? "is-selected" : ""}${isMatch(n) ? " is-match" : ""}" data-node="${id}" data-override="${n.override_id || ""}" data-key="${escapeHtml(key)}" role="none">
+          <div class="cat-node__row" role="treeitem" aria-level="${level}"${hasKids ? ` aria-expanded="${folded ? "false" : "true"}"` : ""} aria-selected="${selected ? "true" : "false"}" tabindex="${selected ? "0" : "-1"}">
+            ${handleHtml}${caretHtml}<span class="cat-node__name" title="${escapeHtml(n.slug || "")}">${catHighlight(n.name, query)}</span>
             <span class="cat-node__slug">${catHighlight(n.slug || "", query)}</span>
             ${badges}
             ${statsHtml}
@@ -7075,9 +7612,10 @@
           ${kidsHtml}
         </li>`;
       }).join("");
-      // Always render the UL in the global view so empty nodes accept drops
-      // (except while searching, when dragging is off anyway).
-      if (!items && (!globalView || filtering)) return "";
+      // Leaf rows get no child list. Something to drop into is added for the
+      // duration of a drag instead (catAddDropTargets), so the tree carries
+      // no empty groups the rest of the time.
+      if (!items) return "";
       return `<ul class="cat-branch" role="group" data-parent="${parentKey.startsWith("x-") ? "" : parentKey}">${items}</ul>`;
     }
 
@@ -7110,10 +7648,35 @@
       const first = $(".cat-node__row", box);
       if (first) first.tabIndex = 0;
     }
+    wireCatTreeCarets(box);
     if (globalView) {
       if (!filtering) attachCatSortables(box);
       wireCatTreeRows(box);
     }
+  }
+
+  // Fold or unfold one branch. The choice is remembered for this visit only;
+  // focus lands back on the row so keyboard users do not lose their place.
+  function catToggleBranch(key) {
+    if (!key) return;
+    if (catTreeState.collapsed.has(key)) catTreeState.collapsed.delete(key);
+    else catTreeState.collapsed.add(key);
+    renderCatTree();
+    const row = $(`#cat-tree .cat-node[data-key="${key}"] > .cat-node__row`);
+    if (row) {
+      $$("#cat-tree .cat-node__row").forEach((r) => { r.tabIndex = -1; });
+      row.tabIndex = 0;
+      row.focus();
+    }
+  }
+
+  function wireCatTreeCarets(box) {
+    $$(".cat-node__caret:not(.cat-node__caret--leaf)", box).forEach((caret) => {
+      caret.addEventListener("click", (event) => {
+        event.stopPropagation();
+        catToggleBranch(caret.closest(".cat-node").dataset.key);
+      });
+    });
   }
 
   function wireCatTreeRows(box) {
@@ -7122,6 +7685,7 @@
       const li = row.closest(".cat-node");
       const id = Number(li.dataset.node);
       if (!id) return;
+      const caret = row.querySelector(".cat-node__caret:not(.cat-node__caret--leaf)");
       row.addEventListener("click", (event) => {
         event.stopPropagation();
         selectCatNode(catNodeById(id));
@@ -7156,6 +7720,8 @@
           case "Enter": case " ": event.preventDefault(); selectCatNode(catNodeById(id)); break;
           case "F2": event.preventDefault(); startCatInlineRename(li, id, row.querySelector(".cat-node__name")); break;
           case "Delete": event.preventDefault(); deleteCatNodeById(catNodeById(id)); break;
+          case "ArrowRight": if (caret && caret.getAttribute("aria-expanded") === "false") { event.preventDefault(); catToggleBranch(li.dataset.key); } break;
+          case "ArrowLeft": if (caret && caret.getAttribute("aria-expanded") === "true") { event.preventDefault(); catToggleBranch(li.dataset.key); } break;
           default: break;
         }
       });
@@ -7196,29 +7762,54 @@
     input.addEventListener("blur", () => finish(false));
   }
 
+  function catSortableOptions(box) {
+    return {
+      group: "cat-tree",
+      animation: 120,
+      fallbackOnBody: true,
+      swapThreshold: 0.65,
+      onStart: (event) => catAddDropTargets(box, event.item),
+      onEnd: async (event) => {
+        const nodeId = Number(event.item.dataset.node);
+        const parentRaw = event.to.dataset.parent;
+        const parentId = parentRaw === "" ? null : Number(parentRaw);
+        try {
+          await api(`/api/categories/nodes/${nodeId}/move`, {
+            method: "POST",
+            body: { parent_id: parentId, position: event.newIndex },
+          });
+        } catch (error) {
+          toast(errorMessage(error), "error");
+        }
+        await loadCatTree();
+      },
+    };
+  }
+
   function attachCatSortables(box) {
     if (typeof Sortable === "undefined") return;
     $$(".cat-branch", box).forEach((list) => {
-      catTreeState.sortables.push(new Sortable(list, {
-        group: "cat-tree",
-        animation: 120,
-        fallbackOnBody: true,
-        swapThreshold: 0.65,
-        onEnd: async (event) => {
-          const nodeId = Number(event.item.dataset.node);
-          const parentRaw = event.to.dataset.parent;
-          const parentId = parentRaw === "" ? null : Number(parentRaw);
-          try {
-            await api(`/api/categories/nodes/${nodeId}/move`, {
-              method: "POST",
-              body: { parent_id: parentId, position: event.newIndex },
-            });
-          } catch (error) {
-            toast(errorMessage(error), "error");
-          }
-          await loadCatTree();
-        },
-      }));
+      catTreeState.sortables.push(new Sortable(list, catSortableOptions(box)));
+    });
+  }
+
+  // Leaf and folded rows render no child list, so there is nothing to drop
+  // into until a drag starts: each gets an empty list for the drag's
+  // duration. The re-render after the drop clears them again. The dragged
+  // row and everything under it are skipped - a category cannot move into
+  // itself.
+  function catAddDropTargets(box, dragged) {
+    if (typeof Sortable === "undefined") return;
+    $$(".cat-node", box).forEach((li) => {
+      const id = Number(li.dataset.node);
+      if (!id || (dragged && dragged.contains(li))) return;
+      if ([...li.children].some((child) => child.classList.contains("cat-branch"))) return;
+      const list = document.createElement("ul");
+      list.className = "cat-branch cat-branch--drop";
+      list.setAttribute("role", "group");
+      list.dataset.parent = String(id);
+      li.appendChild(list);
+      catTreeState.sortables.push(new Sortable(list, catSortableOptions(box)));
     });
   }
 
@@ -7241,7 +7832,7 @@
     api(`/api/categories/overrides`).then((data) => {
       const mine = (data.overrides || []).filter((o) => o.node_id === node.node_id);
       overridesBox.textContent = mine.length
-        ? `Store overrides: ${mine.map((o) => `${o.kind} on blog ${o.blog_id}`).join(", ")}`
+        ? `Store overrides: ${mine.map((o) => `${o.kind.replace("_", " ")} on store ${o.blog_id}`).join(", ")}`
         : "";
     }).catch(() => { overridesBox.textContent = ""; });
     const hadFocus = Boolean(document.activeElement && document.activeElement.closest && document.activeElement.closest("#cat-tree"));
@@ -7607,6 +8198,9 @@
       if (trigger) trigger.classList.toggle("is-active", (g.dataset.group || "").split(",").includes(name));
     });
     document.body.dataset.view = name;
+    // Each view starts at the top; a scroll position left over from the
+    // previous view used to open the next one halfway down.
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     if (name !== "categories" && typeof catRunState !== "undefined") clearTimeout(catRunState.activeTimer);
     const url = new URL(window.location.href);
     url.searchParams.set("view", name);
@@ -7621,6 +8215,7 @@
     if (name === "stock") { loadStockOverrides(); loadBrandRules(); }
     if (name === "categories") loadCategories();
     if (name === "health") loadHealth();
+    if (name === "dashboard") loadDashboard();
     healthTimerSync(name);
   }
 
@@ -7643,16 +8238,59 @@
     prefillTierForm($("#tier-store-code")?.value || "");
   }
 
+  // Pricing levels are stored under their FDM4-flavoured names
+  // ("Level 3 (Corp 3)"); people only ever see "Level 3". The FDM4 name is
+  // shown once, in the reference table.
+  function tierLabel(name) {
+    return text(name).replace(/\s*\(Corp\s*\d+\)\s*$/i, "").trim() || text(name);
+  }
+
+  function tierFdm4Name(name) {
+    const m = /\((Corp\s*\d+)\)\s*$/i.exec(text(name));
+    return m ? m[1].replace(/\s+/, " ") : "";
+  }
+
+  // "16 Jul 2026". A bare date is read as a local day so it never slips to
+  // the day before in western time zones.
+  function tierDayLabel(value) {
+    if (!value) return "";
+    const bare = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text(value).trim());
+    const date = bare ? new Date(Number(bare[1]), Number(bare[2]) - 1, Number(bare[3])) : new Date(value);
+    return Number.isNaN(date.getTime()) ? text(value) : new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(date);
+  }
+
+  // Notes the detector wrote ("auto-detected corp3 @ 49.3% of items (2026-07-16)")
+  // are provenance, not something a person typed: they are shown read-only and
+  // never offered for editing.
+  function tierNoteIsSystem(note) {
+    return /^(auto-detected|blank fdm4 catalog)/i.test(text(note).trim());
+  }
+
+  function tierNoteSentence(note) {
+    const raw = text(note).trim();
+    const m = /^auto-detected\s+([a-z0-9]+)\s*@\s*([\d.]+)%\s+of\s+items\s*\((\d{4}-\d{2}-\d{2})\)/i.exec(raw);
+    if (!m) return `Detected automatically: ${raw.slice(0, 200)}`;
+    const level = prLevelLabel(m[1].toLowerCase());
+    const pct = Math.round(Number(m[2]));
+    return `Detected automatically: ${level} matched ${Number.isNaN(pct) ? m[2] : pct}% of items on ${tierDayLabel(m[3])}`;
+  }
+
   // The form edits the store's CURRENT level rather than starting blank, so
   // an operator sees what is set before changing it.
   function prefillTierForm(code) {
     const existing = code ? tierRows.find((r) => r.fdm4_store === code) : null;
     const sel = $("#tier-select");
     if (sel) sel.value = existing ? existing.tier_name : "";
+    const systemNote = existing ? tierNoteIsSystem(existing.note) : false;
     const note = $("#tier-note");
-    if (note) note.value = existing ? text(existing.note) : "";
+    if (note) note.value = existing && !systemNote ? text(existing.note) : "";
+    const detected = $("#tier-detected");
+    if (detected) {
+      detected.textContent = systemNote ? tierNoteSentence(existing.note) : "";
+      detected.hidden = !systemNote;
+    }
     const hint = $("#tier-current");
-    if (hint) hint.textContent = existing ? `Currently ${existing.tier_name} (set ${formatDate(existing.updated_at)}).` : (code ? "No pricing level set for this store yet." : "");
+    if (hint) hint.textContent = existing ? `${tierLabel(existing.tier_name)} since ${tierDayLabel(existing.updated_at)}.` : (code ? "No pricing level set for this store yet." : "");
   }
 
   async function loadTiers() {
@@ -7662,9 +8300,9 @@
       state.tiers = tiers;
       const sel = $("#tier-select");
       sel.replaceChildren(new Option("Choose a pricing level...", ""));
-      tiers.forEach((t) => sel.add(new Option(t.tier_name + (t.is_msrp ? " (same as no level - full retail)" : ""), t.tier_name)));
+      tiers.forEach((t) => sel.add(new Option(tierLabel(t.tier_name) + (t.is_msrp ? " - full retail, same as no level" : ""), t.tier_name)));
       if (!tiers.length) { $("#tier-list").innerHTML = '<div class="grid-empty">No pricing levels are defined yet.</div>'; return; }
-      $("#tier-list").innerHTML = `<table class="data-table"><thead><tr><th>Pricing level</th><th>Used when FDM4 sends no price?</th></tr></thead><tbody>${tiers.map((t) => `<tr><td>${escapeHtml(t.tier_name)}</td><td>${t.is_msrp ? "No - full retail price (MSRP)" : "Yes"}</td></tr>`).join("")}</tbody></table>`;
+      $("#tier-list").innerHTML = `<table class="data-table"><thead><tr><th>Pricing level</th><th>FDM4 name</th></tr></thead><tbody>${tiers.map((t) => `<tr><td><strong>${escapeHtml(tierLabel(t.tier_name))}</strong>${t.is_msrp ? ' <small class="muted">full retail</small>' : ""}</td><td class="muted">${escapeHtml(tierFdm4Name(t.tier_name) || tierLabel(t.tier_name))}</td></tr>`).join("")}</tbody></table>`;
     } catch (e) { renderErrorState($("#tier-list"), friendlyLoadError("the pricing levels", e), loadTiers); }
   }
 
@@ -7677,7 +8315,7 @@
     if (!tierRows.length) { box.innerHTML = '<div class="grid-empty">No stores are on a backup pricing level. Stores that already price correctly do not need one.</div>'; return; }
     const q = ($("#tier-filter")?.value || "").trim().toLowerCase();
     const rows = tierRows.filter((r) => !q || `${text(r.display_name, r.fdm4_store)} ${r.fdm4_store} ${r.tier_name} ${text(r.note)}`.toLowerCase().includes(q));
-    if (!rows.length) { box.innerHTML = '<div class="grid-empty">No tier assignments match that filter.</div>'; return; }
+    if (!rows.length) { box.innerHTML = '<div class="grid-empty">No stores match that filter.</div>'; return; }
     const keyFns = {
       store: (r) => text(r.display_name, r.fdm4_store).toLowerCase(),
       tier: (r) => text(r.tier_name).toLowerCase(),
@@ -7690,8 +8328,8 @@
     const sortTh = (k, label) => `<th data-tsort="${k}" role="button" tabindex="0" aria-sort="${ariaSort(k)}" title="Sort by ${label.toLowerCase()}">${label}${arrow(k)}</th>`;
     box.innerHTML = `<table class="data-table"><thead><tr>${sortTh("store", "Store")}${sortTh("tier", "Level")}<th>Note</th>${sortTh("updated", "Updated")}<th></th></tr></thead><tbody>${rows.map((r) => `<tr>
         <td><strong>${escapeHtml(text(r.display_name, r.fdm4_store))}</strong><br><code>${escapeHtml(r.fdm4_store)}</code></td>
-        <td>${escapeHtml(r.tier_name)}</td>
-        <td>${escapeHtml(text(r.note))}</td>
+        <td>${escapeHtml(tierLabel(r.tier_name))}</td>
+        <td class="note-cell">${tierNoteIsSystem(r.note) ? `<span class="muted">${escapeHtml(tierNoteSentence(r.note))}</span>` : escapeHtml(text(r.note))}</td>
         <td>${escapeHtml(formatDate(r.updated_at))}</td>
         <td><button class="button button--ghost button--small tier-remove" type="button" data-store="${escapeHtml(r.fdm4_store)}">Remove</button></td>
       </tr>`).join("")}</tbody></table>${tierListTruncated ? '<p class="muted table-footnote">Showing the first 500 stores - use the filter to narrow the list.</p>' : ""}`;
@@ -7720,10 +8358,21 @@
   }
 
   async function removeTier(store, btn = null) {
-    const accepted = await confirmAction({ title: "Remove this pricing level?", message: `Remove the backup pricing level for ${storeDisplayFor(store)}? Items with no price from FDM4 will go back to full retail price (MSRP) within the hour.`, actionLabel: "Remove", danger: true });
+    const previous = tierRows.find((r) => r.fdm4_store === store) || null;
+    const accepted = await confirmAction({ title: "Remove this pricing level?", message: `Remove the pricing level for ${storeDisplayFor(store)}? Items with no price from FDM4 will go back to full retail price (MSRP) within the hour.`, actionLabel: "Remove", danger: true });
     if (!accepted) return;
     if (btn) btn.disabled = true;
-    try { await api(`/api/pricing/store-tier?${new URLSearchParams({ fdm4_store: store })}`, { method: "DELETE" }); toast("Pricing level removed."); loadAssignments(); }
+    try {
+      await api(`/api/pricing/store-tier?${new URLSearchParams({ fdm4_store: store })}`, { method: "DELETE" });
+      loadAssignments();
+      // Undo puts the same level and note back through the save call.
+      if (previous) {
+        toastUndo(`Pricing level removed for ${storeDisplayFor(store)}.`, async () => {
+          await api("/api/pricing/store-tier", { method: "PUT", body: { fdm4_store: store, tier_name: previous.tier_name, note: text(previous.note) } });
+          loadAssignments();
+        });
+      } else toast("Pricing level removed.");
+    }
     catch (e) { if (btn) btn.disabled = false; toast(e.message, "error"); }
   }
 
@@ -7748,12 +8397,13 @@
     if (!store) { toast("Choose a store.", "error"); return; }
     if (!tier) { toast("Choose a pricing level.", "error"); return; }
     const existing = tierRows.find((r) => r.fdm4_store === store);
+    const label = tierLabel(tier);
     const changeText = existing && existing.tier_name !== tier
-      ? `Change ${storeDisplayFor(store)} from ${existing.tier_name} to ${tier}?`
-      : `Put ${storeDisplayFor(store)} on ${tier}?`;
+      ? `Change ${storeDisplayFor(store)} from ${tierLabel(existing.tier_name)} to ${label}?`
+      : `Put ${storeDisplayFor(store)} on ${label}?`;
     const ok = await confirmAction({
-      title: "Change this store's backup pricing?",
-      message: `${changeText} Any product FDM4 hasn't priced will use ${tier} prices across the whole store, starting within the hour.`,
+      title: "Change this store's pricing level?",
+      message: `${changeText} Any product FDM4 hasn't priced will use ${label} prices across the whole store, starting within the hour.`,
       actionLabel: "Save",
       danger: false,
     });
@@ -7761,9 +8411,14 @@
     const button = $("#tier-form button[type='submit']");
     setBusy(button, true, "Saving...");
     try {
-      await api("/api/pricing/store-tier", { method: "PUT", body: { fdm4_store: store, tier_name: tier, note: $("#tier-note").value.trim() } });
-      toast(`Saved: ${storeDisplayFor(store)} is on ${tier}. Prices update within the hour.`);
+      // An empty Note keeps whatever is already saved (often the detector's
+      // provenance line); only a typed note replaces it.
+      const typed = $("#tier-note").value.trim();
+      await api("/api/pricing/store-tier", { method: "PUT", body: { fdm4_store: store, tier_name: tier, note: typed || (existing ? text(existing.note) : "") } });
+      toast(`Saved: ${storeDisplayFor(store)} is on ${label}. Prices update within the hour.`);
       $("#tier-form").reset(); $("#tier-store-code").value = "";
+      const detected = $("#tier-detected"); if (detected) { detected.hidden = true; detected.textContent = ""; }
+      const current = $("#tier-current"); if (current) current.textContent = "";
       loadAssignments();
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
   }
@@ -7832,23 +8487,43 @@
       $("#names-pager").hidden = true;
       return;
     }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(forStore ? forStore : text(r.fdm4_store))}" data-fdm4desc="${escapeHtml(text(r.fdm4_description))}" data-override="${r.store_specific && forStore ? "1" : ""}">
-        <td><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code title="FDM4 design number">D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted" title="FDM4 artwork number">art ${escapeHtml(r.art_id)}</small>` : ""}</td>
-        <td><code>${escapeHtml(r.color_scheme_id)}</code></td>
-        <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name" placeholder="No name yet - type one or refresh from FDM4"></td>
+    box.innerHTML = `<table class="data-table names-table"><thead><tr><th>Logo</th><th>Logo version</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => {
+      const name = text(r.name);
+      const sized = namesHasSizeText(name);
+      const cleaned = sized ? namesWithoutSizeText(name) : "";
+      const imageUrl = text(r.image_url).trim();
+      const thumb = /^https?:\/\//i.test(imageUrl)
+        ? `<span class="assignment-image img-shade--neutral names-thumb"><img src="${escapeHtml(imageUrl)}" alt="" loading="lazy"></span>`
+        : "";
+      const version = schemeLabel(r.color_scheme_id);
+      const versionCode = text(r.color_scheme_id).trim();
+      return `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(forStore ? forStore : text(r.fdm4_store))}" data-fdm4desc="${escapeHtml(text(r.fdm4_description))}" data-override="${r.store_specific && forStore ? "1" : ""}">
+        <td><span class="names-logo">${thumb}<span><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code title="FDM4 design number">D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted" title="FDM4 artwork number">art ${escapeHtml(r.art_id)}</small>` : ""}</span></span></td>
+        <td>${escapeHtml(version)}${versionCode && !version.endsWith(versionCode) ? `<br><code class="muted" title="FDM4 color scheme code">${escapeHtml(versionCode)}</code>` : ""}</td>
+        <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name" placeholder="No name yet - type one or reload it from FDM4">${sized && cleaned ? `<div class="name-size-flag"><span class="chip chip--size-text" title="This name still carries the embroidery size from FDM4">Has size text</span><button type="button" class="button button--ghost button--small name-clean" data-clean="${escapeHtml(cleaned)}" title="Fill the box with the name minus the size text - you still press Save">Use cleaned name</button></div>` : ""}</td>
         <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(nameSourceLabel(r.source))}</span>${r.store_specific ? `<br><span class="badge-override">${forStore ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (forStore ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
         <td class="name-actions">
           <button class="button button--primary button--small name-save" type="button" disabled title="Type a new name to enable saving">Save</button>
-          <button class="button button--ghost button--small name-repull" type="button" title="Refresh this design's name from FDM4's current description">Refresh from FDM4</button>
+          <button class="button button--ghost button--small name-repull" type="button" title="Reload this design's description from FDM4. Names you edited by hand are kept.">Reload FDM4 descriptions (keeps your edits)</button>
         </td>
-      </tr>`).join("")}</tbody></table>`;
+      </tr>`;
+    }).join("")}</tbody></table>`;
     $$(".name-save", box).forEach((b) => b.addEventListener("click", () => { const tr = b.closest("tr"); saveName(tr, b); }));
+    $$(".name-clean", box).forEach((b) => b.addEventListener("click", () => {
+      const inp = $(".name-input", b.closest("tr"));
+      if (!inp) return;
+      inp.value = b.dataset.clean || "";
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.focus();
+    }));
     $$(".name-input", box).forEach((inp) => {
       inp.addEventListener("input", () => {
         const save = $(".name-save", inp.closest("tr"));
         const value = inp.value.trim();
         save.disabled = !value || value === (inp.dataset.original || "");
-        save.title = save.disabled ? "Type a new name to enable saving" : "";
+        // Only a row with an unsaved edit gets the full primary look.
+        save.classList.toggle("is-ready", !save.disabled);
+        save.title = save.disabled ? "Type a new name to enable saving" : "Save this name";
       });
       inp.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
@@ -7864,6 +8539,31 @@
     $("#names-prev").disabled = namesState.offset === 0;
     $("#names-next").disabled = end >= namesState.total;
     $("#names-pager").hidden = false;
+  }
+
+  // FDM4 descriptions often end in the embroidery size ("3.01w X 1.98h") and
+  // shoppers should not see it. Flag those names and offer the same name with
+  // the size fragment removed; the operator still presses Save.
+  const NAME_SIZE_TEXT = /\d+(\.\d+)?\s*[wWhH]\s*[xX×]\s*\d/;
+  const NAME_SIZE_FRAGMENT = /\s*[-–(]?\s*\d+(\.\d+)?\s*[wWhH]\s*[xX×]\s*\d+(\.\d+)?\s*[wWhH]?\.?\)?/g;
+
+  function namesHasSizeText(name) {
+    return NAME_SIZE_TEXT.test(text(name));
+  }
+
+  function namesWithoutSizeText(name) {
+    return text(name).replace(NAME_SIZE_FRAGMENT, " ").replace(/\s{2,}/g, " ").replace(/\s*[-–]\s*$/, "").trim();
+  }
+
+  // A logo's color scheme is its FDM4 thread colorway. The two everyone
+  // knows get plain words; anything else is shown as a version code. Shared
+  // by the grid cards and the Logo Names list.
+  const SCHEME_WORDS = { WH: "White version", WHT: "White version", WHITE: "White version", BK: "Black version", BLK: "Black version", BLACK: "Black version" };
+
+  function schemeLabel(code) {
+    const key = text(code).trim().toUpperCase();
+    if (!key) return "No version";
+    return SCHEME_WORDS[key] || `Version ${key}`;
   }
 
   async function saveName(tr, button) {
@@ -7897,12 +8597,12 @@
   async function repullName(design, button, fdm4Desc = "", hasOverride = false) {
     const descLine = fdm4Desc ? ` FDM4 currently calls it "${fdm4Desc}".` : "";
     const overrideLine = hasOverride ? " This refreshes the shared name; this store's own custom name still wins here." : "";
-    const accepted = await confirmAction({ title: "Refresh from FDM4?", message: `Refresh design D${design}'s name(s) from FDM4's current description.${descLine} Names you've edited by hand are kept.${overrideLine}`, actionLabel: "Refresh", danger: false });
+    const accepted = await confirmAction({ title: "Reload from FDM4?", message: `Reload design D${design}'s names from FDM4's current description.${descLine} Names you've edited by hand are kept.${overrideLine}`, actionLabel: "Reload", danger: false });
     if (!accepted) return;
     setBusy(button, true, "Refreshing...");
     try {
       const resp = await api("/api/logo-names/repull", { method: "POST", body: { design_id: design, force: false } });
-      toast(resp.changed ? `Updated ${resp.changed} name(s) from FDM4.` : "Nothing changed - the name either already matches FDM4, was hand-edited (kept), or FDM4 has no description for it.");
+      toast(resp.changed ? `Updated ${plural("name", resp.changed)} from FDM4.` : "Nothing changed - the name either already matches FDM4, was hand-edited (kept), or FDM4 has no description for it.");
       loadNames();
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
   }
@@ -7910,6 +8610,16 @@
   // ----- Colors review -----
 
   const colorsState = { sort: "", dir: "asc", limit: 50, offset: 0, total: 0 };
+
+  // Swatch for a garment color: the color's hex when the warehouse carries
+  // one, else the neutral "unknown" pattern the logo grid uses.
+  function colorSwatchHtml(color) {
+    const hex = text(color?.hex ?? color?.hex_code).trim();
+    const accent = /^#[0-9a-f]{3,8}$/i.test(hex) ? hex : "";
+    return accent
+      ? `<span class="color-swatch color-swatch--small" style="background-color:${escapeHtml(accent)}" aria-hidden="true"></span>`
+      : '<span class="color-swatch color-swatch--small color-swatch--unknown" title="No swatch color on file for this garment color" aria-hidden="true"></span>';
+  }
 
   async function loadColors() {
     const q = $("#color-search").value;
@@ -7932,7 +8642,12 @@
         th.textContent = isActive ? `${base} ${colorsState.dir === "desc" ? "▼" : "▲"}` : `${base} ↕`;
         th.setAttribute("aria-sort", isActive ? (colorsState.dir === "desc" ? "descending" : "ascending") : "none");
       });
-      const sourceLabel = (v) => (v === "ai" ? "AI guess" : v === "manual" ? "Set by staff" : text(v));
+      const sourceLabel = (v) => (v === "ai" ? "Automatic guess" : v === "manual" ? "Set by staff" : text(v));
+      // Confidence is not shown as a number: a colour is either confirmed by
+      // a person or still the automatic guess.
+      const statusHtml = (color) => (color.source === "manual"
+        ? '<span class="muted">Confirmed</span>'
+        : '<span class="chip chip--unconfirmed">Unconfirmed</span>');
       if (!colors.length) {
         const tr = document.createElement("tr");
         tr.innerHTML = '<td colspan="6" class="grid-empty">No colors match these filters.</td>';
@@ -7940,35 +8655,41 @@
       }
       colors.forEach((c) => {
         const tr = document.createElement("tr");
-        const confPct = c.confidence === null || c.confidence === undefined || c.source === "manual"
-          ? "" : `${Math.round(Number(c.confidence) * 100)}%`;
         if (c.source === "ai") tr.className = "needs-review";
-        tr.innerHTML = `<td>${escapeHtml(c.color_name)}</td><td>${escapeHtml(c.color_code)}</td>
+        tr.innerHTML = `<td><span class="color-name-cell">${colorSwatchHtml(c)}<span>${escapeHtml(c.color_name)}</span></span></td><td>${escapeHtml(c.color_code)}</td>
           <td>${c.style_count}</td>
-          <td><button class="chip ${escapeHtml(c.light_dark)}" type="button" title="Click to cycle light → dark → both" aria-label="${escapeHtml(c.color_name)} is ${escapeHtml(c.light_dark)}. Click to change">${escapeHtml(c.light_dark)}</button></td>
-          <td class="color-source-cell">${escapeHtml(sourceLabel(c.source))}</td><td class="color-conf-cell">${confPct}</td>`;
+          <td><button class="chip ${escapeHtml(c.light_dark)}" type="button" title="Click to cycle light → dark → both. Both means either logo version works." aria-label="${escapeHtml(c.color_name)} is ${escapeHtml(c.light_dark)}. Click to change">${escapeHtml(c.light_dark)}</button></td>
+          <td class="color-source-cell">${escapeHtml(sourceLabel(c.source))}</td><td class="color-conf-cell">${statusHtml(c)}</td>`;
         const chip = tr.querySelector("button");
+        // Update the row in place - a full reload re-sorts the table and
+        // shifts rows under the reviewer's cursor mid-workflow. Undo goes
+        // through the same request with the previous value.
+        const applyClass = async (value) => {
+          await api("/api/colors", { method: "PUT", body: { color_code: c.color_code, light_dark: value } });
+          c.light_dark = value;
+          c.source = "manual";
+          c.confidence = null;
+          chip.className = `chip ${value}`;
+          chip.textContent = value;
+          chip.setAttribute("aria-label", `${c.color_name} is ${value}. Click to change`);
+          tr.classList.remove("needs-review");
+          tr.querySelector(".color-source-cell").textContent = "Set by staff";
+          tr.querySelector(".color-conf-cell").innerHTML = statusHtml(c);
+        };
         chip.addEventListener("click", async () => {
+          const previous = c.light_dark;
           const next = c.light_dark === "light" ? "dark" : (c.light_dark === "dark" ? "both" : "light");
           chip.disabled = true;
           try {
-            await api("/api/colors", { method: "PUT", body: { color_code: c.color_code, light_dark: next } });
-            // Update the row in place - a full reload re-sorts the table and
-            // shifts rows under the reviewer's cursor mid-workflow.
-            c.light_dark = next;
-            c.source = "manual";
-            c.confidence = null;
-            chip.className = `chip ${next}`;
-            chip.textContent = next;
-            tr.querySelector(".color-source-cell").textContent = "Set by staff";
-            tr.querySelector(".color-conf-cell").textContent = "";
+            await applyClass(next);
+            toastUndo(`Marked ${c.color_name} as ${next}`, () => applyClass(previous));
           } catch (e) { toast(e.message, "error"); }
           finally { chip.disabled = false; }
         });
         tb.append(tr);
       });
       document.getElementById("color-summary").textContent =
-        `${colorsState.total} colors - ${s.light ?? 0} light / ${s.dark ?? 0} dark / ${s.both ?? 0} both - ${s.review ?? 0} need review`
+        `${plural("color", colorsState.total)} - ${s.light ?? 0} light / ${s.dark ?? 0} dark / ${s.both ?? 0} both - ${s.review ?? 0} need review`
         + (resp.truncated ? " - too many results to count exactly, narrow your search" : "");
       const pager = $("#color-pager");
       if (colorsState.total > colorsState.limit) {
@@ -7989,7 +8710,7 @@
     }
   }
 
-  // ----- Sync blocks -----
+  // ----- Freezes (sync blocks) -----
   const sbState = { blocks: [] };
 
   async function loadSyncBlocks() {
@@ -8002,7 +8723,7 @@
       const resp = await api("/api/sync-blocks");
       sbState.blocks = resp.blocks || [];
       renderSyncBlocks();
-    } catch (e) { renderErrorState(box, friendlyLoadError("the sync freezes", e), loadSyncBlocks); }
+    } catch (e) { renderErrorState(box, friendlyLoadError("the freezes", e), loadSyncBlocks); }
   }
 
   // Plain-language description of what turning a block OFF means, per scope.
@@ -8010,6 +8731,12 @@
     if (b.style_code) return `Style ${b.style_code} starts updating from FDM4 again on ${storeDisplayFor(b.fdm4_store)} within the hour.`;
     if (b.scope === "pricing") return `The hourly sync will start changing ${storeDisplayFor(b.fdm4_store)}'s prices again within the hour. Any hand-set prices will be overwritten by FDM4 prices.`;
     return `${storeDisplayFor(b.fdm4_store)} starts syncing normally again within the hour (prices, stock, and product updates resume).`;
+  }
+
+  // Switch-style button for the on/off cells: the state is spelled out
+  // beside the knob so the cell reads as a setting, not just a status.
+  function stateSwitch(className, on, title) {
+    return `<button class="state-switch ${className}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" title="${escapeHtml(title)}"><span class="state-switch__track" aria-hidden="true"></span><span class="state-switch__label">${on ? "On" : "Off"}</span></button>`;
   }
 
   function renderSyncBlocks() {
@@ -8022,11 +8749,15 @@
         : '<div class="grid-empty">No freezes - every store and product updates normally.</div>';
       return;
     }
+    const frozenWhat = (b) => {
+      if (b.style_code) return `Style <code>${escapeHtml(b.style_code)}</code>`;
+      return b.scope === "pricing" ? '<span class="chip">Prices only</span>' : '<span class="chip dark">Whole store</span>';
+    };
     box.innerHTML = `<table class="data-table"><thead><tr><th>Store</th><th>What's frozen</th><th>Reason</th><th>On/Off</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((b) => `<tr data-store="${escapeHtml(b.fdm4_store)}" data-style="${escapeHtml(b.style_code)}">
       <td><strong>${escapeHtml(storeDisplayFor(b.fdm4_store))}</strong><br><code>${escapeHtml(b.fdm4_store)}</code></td>
-      <td>${b.style_code ? `style <code>${escapeHtml(b.style_code)}</code>` : (b.scope === "pricing" ? '<span class="chip">PRICES ONLY</span>' : '<span class="chip dark">ENTIRE STORE</span>')}</td>
+      <td>${frozenWhat(b)}</td>
       <td class="note-cell">${escapeHtml(text(b.note))}</td>
-      <td><button class="chip ${b.active ? "dark" : ""} sb-toggle" type="button" aria-pressed="${b.active ? "true" : "false"}" title="Click to turn this freeze on or off">${b.active ? (b.scope === "pricing" && !b.style_code ? "Prices frozen" : "On") : "Off"}</button></td>
+      <td>${stateSwitch("sb-toggle", b.active, "Turn this freeze on or off")}</td>
       <td>${escapeHtml(formatDate(b.updated_at))}<br><small class="muted">${escapeHtml(text(b.updated_by))}</small></td>
       <td><button class="button button--small button--ghost sb-delete" type="button">Remove</button></td>
     </tr>`).join("")}</tbody></table>`;
@@ -8034,22 +8765,18 @@
       const tr = btn.closest("tr");
       const b = sbState.blocks.find((x) => x.fdm4_store === tr.dataset.store && x.style_code === tr.dataset.style);
       if (!b) { toast("That row changed - reloading the list.", "error"); return loadSyncBlocks(); }
-      let ok;
-      if (b.active) {
-        ok = await confirmAction({ title: "Turn this freeze off?", message: sbOffConsequence(b), actionLabel: "Turn it off" });
-      } else if (!b.style_code) {
-        ok = await confirmAction(b.scope === "pricing"
-          ? { title: "Freeze this store's prices again?", message: `${storeDisplayFor(b.fdm4_store)} keeps updating normally (new products, stock), but the sync will stop changing its existing prices.`, actionLabel: "Freeze prices", danger: false }
-          : { title: "Freeze the entire store again?", message: `${storeDisplayFor(b.fdm4_store)} will be completely skipped by the hourly update (no price, stock, or product changes) until you turn this off.`, actionLabel: "Freeze store" });
-      } else {
-        ok = await confirmAction({ title: "Freeze this style again?", message: `Style ${b.style_code} on ${storeDisplayFor(b.fdm4_store)} will stop receiving updates from FDM4 until you turn this off.`, actionLabel: "Freeze style", danger: false });
-      }
-      if (!ok) return;
+      const what = b.style_code ? `Freeze on style ${b.style_code}` : (b.scope === "pricing" ? "Price freeze" : "Store freeze");
+      const store = storeDisplayFor(b.fdm4_store);
+      const setActive = (active) => api("/api/sync-blocks/toggle", { method: "PUT", body: { fdm4_store: b.fdm4_store, style_code: b.style_code, active } });
       btn.disabled = true;
       try {
-        await api("/api/sync-blocks/toggle", { method: "PUT", body: { fdm4_store: b.fdm4_store, style_code: b.style_code, active: !b.active } });
-        toast(!b.active ? "Freeze turned back on - takes effect within the hour." : "Freeze turned off - normal updates resume within the hour.");
+        await setActive(!b.active);
         loadSyncBlocks();
+        // One click flips a live freeze, so the toast carries the way back.
+        toastUndo(b.active ? `${what} for ${store} turned off. ${sbOffConsequence(b)}` : `${what} for ${store} turned on. Takes effect within the hour.`, async () => {
+          await setActive(b.active);
+          loadSyncBlocks();
+        });
       } catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
     $$(".sb-delete", box).forEach((btn) => btn.addEventListener("click", async () => {
@@ -8088,7 +8815,7 @@
   function renderBrandRules() {
     const box = $("#bs-list");
     const rows = soState.brands;
-    $("#bs-count").textContent = `${soState.bTotal} brand${soState.bTotal === 1 ? "" : "s"}`;
+    $("#bs-count").textContent = plural("brand", soState.bTotal);
     const pager = $("#bs-pager");
     if (soState.bTotal > soState.bLimit) {
       pager.hidden = false;
@@ -8102,14 +8829,17 @@
       box.innerHTML = '<div class="grid-empty">No brands match these filters.</div>';
       return;
     }
+    // A brand without a rule follows the automatic outcome, which depends on
+    // its category (footwear, arborist gear and tools show real stock). This
+    // list does not carry that, so the row says "Automatic" rather than guess.
     const modeChip = (b) => {
       if (b.mode === "real") return '<span class="chip">Real stock</span>';
       if (b.mode === "fake") return '<span class="chip dark">Always in stock</span>';
-      return '<span class="chip chip--muted">Automatic - always in stock</span>';
+      return '<span class="chip chip--muted" title="No rule set. Footwear, arborist gear and tools show real stock; everything else shows as always in stock.">Automatic</span>';
     };
     box.innerHTML = `<table class="data-table"><thead><tr><th>Brand</th><th>Styles</th><th>Shows as</th><th></th></tr></thead><tbody>${rows.map((b) => `
       <tr data-mill="${escapeHtml(b.mill_code)}">
-        <td><strong>${escapeHtml(text(b.brand_name, "(unnamed)"))}</strong> <small class="muted">mill ${escapeHtml(b.mill_code)}</small>${b.updated_by ? `<br><small class="muted">set by ${escapeHtml(text(b.updated_by))}</small>` : ""}</td>
+        <td><strong>${escapeHtml(text(b.brand_name, "(unnamed)"))}</strong> <small class="muted">code ${escapeHtml(b.mill_code)}</small>${b.updated_by ? `<br><small class="muted">set by ${escapeHtml(text(b.updated_by))}</small>` : ""}</td>
         <td>${Number(b.styles) || 0}</td>
         <td>${modeChip(b)}</td>
         <td class="name-actions">
@@ -8119,20 +8849,26 @@
         </td>
       </tr>`).join("")}</tbody></table>`;
     const brandFor = (btn) => soState.brands.find((x) => x.mill_code === btn.closest("tr").dataset.mill);
+    const modeWord = (mode) => (mode === "fake" ? "as always in stock" : "real stock");
+    // Undo puts the previous rule back through the same calls the buttons
+    // use: a mode is saved again, "no rule" is a removal.
+    const restore = (b) => (b.mode
+      ? api("/api/stock-overrides/brands", { method: "PUT", body: { mill_code: b.mill_code, mode: b.mode } })
+      : api(`/api/stock-overrides/brands?${new URLSearchParams({ mill: b.mill_code })}`, { method: "DELETE" }));
     const setMode = async (btn, mode) => {
       const b = brandFor(btn);
       if (!b) return loadBrandRules();
-      const name = text(b.brand_name, `mill ${b.mill_code}`);
+      const name = text(b.brand_name, `brand ${b.mill_code}`);
       const n = Number(b.styles) || 0;
       const ok = await confirmAction(mode === "fake"
-        ? { title: `Always show ${name} as in stock?`, message: `All ${n} ${name} style${n === 1 ? "" : "s"} will show as always in stock on the store websites - customers can always order them. Style exceptions below still win. Takes effect within the hour.`, actionLabel: "Set always in stock", danger: false }
-        : { title: `Show real stock for ${name}?`, message: `All ${n} ${name} style${n === 1 ? "" : "s"} will show their true warehouse stock counts on the store websites. Style exceptions below still win. Takes effect within the hour.`, actionLabel: "Set real stock", danger: false });
+        ? { title: `Always show ${name} as in stock?`, message: `All ${plural(`${name} style`, n)} will show as always in stock on the store websites - customers can always order them. Style exceptions below still win. Takes effect within the hour.`, actionLabel: "Set always in stock", danger: false }
+        : { title: `Show real stock for ${name}?`, message: `All ${plural(`${name} style`, n)} will show their true warehouse stock counts on the store websites. Style exceptions below still win. Takes effect within the hour.`, actionLabel: "Set real stock", danger: false });
       if (!ok) return;
       btn.disabled = true;
       try {
         await api("/api/stock-overrides/brands", { method: "PUT", body: { mill_code: b.mill_code, mode } });
-        toast(`${name} now shows ${mode === "fake" ? "as always in stock" : "real stock"}. The stores update within the hour.`);
         loadBrandRules();
+        toastUndo(`${name} now shows ${modeWord(mode)}. The stores update within the hour.`, async () => { await restore(b); loadBrandRules(); });
       } catch (e) { btn.disabled = false; toast(e.message, "error"); }
     };
     $$(".bs-real", box).forEach((btn) => btn.addEventListener("click", () => setMode(btn, "real")));
@@ -8140,14 +8876,14 @@
     $$(".bs-reset", box).forEach((btn) => btn.addEventListener("click", async () => {
       const b = brandFor(btn);
       if (!b) return loadBrandRules();
-      const name = text(b.brand_name, `mill ${b.mill_code}`);
-      const ok = await confirmAction({ title: `Reset ${name} to automatic?`, message: `${name} goes back to the automatic rule: always in stock, except footwear, arborist gear, and tools which show real stock. Takes effect within the hour.`, actionLabel: "Reset" });
+      const name = text(b.brand_name, `brand ${b.mill_code}`);
+      const ok = await confirmAction({ title: `Reset ${name} to automatic?`, message: `${name} goes back to the automatic rule: always in stock, except footwear, arborist gear and tools, which show real stock. Takes effect within the hour.`, actionLabel: "Reset" });
       if (!ok) return;
       btn.disabled = true;
       try {
         await api(`/api/stock-overrides/brands?${new URLSearchParams({ mill: b.mill_code })}`, { method: "DELETE" });
-        toast(`${name} is back on the automatic rule.`);
         loadBrandRules();
+        toastUndo(`${name} is back on the automatic rule.`, async () => { await restore(b); loadBrandRules(); });
       } catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
   }
@@ -8170,10 +8906,17 @@
     } catch (e) { renderErrorState(box, friendlyLoadError("the stock exceptions", e), loadStockOverrides); }
   }
 
+  // The one-time import wrote a system reason on every row it brought over;
+  // people read it as "Imported from the old list".
+  function soReason(note) {
+    const raw = text(note).trim();
+    return /^imported from the legacy/i.test(raw) ? "Imported from the old list" : raw;
+  }
+
   function renderStockOverrides() {
     const box = $("#so-list");
     const rows = soState.overrides;
-    $("#so-count").textContent = `${soState.total} exception${soState.total === 1 ? "" : "s"}`;
+    $("#so-count").textContent = plural("exception", soState.total);
     const pager = $("#so-pager");
     if (soState.total > soState.limit) {
       pager.hidden = false;
@@ -8191,10 +8934,12 @@
       return;
     }
     box.innerHTML = `<table class="data-table"><thead><tr><th>Style</th><th>Shows as</th><th>Reason</th><th>On/Off</th><th>Updated</th><th></th></tr></thead><tbody>${rows.map((o) => `<tr data-style="${escapeHtml(o.style_code)}">
-      <td><strong>${escapeHtml(o.style_code)}</strong><br><small class="muted">${escapeHtml(text(o.product_name || ""))}${o.brand ? " · " + escapeHtml(o.brand) : ""}</small></td>
+      <td>${o.product_name
+        ? `<strong>${escapeHtml(o.product_name)}</strong><br><small class="muted"><code>${escapeHtml(o.style_code)}</code>${o.brand ? " · " + escapeHtml(o.brand) : ""}</small>`
+        : `<strong>${escapeHtml(o.style_code)}</strong>${o.brand ? `<br><small class="muted">${escapeHtml(o.brand)}</small>` : ""}`}</td>
       <td>${o.mode === "fake" ? '<span class="chip dark">Always in stock</span>' : '<span class="chip">Real stock</span>'}</td>
-      <td class="note-cell">${escapeHtml(text(o.note))}</td>
-      <td><button class="chip ${o.active ? "dark" : ""} so-toggle" type="button" aria-pressed="${o.active ? "true" : "false"}" title="Click to turn this exception on or off">${o.active ? "On" : "Off (paused)"}</button></td>
+      <td class="note-cell">${escapeHtml(soReason(o.note))}</td>
+      <td>${stateSwitch("so-toggle", o.active, "Turn this exception on or off")}</td>
       <td>${escapeHtml(formatDate(o.updated_at))}<br><small class="muted">${escapeHtml(text(o.updated_by))}</small></td>
       <td><button class="button button--small button--ghost so-delete" type="button">Remove</button></td>
     </tr>`).join("")}</tbody></table>`;
@@ -8202,15 +8947,17 @@
       const tr = btn.closest("tr");
       const o = soState.overrides.find((x) => x.style_code === tr.dataset.style);
       if (!o) { toast("That row changed - reloading the list.", "error"); return loadStockOverrides(); }
-      const ok = await confirmAction(o.active
-        ? { title: "Pause this exception?", message: `Style ${o.style_code} goes back to the automatic rule (always-in-stock for third-party brands, real stock for Arborwear) on the store websites within the hour.`, actionLabel: "Pause it" }
-        : { title: "Turn this exception back on?", message: `Style ${o.style_code} will show as ${o.mode === "fake" ? "always in stock (customers can always order it)" : "its real warehouse stock count"} on the store websites within the hour.`, actionLabel: "Turn it on", danger: false });
-      if (!ok) return;
+      const label = text(o.product_name, `style ${o.style_code}`);
+      const setActive = (active) => api("/api/stock-overrides/toggle", { method: "PUT", body: { style_code: o.style_code, active } });
       btn.disabled = true;
       try {
-        await api("/api/stock-overrides/toggle", { method: "PUT", body: { style_code: o.style_code, active: !o.active } });
-        toast(!o.active ? "Exception turned back on - the stores update within the hour." : "Exception paused - the automatic rule decides again within the hour.");
+        await setActive(!o.active);
         loadStockOverrides();
+        // One click changes what shoppers see, so the toast carries the way back.
+        toastUndo(o.active
+          ? `Exception for ${label} turned off - the automatic rule decides again within the hour.`
+          : `Exception for ${label} turned on - it shows ${o.mode === "fake" ? "as always in stock" : "real stock"} within the hour.`,
+          async () => { await setActive(o.active); loadStockOverrides(); });
       } catch (e) { btn.disabled = false; toast(e.message, "error"); }
     }));
     $$(".so-delete", box).forEach((btn) => btn.addEventListener("click", async () => {
@@ -8253,38 +9000,39 @@
     setBusy(btn, true, "Adding...");
     try {
       const resp = await api("/api/stock-overrides", { method: "PUT", body: { style_code: style, mode, note: $("#so-note").value.trim() } });
-      toast(`${resp.style_code} (${resp.product_name || "unnamed"}${resp.brand ? ", " + resp.brand : ""}) now shows ${mode === "fake" ? "as always in stock" : "its real stock"} across ${resp.variants} size/color option(s) - the stores update within the hour.`);
+      toast(`${resp.product_name || `Style ${resp.style_code}`}${resp.brand ? ` (${resp.brand})` : ""} now shows ${mode === "fake" ? "as always in stock" : "its real stock"} across ${plural("size and color option", Number(resp.variants) || 0)} - the stores update within the hour.`);
       $("#so-style").value = ""; $("#so-note").value = "";
       loadStockOverrides();
     } catch (e) { toast(e.message, "error"); }
     finally { setBusy(btn, false); }
   }
 
-  function syncSbWhole() {
-    const whole = $("#sb-whole").checked;
-    const ta = $("#sb-styles");
-    ta.disabled = whole;
-    ta.closest(".field")?.classList.toggle("is-disabled", whole);
-    const pricing = $("#sb-pricing-only");
-    if (pricing) {
-      pricing.disabled = !whole;
-      if (!whole) pricing.checked = false;
-    }
+  // The add form is three choices - whole store, prices only, specific
+  // styles. The style list only shows for the last one.
+  function sbKind() {
+    return $("input[name='sb-kind']:checked")?.value || "whole";
+  }
+
+  function syncSbKind() {
+    const field = $("#sb-styles-field");
+    if (field) field.hidden = sbKind() !== "styles";
   }
 
   async function addSyncBlock() {
     const store = $("#sb-store").value.trim();
-    const whole = $("#sb-whole").checked;
-    // Whole-store submissions exclude the (disabled, dimmed) style list.
+    const kind = sbKind();
+    // "Whole store" and "Prices only" are both whole-store freezes; only the
+    // "Specific styles" choice sends a style list.
+    const whole = kind !== "styles";
     const styles = whole ? [] : $("#sb-styles").value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
     if (!store) { toast("Pick a store first.", "error"); return; }
-    if (!whole && !styles.length) { toast("Tick “entire store” or paste at least one style #.", "error"); return; }
+    if (!whole && !styles.length) { toast("Enter at least one style number.", "error"); return; }
     const btn = $("#sb-add");
-    const pricingOnly = whole && $("#sb-pricing-only")?.checked;
+    const pricingOnly = kind === "pricing";
     if (whole) {
       const ok = await confirmAction(pricingOnly
-        ? { title: "Freeze pricing for the entire store?", message: `${storeDisplayFor(store)} keeps syncing normally (new styles, stock, status), but the sync will never change an existing product's price. New products still get their initial FDM4 price.`, actionLabel: "Freeze pricing", danger: false }
-        : { title: "Block the entire store?", message: `${storeDisplayFor(store)} will be completely skipped by the product sync (no price, stock, or catalog updates) until unblocked.`, actionLabel: "Block store" });
+        ? { title: "Freeze this store's prices?", message: `${storeDisplayFor(store)} keeps updating normally (new products, stock, visibility), but the hourly update never changes an existing product's price. New products still get their first FDM4 price.`, actionLabel: "Freeze prices", danger: false }
+        : { title: "Freeze the whole store?", message: `${storeDisplayFor(store)} will be skipped completely by the hourly update (no price, stock or product changes) until you turn the freeze off.`, actionLabel: "Freeze store" });
       if (!ok) return;
     }
     setBusy(btn, true, "Adding...");
@@ -8297,18 +9045,21 @@
         const hits = perStyle.filter((p) => Number(p.products) > 0);
         const misses = perStyle.filter((p) => !(Number(p.products) > 0));
         const saved = Number(resp?.saved ?? styles.length);
-        const detail = hits.length ? ` ${hits.map((p) => `${p.style}: ${p.products} product${Number(p.products) === 1 ? "" : "s"}`).join(", ")}.` : "";
-        toast(`${saved} style freeze${saved === 1 ? "" : "s"} saved.${detail}`);
+        const detail = hits.length ? ` ${hits.map((p) => `${p.style}: ${plural("product", Number(p.products))}`).join(", ")}.` : "";
+        toast(`${plural("style freeze", saved)} saved.${detail}`);
         if (misses.length) toast(`These style numbers matched no products and were saved anyway: ${misses.map((p) => p.style).join(", ")}. If they are typos, remove them from the list below.`, "error");
       }
-      $("#sb-styles").value = ""; $("#sb-note").value = ""; $("#sb-whole").checked = false; syncSbWhole();
+      $("#sb-styles").value = ""; $("#sb-note").value = "";
+      const wholeChoice = $("input[name='sb-kind'][value='whole']");
+      if (wholeChoice) wholeChoice.checked = true;
+      syncSbKind();
       loadSyncBlocks();
     } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
   }
 
   $("#sb-add").addEventListener("click", addSyncBlock);
   $("#sb-search").addEventListener("input", () => renderSyncBlocks());
-  $("#sb-whole").addEventListener("change", syncSbWhole);
+  $$("input[name='sb-kind']").forEach((choice) => choice.addEventListener("change", syncSbKind));
   $("#so-add").addEventListener("click", addStockOverride);
   $("#so-search").addEventListener("input", debounce(() => { soState.offset = 0; loadStockOverrides(); }));
   $("#so-mode-filter")?.addEventListener("change", () => { soState.offset = 0; loadStockOverrides(); });
@@ -8375,11 +9126,17 @@
     }
   }
 
+  function mixModeBadge(s) {
+    if (s.external) return "External";
+    if (s.mode === "all") return "All products";
+    return plural("style", Number(s.style_count) || 0);
+  }
+
   function renderMixChips() {
     const wrap = $("#mix-enrolled");
     if (!wrap) return;
     if (!mixState.stores.length) { wrap.innerHTML = '<span class="muted">None yet - every store follows FDM4.</span>'; return; }
-    wrap.innerHTML = mixState.stores.map((s) => `<button type="button" class="chip ${s.fdm4_store === mixState.store ? "dark" : ""} mix-enrolled-chip" data-store="${escapeHtml(s.fdm4_store)}">${escapeHtml(storeDisplayFor(s.fdm4_store))} (${escapeHtml(s.fdm4_store)}) · ${s.external ? "EXTERNAL" : s.mode === "all" ? "ALL PRODUCTS" : `${Number(s.style_count) || 0} styles`}</button>`).join("");
+    wrap.innerHTML = mixState.stores.slice(0, 500).map((s) => `<button type="button" class="chip ${s.fdm4_store === mixState.store ? "dark" : ""} mix-enrolled-chip" data-store="${escapeHtml(s.fdm4_store)}" aria-pressed="${s.fdm4_store === mixState.store ? "true" : "false"}"><span class="mix-chip__name">${escapeHtml(storeDisplayFor(s.fdm4_store))}</span> <span class="mix-chip__code">${escapeHtml(s.fdm4_store)}</span> <span class="mix-chip__mode">${escapeHtml(mixModeBadge(s))}</span></button>`).join("");
     $$(".mix-enrolled-chip", wrap).forEach((b) => b.addEventListener("click", () => {
       const code = b.dataset.store;
       $("#mix-store").value = code;
@@ -8416,11 +9173,11 @@
     const name = storeDisplayFor(mixState.store);
     box.innerHTML = `<section class="card">
       <div class="card__header card__header--compact"><div><p class="eyebrow">${escapeHtml(name)}</p><h3>This store follows FDM4</h3></div></div>
-      <div class="card__body"><p class="muted">Its products are controlled by FDM4 today - nothing to manage here. Take control by choosing how this store's mix should work:</p></div>
+      <div class="card__body"><p class="muted">Its products are controlled by FDM4 today - nothing to manage here. Take control by choosing how this store's mix should work. Nothing changes until you confirm.</p></div>
       <div class="mix-choice-grid">
-        <button type="button" class="mix-choice mix-enable" data-mode="all"><strong>All products - follow FDM4</strong><small>Carries everything FDM4 offers this store, including new products, automatically. Switch to a curated list any time.</small></button>
-        <button type="button" class="mix-choice mix-enable" data-mode="list"><strong>Curated list - start from the current FDM4 mix</strong><small>Imports the store's current styles as your starting point. New FDM4 products stay out until you add or import them.</small></button>
-        <button type="button" class="mix-choice mix-enable" data-mode="external"><strong>External store - all products, always in stock</strong><small>For stores fronted elsewhere (BrightSites/POS) that only send orders in: carries every priced FDM4 style at stock 9999, automatically.</small></button>
+        <div class="mix-choice"><strong>All products - follow FDM4</strong><small>Carries everything FDM4 offers this store, including new products, automatically. Switch to a curated list any time.</small><button type="button" class="button button--small button--primary mix-enable" data-mode="all">Choose</button></div>
+        <div class="mix-choice"><strong>Curated list - start from the current FDM4 mix</strong><small>Copies the store's current styles in as your starting point. New FDM4 products stay out until you add or import them.</small><button type="button" class="button button--small button--primary mix-enable" data-mode="list">Choose</button></div>
+        <div class="mix-choice"><strong>External store - all products, always in stock</strong><small>For stores fronted elsewhere, such as BrightSites or a point-of-sale system, that only send orders in: carries every priced FDM4 style at stock 9,999, automatically.</small><button type="button" class="button button--small button--primary mix-enable" data-mode="external">Choose</button></div>
       </div>
     </section>`;
     $$(".mix-enable", box).forEach((b) => b.addEventListener("click", () => mixEnable(b.dataset.mode, b)));
@@ -8441,16 +9198,16 @@
     const name = storeDisplayFor(store);
     if (mode === "external") {
       const ok = await confirmAction({
-        title: "Make this an external all-products store?",
-        message: `${name} will carry EVERY priced FDM4 style, always shown in stock (9999). Use this only for stores fronted elsewhere (BrightSites/POS) whose products here just back order intake. Supply builds on the next hourly refresh; the storefront follows within ~1h15.`,
+        title: "Make this an external store?",
+        message: `${name} will carry every priced FDM4 style, always shown as in stock (9,999). Use this only for a store fronted elsewhere, such as BrightSites or a point-of-sale system, whose products here only back order intake. The products build on the next hourly refresh, and the store website follows within about an hour and a quarter.`,
         actionLabel: "Make external",
         danger: false,
       });
       if (!ok || !mixStoreStillSelected(store)) return;
-      setBusy(btn, true, "Enrolling...");
+      setBusy(btn, true, "Working...");
       try {
         const resp = await api("/api/product-mix/external", { method: "PUT", body: { fdm4_store: store } });
-        toast(resp.note || "External all-products supply enrolled.");
+        toast(resp.note || "Done - this store is now an external store with every product always in stock.");
         await mixRefreshStores();
         renderMixBody();
       } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
@@ -8459,16 +9216,16 @@
     const ok = await confirmAction({
       title: mode === "all" ? "Follow FDM4 for this store?" : "Start a curated list?",
       message: mode === "all"
-        ? `${name} will carry everything FDM4 offers it - including new products - automatically. Nothing changes on the storefront by enabling this.`
-        : `${name}'s current FDM4 mix is imported as your editable starting list. Nothing changes on the storefront until you remove something.`,
-      actionLabel: mode === "all" ? "Follow FDM4" : "Import and start",
+        ? `${name} will carry everything FDM4 offers it, including new products, automatically. Nothing changes on the store website by choosing this.`
+        : `${name}'s current FDM4 products are copied in as your editable starting list. Nothing changes on the store website until you remove something.`,
+      actionLabel: mode === "all" ? "Follow FDM4" : "Copy in and start",
       danger: false,
     });
     if (!ok || !mixStoreStillSelected(store)) return;
-    setBusy(btn, true, "Enabling...");
+    setBusy(btn, true, "Working...");
     try {
       const resp = await api("/api/product-mix/stores", { method: "PUT", body: { fdm4_store: store, mode } });
-      toast(mode === "all" ? "Done - this store now follows FDM4 automatically (all products)." : `Curated list started - imported ${Number(resp.imported) || 0} styles from FDM4.`);
+      toast(mode === "all" ? "Done - this store now follows FDM4 automatically, with all products." : `Curated list started - ${plural("style", Number(resp.imported) || 0)} copied in from FDM4.`);
       await mixRefreshStores();
       renderMixBody();
     } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
@@ -8478,15 +9235,15 @@
     const name = storeDisplayFor(mixState.store);
     const external = !!info.external;
     box.innerHTML = `<section class="card">
-      <div class="card__header card__header--compact"><div><p class="eyebrow">${escapeHtml(name)}</p><h3>Product mix override</h3></div><span class="chip dark">${external ? "EXTERNAL · ALL PRODUCTS" : "ALL PRODUCTS"}</span></div>
+      <div class="card__header card__header--compact"><div><p class="eyebrow">${escapeHtml(name)}</p><h3>Product mix</h3></div><span class="chip dark">${external ? "External · all products" : "All products"}</span></div>
       <div class="mix-status-card">
         <p class="muted">${external
-          ? "External store: the warehouse supplies every priced FDM4 style, always in stock (9999). Products here back order intake for a storefront hosted elsewhere."
-          : "This store carries everything FDM4 offers, including new products, automatically."}${info.note ? `<br><small>${escapeHtml(info.note)}</small>` : ""}</p>
+          ? "External store: the warehouse supplies every priced FDM4 style, always in stock (9,999). The products here back order intake for a store website hosted elsewhere."
+          : "This store carries everything FDM4 offers, including new products, automatically."}${info.note ? `<br><small>${escapeHtml(info.note)}</small>` : ""}${external ? "<br><small class=\"mix-external-note\">Switching back: the store returns to FDM4's product list on the next hourly update; the always-in-stock products it was given are removed from the website (hidden, not deleted).</small>" : ""}</p>
         <div class="mix-actions">
           ${external ? "" : '<button type="button" class="button button--ghost mix-switch-list">Switch to curated list</button>'}
-          <button type="button" class="button ${external ? "button--danger-ghost" : "button--ghost"} mix-external-toggle">${external ? "Stop external supply" : "Make external (all products, in stock)"}</button>
-          ${external ? "" : '<button type="button" class="button button--danger-ghost mix-disable">Disable override</button>'}
+          <button type="button" class="button ${external ? "button--danger-ghost" : "button--ghost"} mix-external-toggle">${external ? "Switch back to following FDM4" : "Make external - all products, always in stock"}</button>
+          ${external ? "" : '<button type="button" class="button button--danger-ghost mix-disable">Hand back to FDM4</button>'}
         </div>
       </div>
     </section>`;
@@ -8502,16 +9259,16 @@
     const name = storeDisplayFor(store);
     if (info.external) {
       const ok = await confirmAction({
-        title: "Stop the external all-products supply?",
-        message: `${name} goes back to its regular FDM4 catalog on the next sync - most of its products will deactivate on the connected blog. Only do this if the store is no longer externally fronted.`,
-        actionLabel: "Stop external supply",
+        title: "Switch back to following FDM4?",
+        message: `${name} returns to FDM4's product list on the next hourly update. The always-in-stock products it was given are removed from the website (hidden, not deleted). Only do this if the store is no longer fronted elsewhere.`,
+        actionLabel: "Switch back",
         danger: true,
       });
       if (!ok || !mixStoreStillSelected(store)) return;
       setBusy(btn, true, "Working...");
       try {
         const resp = await api(`/api/product-mix/external?${new URLSearchParams({ store })}`, { method: "DELETE" });
-        toast(resp.note || "External supply stopped.");
+        toast(resp.note || "Switched back - the store follows FDM4 from the next hourly update.");
         await mixRefreshStores();
         renderMixBody();
       } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
@@ -8524,7 +9281,7 @@
     const store = mixState.store;
     const name = storeDisplayFor(store);
     if (mode === "list") {
-      const ok = await confirmAction({ title: "Switch to a curated list?", message: `Snapshots ${name}'s current mix as your editable list. New FDM4 products stop flowing in automatically until you add or import them.`, actionLabel: "Switch", danger: false });
+      const ok = await confirmAction({ title: "Switch to a curated list?", message: `Copies ${name}'s current mix in as your editable list. New FDM4 products stop flowing in automatically until you add or import them.`, actionLabel: "Switch", danger: false });
       if (!ok) return;
     } else {
       let detail = "";
@@ -8541,7 +9298,7 @@
     setBusy(btn, true, "Switching...");
     try {
       await api("/api/product-mix/stores/mode", { method: "PUT", body: { fdm4_store: store, mode } });
-      toast(mode === "list" ? "Curated list ready - the current mix is snapshotted." : "Following FDM4 - all products, automatically.");
+      toast(mode === "list" ? "Curated list ready - the current mix has been copied in." : "Following FDM4 - all products, automatically.");
       await mixRefreshStores();
       renderMixBody();
     } catch (e) { toast(e.payload?.message || e.message, "error"); } finally { setBusy(btn, false); }
@@ -9059,43 +9816,91 @@
     const tiers = $$("#pr-tiers input:checked").map((c) => c.value);
     if (!stores.length && !tiers.length) {
       el.className = "notice notice--warning notice--tight";
-      el.innerHTML = "<strong>Targets EVERY store.</strong> Add stores or tick a tier to narrow it.";
+      el.innerHTML = "<strong>Targets every store.</strong> Add stores or tick a pricing level to narrow it.";
     } else {
       el.className = "notice notice--success notice--tight";
       const parts = [];
       if (stores.length) parts.push(`${stores.length} store${stores.length === 1 ? "" : "s"}: ${stores.map((s) => storeDisplayFor(s)).join(", ")}`);
-      if (tiers.length) parts.push(`every store on tier ${tiers.join(", ")}`);
+      if (tiers.length) parts.push(`every store at ${tiers.map((t) => tierLabel(t)).join(", ")}`);
       el.innerHTML = `<strong>Affects:</strong> ${escapeHtml(parts.join(" - plus "))}`;
     }
     const exc = prState.chips.excl_stores.length + prState.chips.excl_brands.length + prState.chips.excl_categories.length
       + ($("#pr-xstyles")?.value || "").split(/[\n,]+/).map((x) => x.trim()).filter(Boolean).length;
-    if (exc) el.innerHTML += ` <span class="muted">(with ${exc} exception${exc === 1 ? "" : "s"})</span>`;
+    if (exc) el.innerHTML += ` <span class="muted">(with ${plural("exception", exc)})</span>`;
+  }
+
+  // Price-list keys as people read them. "base" is the price before any rule
+  // runs (the FDM4-derived price the transform keeps aside), so it is named by
+  // what it is rather than by its column.
+  const PR_LEVEL_LABELS = { current: "current price", msrp: "MSRP", corp1: "Level 1", corp2: "Level 2", corp3: "Level 3", wholesale: "Wholesale", employee: "Employee", base: "price before any rule" };
+  function prLevelLabel(key) {
+    const k = text(key).toLowerCase();
+    return PR_LEVEL_LABELS[k] || text(key);
+  }
+
+  // "$5.00", or up to four decimals when the rule really uses them.
+  function prMoney(v) {
+    const n = Math.abs(Number(v) || 0);
+    const four = n.toFixed(4);
+    return `$${/00$/.test(four) ? n.toFixed(2) : four.replace(/0+$/, "")}`;
   }
 
   function prEffectSummary(r) {
     const v = r.effect_value !== null && r.effect_value !== undefined ? Number(r.effect_value) : null;
-    const basisNote = r.basis && r.basis !== "current" ? ` of ${r.basis.toUpperCase()}` : "";
-    const roundNote = r.rounding && r.rounding !== "none" ? ` → .${r.rounding}` : "";
+    const basis = prLevelLabel(r.basis || "current");
+    const basisPrice = basis === "MSRP" || basis === "current price" || basis === "price before any rule" ? basis : `${basis} price`;
+    const roundNote = r.rounding && r.rounding !== "none" ? (r.rounding === "00" ? ", rounded to whole dollars" : `, ending in .${r.rounding}`) : "";
     switch (r.effect_type) {
-      case "percent": return `${v > 0 ? "+" : ""}${v}%${basisNote}${roundNote}`;
-      case "flat": return `${v > 0 ? "+" : "−"}$${Math.abs(v).toFixed(4).replace(/\.?0+$/, "")}${basisNote}${roundNote}`;
-      case "set_price": return `= $${Number(v).toFixed(2)}`;
-      case "price_level": return `level: ${text(r.price_level_key).toUpperCase()}`;
-      case "margin_over_cost": return `cost × ${v}`;
-      default: return r.effect_type;
+      case "percent": return `${Math.abs(v)}% ${v < 0 ? "off" : "on top of"} ${basisPrice}${roundNote}`;
+      case "flat": return `${prMoney(v)} ${v < 0 ? "off" : "added to"} ${basisPrice}${roundNote}`;
+      case "set_price": return `Set price to $${Number(v).toFixed(2)}`;
+      case "price_level": {
+        const level = prLevelLabel(r.price_level_key);
+        return `Use ${level === "MSRP" ? "MSRP" : level === "price before any rule" ? "the price before any rule" : `${level} price`}${roundNote}`;
+      }
+      case "margin_over_cost": return `Cost × ${v}${roundNote}`;
+      default: return text(r.effect_type);
     }
   }
 
   function prTargetSummary(r) {
     const bits = [];
     const stores = (r.stores || []).length, tiers = (r.store_tiers || []).length;
-    bits.push(!stores && !tiers ? "ALL stores" : [stores ? `${stores} store${stores === 1 ? "" : "s"}` : "", tiers ? `tier ${r.store_tiers.join(", ")}` : ""].filter(Boolean).join(" + "));
-    if ((r.brands || []).length) bits.push(`${r.brands.length} brand${r.brands.length === 1 ? "" : "s"}`);
-    if ((r.categories || []).length) bits.push(`${r.categories.length} categor${r.categories.length === 1 ? "y" : "ies"}`);
-    if ((r.styles || []).length) bits.push(`${r.styles.length} style${r.styles.length === 1 ? "" : "s"}`);
+    bits.push(!stores && !tiers ? "All stores" : [stores ? plural("store", stores) : "", tiers ? `every store at ${r.store_tiers.map((t) => tierLabel(t)).join(", ")}` : ""].filter(Boolean).join(" + "));
+    if ((r.brands || []).length) bits.push(plural("brand", r.brands.length));
+    if ((r.categories || []).length) bits.push(plural("category", r.categories.length, "categories"));
+    if ((r.styles || []).length) bits.push(plural("style", r.styles.length));
     const exc = (r.excl_stores || []).length + (r.excl_styles || []).length + (r.excl_brands || []).length + (r.excl_categories || []).length;
     if (exc) bits.push(`except ${exc}`);
     return bits.join(" · ");
+  }
+
+  // Up to three names per group, then "+N more" with the full list in the
+  // title, so a 70-store rule still fits on one row.
+  function prNameList(names) {
+    const list = (names || []).map((n) => text(n)).filter(Boolean);
+    if (!list.length) return "";
+    const shown = list.slice(0, 3);
+    const more = list.length - shown.length;
+    const all = escapeHtml(list.slice(0, 200).join(", "));
+    return `<span title="${all}">${escapeHtml(shown.join(", "))}${more > 0 ? ` <span class="muted">+${more} more</span>` : ""}</span>`;
+  }
+
+  function prTargetCell(r) {
+    const lines = [];
+    const stores = (r.stores || []).map((s) => storeDisplayFor(s));
+    const tiers = (r.store_tiers || []).map((t) => tierLabel(t));
+    if (!stores.length && !tiers.length) lines.push("<strong>All stores</strong>");
+    if (stores.length) lines.push(`${plural("store", stores.length)}: ${prNameList(stores)}`);
+    if (tiers.length) lines.push(`Every store at ${escapeHtml(tiers.join(", "))}`);
+    const brands = r.brands || [], categories = r.categories || [], styles = r.styles || [];
+    if (brands.length) lines.push(`${plural("brand", brands.length)}: ${prNameList(brands)}`);
+    if (categories.length) lines.push(`${plural("category", categories.length, "categories")}: ${prNameList(categories)}`);
+    if (styles.length) lines.push(`${plural("style", styles.length)}: ${prNameList(styles)}`);
+    if (!brands.length && !categories.length && !styles.length) lines.push('<span class="muted">All products</span>');
+    const exc = (r.excl_stores || []).length + (r.excl_styles || []).length + (r.excl_brands || []).length + (r.excl_categories || []).length;
+    if (exc) lines.push(`<span class="muted">${escapeHtml(plural("exception", exc))}</span>`);
+    return lines.join("<br>");
   }
 
   function prRuleHasFrozenTarget(r) {
@@ -9135,22 +9940,27 @@
         : '<div class="grid-empty">No price rules yet - create one with “New rule”. Nothing changes any price until a rule is activated (after preview).</div>';
       return;
     }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Rule</th><th>Status</th><th>Priority</th><th>Targets</th><th>Effect</th><th>Schedule</th><th></th></tr></thead><tbody>${rules.map((r) => `<tr data-id="${r.rule_id}">
-      <td><strong>${escapeHtml(r.name)}</strong>${prRuleHasFrozenTarget(r) ? ' <span class="chip chip--frozen-warn" title="At least one targeted store has a price freeze - the sync will not change its live prices while frozen">targets a frozen store</span>' : ""}${r.note ? `<br><small class="muted">${escapeHtml(r.note)}</small>` : ""}</td>
-      <td><span class="chip ${r.active ? "dark" : ""}">${r.active ? "On" : "Off"}</span>${r.stackable ? '<br><small class="muted">combinable</small>' : ""}</td>
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Rule</th><th>Status</th><th title="Rules run lowest number first">Priority<br><span class="th-hint">lower runs first</span></th><th>Targets</th><th>Effect</th><th>Schedule</th><th></th></tr></thead><tbody>${rules.map((r) => `<tr data-id="${r.rule_id}">
+      <td><strong>${escapeHtml(r.name)}</strong>${prRuleHasFrozenTarget(r) ? ' <span class="chip chip--frozen-warn" title="At least one targeted store has a price freeze - the hourly update will not change its live prices while frozen">targets a frozen store</span>' : ""}${r.note ? `<br><small class="muted">${escapeHtml(r.note)}</small>` : ""}</td>
+      <td><span class="chip ${r.active ? "dark" : ""}">${r.active ? "On" : "Off"}</span>${r.stackable ? '<br><small class="muted">lets later rules apply</small>' : ""}</td>
       <td>${r.priority}</td>
-      <td>${escapeHtml(prTargetSummary(r))}</td>
+      <td class="pr-targets">${prTargetCell(r)}</td>
       <td>${escapeHtml(prEffectSummary(r))}${r.floor_price ? `<br><small class="muted">never below $${Number(r.floor_price).toFixed(2)}</small>` : ""}${r.ceiling_price ? `<br><small class="muted">never above $${Number(r.ceiling_price).toFixed(2)}</small>` : ""}${r.cap_at_msrp ? '<br><small class="muted">never above MSRP</small>' : ""}</td>
       <td>${r.effective_from && r.effective_until ? `${escapeHtml(r.effective_from)} → ${escapeHtml(r.effective_until)}` : r.effective_from ? `from ${escapeHtml(r.effective_from)}` : r.effective_until ? `until ${escapeHtml(r.effective_until)}` : '<span class="muted">always</span>'}</td>
       <td class="name-actions">
         <button class="button button--small button--secondary pr-preview" type="button">Preview</button>
         <button class="button button--small ${r.active ? "button--ghost" : "button--primary"} pr-toggle" type="button" title="${!r.active && !r.last_previewed_at ? "Preview required before this rule can be turned on" : ""}">${r.active ? "Turn off" : "Turn on"}</button>
         <button class="button button--small button--ghost pr-edit" type="button">Edit</button>
-        <button class="button button--small button--danger-ghost pr-delete" type="button">Delete</button>
+        <details class="row-menu"><summary aria-label="More actions for ${escapeHtml(r.name)}">More</summary><div class="row-menu__panel"><button class="button button--small button--danger-ghost pr-delete" type="button">Delete</button></div></details>
       </td></tr>`).join("")}</tbody></table>`;
     $$(".pr-edit", box).forEach((b) => b.addEventListener("click", () => openPREditor(prState.rules.find((r) => r.rule_id === Number(b.closest("tr").dataset.id)))));
     $$(".pr-preview", box).forEach((b) => b.addEventListener("click", () => previewPR(Number(b.closest("tr").dataset.id), b)));
-    $$(".pr-delete", box).forEach((b) => b.addEventListener("click", () => deletePR(Number(b.closest("tr").dataset.id), b)));
+    // Delete lives behind "More" so it is never a slip away from Edit; only
+    // one menu stays open at a time.
+    $$(".row-menu", box).forEach((menu) => menu.addEventListener("toggle", () => {
+      if (menu.open) $$(".row-menu[open]", box).forEach((other) => { if (other !== menu) other.open = false; });
+    }));
+    $$(".pr-delete", box).forEach((b) => b.addEventListener("click", () => { const menu = b.closest("details"); if (menu) menu.open = false; deletePR(Number(b.closest("tr").dataset.id), b); }));
     $$(".pr-toggle", box).forEach((b) => b.addEventListener("click", () => togglePRActive(Number(b.closest("tr").dataset.id), b)));
   }
 
@@ -9257,7 +10067,7 @@
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = t;
       cb.checked = (rule?.store_tiers || []).includes(t);
       cb.addEventListener("change", prUpdateTargetSummary);
-      lab.append(cb, document.createTextNode(t));
+      lab.append(cb, document.createTextNode(tierLabel(t)));
       tiers.append(lab);
     });
     attachStoreCombobox({ search: "#pr-store-search", hidden: "#pr-store-picked", options: "#pr-store-options",
@@ -9302,7 +10112,7 @@
     $("#pr-value-wrap").hidden = t === "price_level";
     const basisWrap = $("#pr-basis-wrap");
     if (basisWrap) basisWrap.hidden = !(t === "percent" || t === "flat");
-    $("#pr-value-label").textContent = t === "percent" ? "Percent (±)" : t === "flat" ? "Amount (±$)" : t === "set_price" ? "Price ($)" : t === "margin_over_cost" ? "Multiplier (×)" : "Value";
+    $("#pr-value-label").textContent = t === "percent" ? "Percent (±)" : t === "flat" ? "Amount (±$)" : t === "set_price" ? "Price ($)" : t === "margin_over_cost" ? "Multiply cost by" : "Value";
     const val = $("#pr-effect-value");
     if (t === "set_price" || t === "margin_over_cost") { val.min = "0.0001"; val.max = "9999999"; }
     else if (t === "percent") { val.min = "-99.9999"; val.max = "1000"; }
@@ -9346,8 +10156,8 @@
       const v = body.effect_value;
       let msg = "";
       if (v === null || Number.isNaN(v)) msg = "Enter an effect value.";
-      else if (body.effect_type === "set_price" && v <= 0) msg = "Set-price must be greater than $0.";
-      else if (body.effect_type === "margin_over_cost" && v <= 0) msg = "Margin multiplier must be greater than 0.";
+      else if (body.effect_type === "set_price" && v <= 0) msg = "The price must be greater than $0.";
+      else if (body.effect_type === "margin_over_cost" && v <= 0) msg = "The cost multiplier must be greater than 0.";
       else if (body.effect_type === "percent" && v <= -100) msg = "Percent must be greater than −100 (that would zero the price).";
       else if (body.effect_type === "percent" && v > 1000) msg = "Percent above +1000 is not allowed.";
       else if (Math.abs(v) > 9999999) msg = "Effect value is out of range.";
@@ -9407,7 +10217,7 @@
         ? '<div class="grid-empty">This rule currently matches no products - check its store and product targeting.</div>'
         : "";
       const frozenNote = (resp.frozen_targets || []).length
-        ? `<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>${resp.frozen_targets.length} targeted store${resp.frozen_targets.length === 1 ? " has" : "s have"} a price freeze</strong> - the hourly sync will not change live prices there while frozen: ${escapeHtml(resp.frozen_targets.map((c) => storeDisplayFor(c)).join(", "))}. Manage freezes on the Sync Blocks page.</div></div>`
+        ? `<div class="notice notice--warning notice--tight"><span class="notice__icon">!</span><div><strong>${resp.frozen_targets.length} targeted store${resp.frozen_targets.length === 1 ? " has" : "s have"} a price freeze</strong> - the hourly sync will not change live prices there while frozen: ${escapeHtml(resp.frozen_targets.map((c) => storeDisplayFor(c)).join(", "))}. Manage freezes on the Freezes page.</div></div>`
         : "";
       box.innerHTML = `
         <div class="result-summary">
@@ -9419,12 +10229,12 @@
         </div>
         ${staleWarn}${overWarn}${frozenNote}${trunc}${zeroNote}
         ${perStore.length ? `<p class="muted">Per store: ${perStore.map((p) => `${escapeHtml(storeDisplayFor(p.fdm4_store))} (${p.affected})`).join(" · ")}${moreStores > 0 ? ` · +${moreStores} more store${moreStores === 1 ? "" : "s"}` : ""}</p>` : ""}
-        ${(resp.sample || []).length ? `<table class="data-table"><thead><tr><th>Store</th><th>Style</th><th>SKU</th><th>Color / size</th><th>Base</th><th>New</th><th>MSRP</th></tr></thead>
+        ${(resp.sample || []).length ? `<table class="data-table"><thead><tr><th>Store</th><th>Style</th><th>SKU</th><th>Color / size</th><th>Before</th><th>New</th><th>MSRP</th></tr></thead>
         <tbody>${(resp.sample || []).map((row) => `<tr${row.over_msrp ? ' class="row--over-msrp"' : ""}>
           <td>${escapeHtml(storeDisplayFor(row.fdm4_store))}</td><td><code>${escapeHtml(row.style_code)}</code></td><td><code>${escapeHtml(row.sku)}</code></td>
           <td>${escapeHtml(text(row.color))} / ${escapeHtml(text(row.size))}</td>
           <td>$${row.before_price}</td><td><strong>$${row.after_price}</strong>${row.over_msrp ? " ⚠" : ""}</td><td>${row.msrp ? `$${row.msrp}` : "-"}</td></tr>`).join("")}</tbody></table>
-        <p class="muted">Base = the price before any rules; New = the price this rule produces. Sample shows the ${resp.sample?.length ?? 0} largest price movements.${recorded ? " This rule can now be turned on from the list." : ""}</p>` : ""}`;
+        <p class="muted">Before = the price before any rule; New = the price this rule produces. Sample shows the ${resp.sample?.length ?? 0} largest price movements.${recorded ? " This rule can now be turned on from the list." : ""}</p>` : ""}`;
       if (recorded) renderPRList();
       box.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (e) {
@@ -9676,44 +10486,72 @@
     </div>`;
   }
 
-  function renderHealth(resp) {
-    const runs = resp.pipeline?.runs || [];
+  // "Sep 6, 9:00 AM" - every listed pull is recent, so the year is noise.
+  function healthWhen(value) {
+    if (!value) return "-";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? text(value) : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+  }
+
+  // "8m 57s" from a duration in seconds.
+  function healthDuration(seconds) {
+    const d = Math.max(0, Math.round(Number(seconds) || 0));
+    return `${Math.floor(d / 60)}m ${String(d % 60).padStart(2, "0")}s`;
+  }
+
+  function healthStatusWord(status) {
+    const s = text(status);
+    if (s === "success") return "OK";
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Unknown";
+  }
+
+  // One judgement of the hourly FDM4 pull, shared by the Health cards and the
+  // dashboard figure. A run in progress is normal, so the state comes from the
+  // most recent COMPLETED run: Failed if it did not succeed, Late if it
+  // finished more than 90 minutes ago (the pull is hourly), otherwise OK.
+  function healthPullSummary(resp) {
+    const runs = resp?.pipeline?.runs || [];
     const latest = runs[0] || null;
-    // A run in progress is normal (the pull is hourly) - judge OK/FAILED from
-    // the most recent COMPLETED run so the tile doesn't scream during it.
-    const lastDone = runs.find((r) => r.status !== "running" && r.status !== "requested") || null;
-    const isRunning = latest && (latest.status === "running" || latest.status === "requested");
-    const judged = lastDone;
-    const judgedAge = judged ? healthAge(judged.finished_at || judged.started_at) : "never";
-    const ageMins = judged ? Math.round((Date.now() - new Date(judged.finished_at || judged.started_at).getTime()) / 60000) : Infinity;
-    let pipeTone = "ok", pipeValue = "OK";
-    if (!judged || judged.status !== "success") { pipeTone = "bad"; pipeValue = judged ? "FAILED" : "NO RUNS"; }
-    else if (ageMins > 180) { pipeTone = "bad"; pipeValue = "OVERDUE"; }
-    else if (ageMins > 75) { pipeTone = "warn"; pipeValue = "RUNNING BEHIND"; }
-    if (isRunning && pipeTone === "ok") { pipeValue = "RUNNING NOW"; }
+    const judged = runs.find((r) => r.status !== "running" && r.status !== "requested") || null;
+    const running = Boolean(latest && (latest.status === "running" || latest.status === "requested"));
+    const finishedAt = judged ? (judged.finished_at || judged.started_at) : null;
+    const ageMins = finishedAt ? Math.round((Date.now() - new Date(finishedAt).getTime()) / 60000) : Infinity;
+    let state = "none";
+    if (judged) state = judged.status !== "success" ? "failed" : (ageMins > 90 ? "late" : "ok");
+    return { runs, judged, running, ageMins, finishedAt, state };
+  }
+
+  function renderHealth(resp) {
+    const pull = healthPullSummary(resp);
+    const runs = pull.runs;
     const okCount = Number(resp.pipeline?.ok_24h ?? 0);
     const failedCount = Number(resp.pipeline?.failed_24h ?? 0);
-    const pipeSub = judged
-      ? `last finished ${judgedAge} · ${okCount} successful pull${okCount === 1 ? "" : "s"} in 24h${failedCount ? ` · ${failedCount} failed` : ""}`
-      : "no data pulls have run yet";
+    const PULL_WORDS = { ok: "OK", late: "Late", failed: "Failed", none: "No runs yet" };
+    const pullTone = pull.state === "none" ? "failed" : pull.state;
+    const pullSub = pull.judged
+      ? `runs hourly · last finished ${healthAge(pull.finishedAt)}${pull.running ? " · a pull is running now" : ""}${failedCount ? ` · ${plural("failed pull", failedCount)} in 24h` : ""}`
+      : "runs hourly · no data pulls have run yet";
     const st = resp.state || {};
     const feats = resp.features || {};
     const pim = resp.pim || {};
     const feeds = resp.feeds || {};
-    const stateAgeMins = st.latest_change ? Math.round((Date.now() - new Date(st.latest_change).getTime()) / 60000) : Infinity;
-    // PIM freshness matters, not lifetime volume - a dead feed with a big
-    // historical count should warn.
+    // The content feed only sends when a product changes, but a quiet spell
+    // longer than six hours has always meant the feed stopped.
     const pimAgeH = pim.latest_event ? (Date.now() - new Date(pim.latest_event).getTime()) / 3600000 : Infinity;
-    const pimOk = pimAgeH < 48;
+    const pimState = !pim.latest_event ? "none" : (pimAgeH < 6 ? "ok" : "late");
+    const rulesOn = Number(feats.price_rules?.active ?? 0);
+    const wholeStores = Number(feats.sync_blocks?.whole_store || 0);
+    const styleFreezes = Number(feats.sync_blocks?.styles || 0);
     const mixCount = (feats.mix_stores || []).length;
+    const consumers = feeds.consumers || [];
     $("#health-stats").innerHTML = [
-      healthStat("Data pull from FDM4", pipeValue, pipeSub, pipeTone),
-      healthStat("Product data updated", st.latest_change ? healthAge(st.latest_change) : "No data", `${Number(st.active_rows || 0).toLocaleString()} live records · ${Number(st.changed_24h || 0).toLocaleString()} changed in 24h`, stateAgeMins > 26 * 60 ? "warn" : "ok"),
-      healthStat("Price rules", String(feats.price_rules?.active ?? 0), feats.price_rules?.active ? "active - hourly update takes a bit longer" : "none active", null),
-      healthStat("Sync freezes", String((feats.sync_blocks?.whole_store || 0) + (feats.sync_blocks?.styles || 0)), `${feats.sync_blocks?.whole_store || 0} whole-store · ${feats.sync_blocks?.styles || 0} styles`, null),
-      healthStat("Custom product lineups", String(mixCount), mixCount ? `${mixCount} store${mixCount === 1 ? "" : "s"} with a custom list` : "none - all stores follow FDM4", null),
-      healthStat("Product content feed", pim.latest_event ? (pimOk ? "Receiving updates" : "No recent updates") : "No updates yet", pim.latest_event ? `last update ${healthAge(pim.latest_event)} · ${Number(pim.products || 0).toLocaleString()} products` : "no updates received yet", pim.latest_event && pimOk ? "ok" : "warn"),
-      healthStat("Connected systems", feeds.available ? String((feeds.consumers || []).length) : "-", feeds.available ? "systems reading our data" : "not set up yet", null),
+      healthStat("Data pull from FDM4", PULL_WORDS[pull.state], pullSub, pullTone),
+      healthStat("Latest product change", st.latest_change ? healthAge(st.latest_change) : "No data", `${plural("live record", Number(st.active_rows || 0))} · ${Number(st.changed_24h || 0).toLocaleString()} changed in 24h`, null),
+      healthStat("Price rules", String(rulesOn), rulesOn ? "on · the hourly update takes a little longer" : "none on", null),
+      healthStat("Freezes", String(wholeStores + styleFreezes), `${plural("whole store", wholeStores)} · ${plural("style", styleFreezes)}`, null),
+      healthStat("Product mix", String(mixCount), mixCount ? `${plural("store", mixCount)} with a custom mix` : "none · every store follows FDM4", null),
+      healthStat("Product content feed", pimState === "none" ? "No updates yet" : (pimState === "ok" ? "OK" : "Late"), pim.latest_event ? `expected within 6 hours · last update ${healthAge(pim.latest_event)} · ${plural("product", Number(pim.products || 0))}` : "expected within 6 hours · no updates received yet", pimState === "ok" ? "ok" : "late"),
+      healthStat("Connected systems", feeds.available ? String(consumers.length) : "-", feeds.available ? "systems reading our data" : "not set up yet", null),
     ].join("");
 
     const trend = $("#health-trend");
@@ -9728,44 +10566,55 @@
       if (running) {
         bar.classList.add("health-trend__bar--running");
         bar.style.height = "60%";
-        bar.title = `In progress - started ${formatDate(r.started_at)}`;
+        bar.title = `${healthWhen(r.started_at)} · running now`;
       } else {
         if (r.status !== "success") bar.classList.add("health-trend__bar--failed");
         bar.style.height = d > 0 ? `${Math.max(8, Math.round((d / maxDur) * 100))}%` : "8%";
-        const mins = Math.floor(d / 60);
-        bar.title = `${r.status === "success" ? "" : `${r.status} - `}${mins}m ${String(d % 60).padStart(2, "0")}s - ${formatDate(r.started_at)}`;
+        bar.title = `${healthWhen(r.started_at)} · ${healthStatusWord(r.status)} · ${healthDuration(d)} · ${r.rows_loaded != null ? plural("row", Number(r.rows_loaded)) : "rows unknown"}`;
       }
       trend.appendChild(bar);
     });
 
-    $("#health-runs").innerHTML = runs.length ? `<table class="data-table"><thead><tr>
-      <th>Started</th><th>Status</th><th>Duration</th><th>Rows</th><th>Note</th>
+    // Twelve near-identical rows say less than one line; the table stays a
+    // click away, and stays open across the minute refresh if it was opened.
+    const durations = runs.filter((r) => r.status === "success" && Number(r.duration_s) > 0).map((r) => Number(r.duration_s));
+    const avgSeconds = durations.length ? durations.reduce((sum, d) => sum + d, 0) / durations.length : 0;
+    const each = avgSeconds >= 60 ? `about ${Math.round(avgSeconds / 60)} min each` : (avgSeconds > 0 ? "under a minute each" : "");
+    const dayTotal = okCount + failedCount;
+    const summary = dayTotal
+      ? `${okCount.toLocaleString()} of ${plural("pull", dayTotal)} OK in the last 24 hours${each ? ` · ${each}` : ""}`
+      : "No pulls finished in the last 24 hours";
+    const hasNotes = runs.some((r) => r.error || r.note);
+    const wasOpen = Boolean($("#health-runs details")?.open);
+    $("#health-runs").innerHTML = runs.length ? `<p class="health-runs-summary">${escapeHtml(summary)}</p>
+      <details class="health-runs-details"${wasOpen ? " open" : ""}><summary>Show the last ${escapeHtml(plural("pull", runs.length))}</summary>
+      <table class="data-table"><thead><tr>
+      <th>Started</th><th>Status</th><th>Duration</th><th>Rows</th>${hasNotes ? "<th>Note</th>" : ""}
     </tr></thead><tbody>${runs.map((r) => `<tr>
-      <td>${escapeHtml(formatDate(r.started_at))}</td>
+      <td>${escapeHtml(healthWhen(r.started_at))}</td>
       <td>${healthRunChip(r.status)}</td>
-      <td>${r.duration_s != null ? `${Math.floor(r.duration_s / 60)}m ${String(r.duration_s % 60).padStart(2, "0")}s` : "-"}</td>
+      <td>${r.duration_s != null ? escapeHtml(healthDuration(r.duration_s)) : "-"}</td>
       <td>${r.rows_loaded != null ? Number(r.rows_loaded).toLocaleString() : "-"}</td>
-      <td class="health-note">${escapeHtml(r.error || r.note || "")}</td>
-    </tr>`).join("")}</tbody></table>` : '<div class="grid-empty">No data pulls have run yet.</div>';
+      ${hasNotes ? `<td class="health-note">${escapeHtml(r.error || r.note || "")}</td>` : ""}
+    </tr>`).join("")}</tbody></table></details>` : '<div class="grid-empty">No data pulls have run yet.</div>';
 
     const rules = feats.price_rules?.rules || [];
     $("#health-rules").innerHTML = rules.length
       ? `<ul class="health-list">${rules.map((r) => `<li>${escapeHtml(r.name || `Rule ${r.rule_id}`)}</li>`).join("")}</ul>`
-      : '<div class="grid-empty">No active price rules.</div>';
+      : '<div class="grid-empty">No price rules are on.</div>';
     const blocks = feats.sync_blocks || {};
     $("#health-blocks").innerHTML = (blocks.whole_store || blocks.styles)
-      ? `<ul class="health-list"><li>${escapeHtml(String(blocks.stores || 0))} store(s) affected</li><li>${escapeHtml(String(blocks.whole_store || 0))} whole-store freeze(s)</li><li>${escapeHtml(String(blocks.styles || 0))} style freeze(s)</li></ul>`
-      : '<div class="grid-empty">No active sync freezes.</div>';
+      ? `<ul class="health-list"><li>${escapeHtml(plural("store", blocks.stores || 0))} affected</li><li>${escapeHtml(plural("whole-store freeze", blocks.whole_store || 0))}</li><li>${escapeHtml(plural("style freeze", blocks.styles || 0))}</li></ul>`
+      : '<div class="grid-empty">No active freezes.</div>';
     const mixStores = feats.mix_stores || [];
     $("#health-mix").innerHTML = mixStores.length
-      ? `<ul class="health-list">${mixStores.map((m) => `<li>${escapeHtml(storeDisplayFor(m.fdm4_store))} (${escapeHtml(m.fdm4_store)}) - <strong>${escapeHtml(m.external ? "external (all products)" : m.mode === "all" ? "all products" : "curated list")}</strong></li>`).join("")}</ul>`
-      : '<div class="grid-empty">No stores with a custom lineup.</div>';
+      ? `<ul class="health-list">${mixStores.map((m) => `<li>${escapeHtml(storeDisplayFor(m.fdm4_store))} (${escapeHtml(m.fdm4_store)}) - <strong>${escapeHtml(m.external ? "external, all products" : m.mode === "all" ? "all products" : "curated list")}</strong></li>`).join("")}</ul>`
+      : '<div class="grid-empty">No stores with a custom mix.</div>';
     $("#health-pim").innerHTML = `<ul class="health-list">
-      <li>${Number(pim.events || 0).toLocaleString()} update(s) received</li>
+      <li>${escapeHtml(plural("update", Number(pim.events || 0)))} received</li>
       <li>Latest: ${escapeHtml(pim.latest_event ? healthAge(pim.latest_event) : "never")}</li>
-      <li>${Number(pim.products || 0).toLocaleString()} product(s) with extra content</li>
+      <li>${escapeHtml(plural("product", Number(pim.products || 0)))} with extra content</li>
     </ul>`;
-    const consumers = feeds.consumers || [];
     $("#health-feeds").innerHTML = !feeds.available
       ? '<div class="grid-empty">Not set up yet.</div>'
       : consumers.length
@@ -9794,6 +10643,49 @@
       }
     }
   }
+
+  // ----- Dashboard figures -----
+  // One small live number per card so the landing page answers "is anything
+  // waiting for me?". Both requests fail quietly: a card without a figure is
+  // still a working link, and the dashboard must never open with an error.
+  const dashState = { generation: 0 };
+
+  function dashFigure(id, value) {
+    const el = $(`#${id}`);
+    if (el) el.textContent = value || "";
+  }
+
+  async function loadDashboard() {
+    const generation = ++dashState.generation;
+    const overview = api("/api/health/overview").then((resp) => {
+      if (generation !== dashState.generation) return;
+      const feats = resp?.features || {};
+      const pull = healthPullSummary(resp);
+      dashFigure("dash-stat-prices", `${plural("rule", feats.price_rules?.active ?? 0)} on`);
+      dashFigure("dash-stat-blocks", `${plural("store", feats.sync_blocks?.stores ?? 0)} frozen`);
+      dashFigure("dash-stat-mix", `${plural("store", (feats.mix_stores || []).length)} with a custom mix`);
+      dashFigure("dash-stat-pricing", `${plural("store", feats.tier_assignments ?? 0)} assigned`);
+      const words = { ok: "OK", late: "late", failed: "failed" };
+      dashFigure("dash-stat-health", pull.state === "none" ? "No data pulls yet"
+        : pull.state === "failed" ? "Last pull failed"
+        : `Last pull ${words[pull.state]} · ${healthAge(pull.finishedAt)}`);
+    }).catch(() => {});
+    const ownership = api("/api/logo-ownership").then((resp) => {
+      if (generation !== dashState.generation) return;
+      const rows = Array.isArray(resp?.stores) ? resp.stores : [];
+      const on = rows.filter((r) => r.owned).length;
+      dashFigure("dash-stat-ownership", rows.length ? `${on.toLocaleString()} of ${plural("store", rows.length)} on` : "");
+    }).catch(() => {});
+    await Promise.all([overview, ownership]);
+  }
+
+  // Help page: tool names are links. Page names switch views through the
+  // shared [data-view] binding; the dialog tools (Activity Log, Logo Sync
+  // Stores, Import Legacy Sheets) press the matching Tools-menu item.
+  function wireHelpLinks() {
+    $$(".help-link[data-help-open]").forEach((el) => el.addEventListener("click", () => $(`#${el.dataset.helpOpen}`)?.click()));
+  }
+  wireHelpLinks();
 
   wireEvents();
   initAssistant();

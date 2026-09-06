@@ -182,7 +182,7 @@ class SetColorClassCommand(Command):
 class SetStockOverrideCommand(Command):
     style_code: str = Field(min_length=1, max_length=100, description="Product style code (any store) whose stock behaviour is forced.")
     mode: Literal["fake", "real"] = Field(description="fake = always show in stock at 99,999 regardless of FDM4; real = use live FDM4 stock even if its brand rule says fake.")
-    note: str = Field(default="", max_length=1000, description="Optional reason shown on the Fake Inventory page.")
+    note: str = Field(default="", max_length=1000, description="Optional reason shown on the Stock Display page.")
     active: bool = Field(default=True, description="False keeps the exception on file but switched off.")
 
 
@@ -204,7 +204,7 @@ class SetSyncBlockCommand(Command):
     store: str = Field(min_length=1, max_length=100, description="Store code the freeze applies to.")
     styles: List[str] = Field(default=[], max_length=50, description="Style codes to freeze in this store (1-50). Empty list = freeze the whole store.")
     scope: Literal["full", "pricing"] = Field(default="full", description="Whole-store freezes only: full = the hourly update skips the store entirely; pricing = it still runs but never rewrites an existing variation's price. Style freezes are always full.")
-    note: str = Field(default="", max_length=1000, description="Optional reason shown on the Sync Blocks page.")
+    note: str = Field(default="", max_length=1000, description="Optional reason shown on the Freezes page.")
     active: bool = Field(default=True, description="False keeps the block on file but switched off.")
 
 

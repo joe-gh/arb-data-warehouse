@@ -95,7 +95,7 @@ parentheses after the plain name (Davey RC Safety (S_032813)).
   silently lose logos; missing styles must be imported from the old logo
   sheets first (Import Legacy Sheets).
 - Activity Log: every logo change, who, when, field-level diff. Read-only.
-- Store Pricing Levels: only matter when FDM4 sends no price for an item;
+- Pricing Levels: only matter when FDM4 sends no price for an item;
   the store's level (L1/L2/L3) fills the gap from the price list. Real
   FDM4 prices are never changed. An MSRP level means no override.
 - Price Rules: discounts and adjustments Arborwear controls directly (percent
@@ -103,14 +103,14 @@ parentheses after the plain name (Davey RC Safety (S_032813)).
   exceptions, retail endings, floors/caps). Rules start off; Preview is
   required before turning one on. "Check a price" shows one product's final
   price. A store with a price freeze ignores rules until unfrozen.
-- Sync Blocks: freezes so the hourly update leaves things alone: a whole
+- Freezes (formerly Sync Blocks): freezes so the hourly update leaves things alone: a whole
   store, only its prices (keeps new products and stock, never overwrites
   hand-set prices), or single styles. Each has an on/off switch.
 - Product Mix: which products a store carries. Default = follow FDM4. A
   curated list lets people add/remove styles and trim colors/sizes.
   Removing hides the product (marked out of stock); re-adding brings it back.
   Reaches the store on the next hourly sync.
-- Fake Inventory: goods sold but not stocked here show as always in stock so
+- Stock Display (formerly Fake Inventory): goods sold but not stocked here show as always in stock so
   customers can always order. Brand rules decide whole brands (by FDM4 brand /
   mill code, not the website's Brand attribute): Arborwear and the stocked
   premium brands show real counts; everything else shows always in stock;
@@ -162,7 +162,7 @@ you) could still apply.
   Apply and "like colors" copies) and which were never confirmed.
 - list_logo_names shows the names shoppers see (per store, or the shared
   defaults) and which names are store-specific.
-- get_stock_rules shows the Fake Inventory brand rules and style
+- get_stock_rules shows the Stock Display brand rules and style
   exceptions; list_price_rules the price rules and frozen stores;
   list_sync_blocks the freezes; get_product_mix a store's product lineup
   mode and curated styles.
@@ -204,7 +204,7 @@ resume/cancel, job retry/skip/restore, lock/unlock and drift audit:
 
 - get_product_state: a store product and its variations, inactive rows included,
   with projected price and stock. get_stock: live warehouse inventory before
-  Fake Inventory overrides.
+  Stock Display overrides.
 - audit_store_prices: a store's largest rule-driven price changes, per-rule
   counts and whether pricing is frozen.
 - get_change_history answers "who changed this?" with every recorded actor.
@@ -268,8 +268,8 @@ set_styles_active (show or hide every logo on up to 50 styles).
 Names, colors and rules (same staging, same undo): set_logo_name / clear_logo_name
 (the name shoppers see for a logo; store null = the shared default, a store
 code = that store only), set_color_class (a garment color's light/dark
-class), set_stock_override / remove_stock_override (Fake Inventory style
-exceptions), set_brand_stock_rule / remove_brand_stock_rule (Fake Inventory
+class), set_stock_override / remove_stock_override (Stock Display style
+exceptions), set_brand_stock_rule / remove_brand_stock_rule (Stock Display
 brand rules by mill code from get_stock_rules), set_sync_block /
 remove_sync_block (freeze or unfreeze the hourly update for a whole store or
 named styles), set_logo_cost (one shopper charge, or none, for a logo across
@@ -330,14 +330,14 @@ _NAME_CLEAN = re.compile(r"[^A-Za-z0-9 &'.,/()\-]")
 
 VIEW_LABELS = {
     "dashboard": "Dashboard", "logo": "Logo Configuration", "names": "Logo Names",
-    "colors": "Logo Colors", "pricing": "Store Pricing Levels", "prices": "Price Rules",
-    "blocks": "Sync Blocks", "mix": "Product Mix", "stock": "Fake Inventory",
+    "colors": "Logo Colors", "pricing": "Pricing Levels", "prices": "Price Rules",
+    "blocks": "Freezes", "mix": "Product Mix", "stock": "Stock Display",
     "categories": "Categories", "health": "Health", "help": "Help",
 }
 DIALOG_LABELS = {
     "assignment": "the Add/edit logo form", "store-settings": "Store logo settings",
     "bulk-apply": "Bulk apply a logo", "design-swap": "Replace a design",
-    "copy": "Copy style configuration", "copy-many": "Copy this style's logos to many styles",
+    "copy": "Copy this style's logos", "copy-many": "Copy this style's logos to many styles",
     "batch": "Select styles (batch)", "ownership": "Logo sync stores", "sync": "Sync results",
     "audit": "Activity log", "reports": "Import punch list", "legacy": "Import legacy sheets",
     "import": "Import results", "pr": "Edit price rule", "mix-style": "Edit product-mix style",

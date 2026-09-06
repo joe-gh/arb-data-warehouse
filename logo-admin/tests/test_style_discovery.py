@@ -114,10 +114,17 @@ def test_coverage_lists_live_colors_without_active_logos(client_as):
     client = client_as()
     response = client.get("/api/styles/coverage", params={"store": "S_TEST", "unconfigured_only": "true"})
     assert response.status_code == 200, response.text
-    assert response.json()["styles"] == [
+    styles = response.json()["styles"]
+    # color_names maps each unconfigured code to its garment colour name (shown
+    # next to the code in the coverage report); check it apart from the rows.
+    names = [row.pop("color_names") for row in styles]
+    assert styles == [
         {"style": "STYLE-1", "name": "Style One", "colors_total": 3, "colors_configured": 1, "unconfigured": ["BLU", "GRN"]},
         {"style": "STYLE-5", "name": "Style Five", "colors_total": 2, "colors_configured": 0, "unconfigured": ["BLU", "RED"]},
     ]
+    for row, mapping in zip(styles, names):
+        assert set(mapping) <= set(row["unconfigured"])
+        assert all(isinstance(v, str) and v for v in mapping.values())
     everything = client.get("/api/styles/coverage", params={"store": "S_TEST", "unconfigured_only": "false"}).json()
     assert [r["style"] for r in everything["styles"]] == ["STYLE-1", "STYLE-2", "STYLE-3", "STYLE-4", "STYLE-5"]
     assert {r["style"]: r["unconfigured"] for r in everything["styles"]}["STYLE-2"] == []

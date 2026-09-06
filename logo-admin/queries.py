@@ -661,7 +661,15 @@ def store_logo_coverage(cursor, *, fdm4_store: str,
                    COALESCE(array_agg(DISTINCT color_code) FILTER (
                        WHERE kind = 'variation'
                          AND NULLIF(btrim(color_code), '') IS NOT NULL
-                   ), '{{}}'::text[]) AS colors
+                   ), '{{}}'::text[]) AS colors,
+                   -- Garment color names for the report (code -> name), the
+                   -- same source the style editor's color column reads.
+                   COALESCE(jsonb_object_agg(
+                       color_code, left(COALESCE(color, ''), 256)
+                   ) FILTER (
+                       WHERE kind = 'variation'
+                         AND NULLIF(btrim(color_code), '') IS NOT NULL
+                   ), '{{}}'::jsonb) AS color_names
               FROM woo.store_product_state
              WHERE fdm4_store = %s AND catalog_id = %s AND is_active = true
                AND style_code IS NOT NULL
@@ -673,7 +681,7 @@ def store_logo_coverage(cursor, *, fdm4_store: str,
              WHERE fdm4_store = %s AND active
              GROUP BY product_style
         ), scored AS (
-            SELECT l.product_style, l.name, l.colors,
+            SELECT l.product_style, l.name, l.colors, l.color_names,
                    ARRAY(
                        SELECT c FROM unnest(l.colors) AS c
                         WHERE c <> ALL (COALESCE(cf.colors, '{{}}'::text[]))
@@ -686,7 +694,12 @@ def store_logo_coverage(cursor, *, fdm4_store: str,
                left(COALESCE(name, ''), {READ_TEXT_CHAR_LIMIT}) AS name,
                cardinality(colors) AS colors_total,
                (cardinality(colors) - cardinality(unconfigured)) AS colors_configured,
-               unconfigured[1:{STYLE_COLOR_RESULT_LIMIT}] AS unconfigured
+               unconfigured[1:{STYLE_COLOR_RESULT_LIMIT}] AS unconfigured,
+               COALESCE((
+                   SELECT jsonb_object_agg(e.key, e.value)
+                     FROM jsonb_each_text(color_names) AS e
+                    WHERE e.key = ANY (unconfigured[1:{STYLE_COLOR_RESULT_LIMIT}])
+               ), '{{}}'::jsonb) AS color_names
           FROM scored
          {where_clause}
          ORDER BY product_style
@@ -1445,27 +1458,69 @@ def get_audit_log(
         ("action", action, "action"),
     ):
         if value:
-            clauses.append(f"{column} = %s")
+            clauses.append(f"l.{column} = %s")
             params.append(_clean(value, field))
     if before_id is not None:
         if int(before_id) < 1:
             raise QueryValidationError("before_id is invalid")
-        clauses.append("id < %s")
+        clauses.append("l.id < %s")
         params.append(int(before_id))
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    # Names next to the codes the log stores: the garment color as the logo
+    # grid names it (store product state, then the color classification) and
+    # the logo display name for the entry's design + color scheme (from the
+    # audited row, else the assignment as it stands today). Every lookup is a
+    # single indexed row per entry, so the page costs about what the plain
+    # LIMIT did.
     rows, rows_truncated, bytes_truncated = _bounded_query(
         cursor,
         f"""
-        SELECT id, at,
-               left(actor, 256) AS actor,
-               left(action, 256) AS action,
-               left(fdm4_store, 256) AS fdm4_store,
-               left(product_style, 256) AS product_style,
-               left(garment_color_code, 256) AS garment_color_code,
-               option_row, position, detail
-          FROM logo.audit_log
+        SELECT l.id, l.at,
+               left(l.actor, 256) AS actor,
+               left(l.action, 256) AS action,
+               left(l.fdm4_store, 256) AS fdm4_store,
+               left(l.product_style, 256) AS product_style,
+               left(l.garment_color_code, 256) AS garment_color_code,
+               l.option_row, l.position, l.detail,
+               left(COALESCE(cn.color_name, cc.color_name, ''), {READ_TEXT_CHAR_LIMIT})
+                   AS garment_color_name,
+               left(COALESCE(dn.name, ''), {READ_TEXT_CHAR_LIMIT}) AS logo_name
+          FROM logo.audit_log l
+          LEFT JOIN LATERAL (
+              SELECT s.color AS color_name
+                FROM woo.store_product_state s
+               WHERE l.garment_color_code <> ''
+                 AND s.fdm4_store = l.fdm4_store
+                 AND s.style_code = l.product_style
+                 AND s.color_code = l.garment_color_code
+                 AND NULLIF(btrim(s.color), '') IS NOT NULL
+               LIMIT 1
+          ) cn ON true
+          LEFT JOIN logo.color_class cc
+                 ON l.garment_color_code <> ''
+                AND cc.color_code = l.garment_color_code
+          LEFT JOIN logo.assignment a
+                 ON l.action IN ('assignment_created', 'assignment_updated', 'assignment_deleted')
+                AND a.fdm4_store = l.fdm4_store
+                AND a.product_style = l.product_style
+                AND a.garment_color_code = l.garment_color_code
+                AND a.option_row = l.option_row
+                AND a.position = l.position
+          LEFT JOIN LATERAL (
+              SELECT candidate.name
+                FROM logo.display_name candidate
+               WHERE candidate.design_id = COALESCE(l.detail->'new'->>'design_id',
+                                                    l.detail->'old'->>'design_id',
+                                                    a.design_id)
+                 AND candidate.color_scheme_id = COALESCE(l.detail->'new'->>'color_scheme_id',
+                                                          l.detail->'old'->>'color_scheme_id',
+                                                          a.color_scheme_id)
+                 AND candidate.fdm4_store IN (l.fdm4_store, '')
+               ORDER BY (candidate.fdm4_store = l.fdm4_store) DESC
+               LIMIT 1
+          ) dn ON true
           {where}
-         ORDER BY id DESC
+         ORDER BY l.id DESC
          LIMIT %s
         """,
         tuple(params + [int(limit) + 1]),

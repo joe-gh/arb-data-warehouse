@@ -45,8 +45,8 @@
           <button class="main-nav__item" type="button" role="menuitem" data-view="pricing">Pricing Levels</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="prices">Price Rules</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="mix">Product Mix</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="blocks">Sync Blocks</button>
-          <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Fake Inventory</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="blocks">Freezes</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Stock Display</button>
         </div>
       </div>
       <div class="main-nav__group" data-group="categories,health">
@@ -58,16 +58,16 @@
           <button class="main-nav__item" type="button" role="menuitem" data-view="health">System Health</button>
           <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section" role="presentation">Logo data</p>
-          <button id="import-button" class="main-nav__item" type="button" role="menuitem">Import Assignments <span class="badge badge--writes">Makes changes</span></button>
-          <a id="export-link" class="main-nav__item" role="menuitem" href="/api/export">Export Assignments<small id="export-scope">CSV for all stores</small></a>
+          <button id="import-button" class="main-nav__item" type="button" role="menuitem">Import Assignments <span class="badge badge--writes">Uploads a CSV of logo rows</span></button>
+          <a id="export-link" class="main-nav__item" role="menuitem" href="/api/export">Export Assignments<small id="export-scope" title="CSV · all stores">CSV · all stores</small></a>
           <button id="reports-button" class="main-nav__item" type="button" role="menuitem">Import Punch List</button>
           <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section" role="presentation">Legacy migration</p>
-          <button id="legacy-import-button" class="main-nav__item" type="button" role="menuitem">Import Legacy Sheets <span class="badge badge--writes">Makes changes</span></button>
-          <button id="legacy-images-button" class="main-nav__item" type="button" role="menuitem">Mirror Legacy Images <span class="badge badge--global">All stores</span></button>
+          <button id="legacy-import-button" class="main-nav__item" type="button" role="menuitem">Import Legacy Sheets <span class="badge badge--writes">Uploads the old logo sheets</span></button>
+          <button id="legacy-images-button" class="main-nav__item" type="button" role="menuitem">Mirror Legacy Images <span class="badge badge--global">One-time migration, every store</span></button>
           <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section" role="presentation">Administration</p>
-          <button id="ownership-button" class="main-nav__item" type="button" role="menuitem">Logo Sync Stores <span class="badge badge--writes">Makes changes</span></button>
+          <button id="ownership-button" class="main-nav__item" type="button" role="menuitem">Logo Sync Stores <span class="badge badge--writes">Turn logo sync on or off per store</span></button>
           <button id="audit-button" class="main-nav__item" type="button" role="menuitem" title="Change history - who changed what, and when">Activity Log</button>
         </div>
       </div>
@@ -77,7 +77,7 @@
         <button class="main-nav__link main-nav__link--quiet" type="button" data-view="help">Help</button>
       </nav>
       <div class="combobox combobox--header" id="header-store-box">
-        <input id="header-store-search" type="search" placeholder="Active store..." autocomplete="off" aria-autocomplete="list" aria-controls="header-store-options" aria-expanded="false" title="Active store - Logo Configuration, Logo Names, and Product Mix follow this selection">
+        <input id="header-store-search" type="search" placeholder="Store…" autocomplete="off" aria-autocomplete="list" aria-controls="header-store-options" aria-expanded="false" title="The store you are working on - Logo Configuration, Logo Names, and Product Mix follow this choice">
         <input type="hidden" id="header-store-value">
         <div id="header-store-options" class="combobox__options" role="listbox" hidden></div>
       </div>
@@ -106,7 +106,7 @@
         <div class="dashboard__head">
           <p class="eyebrow">Overview</p>
           <h1>Warehouse Operations</h1>
-          <p class="muted">Manage each store's logos, prices, and product lineup. Changes publish to the store websites automatically every hour.</p>
+          <p class="muted">Manage each store's logos, prices, and product mix. Changes publish to the store websites automatically every hour.</p>
         </div>
         <div class="dashboard__section">
           <div class="dash-section-head"><h2>Logos</h2><p class="muted">Which logos go on which garments, and what shoppers see. Logo changes go live when you press Sync on a store.</p></div>
@@ -129,32 +129,37 @@
             </button>
             <button class="dash-card" type="button" id="dash-ownership">
               <span class="dash-card__title">Logo Sync Stores</span>
+              <span class="dash-card__stat" id="dash-stat-ownership"></span>
               <span class="dash-card__desc">Turn warehouse logo sync on or off per store, with a safety check so no product loses its logos.</span>
             </button>
           </div>
         </div>
         <div class="dashboard__section">
-          <div class="dash-section-head"><h2>Store operations</h2><p class="muted">Prices, product lineups, freezes, and stock behavior. Changes reach the store websites within the hour, automatically.</p></div>
+          <div class="dash-section-head"><h2>Store operations</h2><p class="muted">Prices, product mix, freezes, and stock display. Changes reach the store websites within the hour, automatically.</p></div>
           <div class="dashboard__cards">
             <button class="dash-card" type="button" data-view="pricing">
-              <span class="dash-card__title">Store Pricing Levels</span>
+              <span class="dash-card__title">Pricing Levels</span>
+              <span class="dash-card__stat" id="dash-stat-pricing"></span>
               <span class="dash-card__desc">Choose which backup price list a store uses when FDM4 sends no price for an item.</span>
             </button>
             <button class="dash-card" type="button" data-view="prices">
               <span class="dash-card__title">Price Rules</span>
-              <span class="dash-card__desc">Create targeted price adjustments by store, tier, brand, category, or style - previewed before they go live.</span>
+              <span class="dash-card__stat" id="dash-stat-prices"></span>
+              <span class="dash-card__desc">Create targeted price adjustments by store, pricing level, brand, category, or style - previewed before they go live.</span>
             </button>
             <button class="dash-card" type="button" data-view="blocks">
-              <span class="dash-card__title">Sync Blocks</span>
-              <span class="dash-card__desc">Freeze whole stores, just their prices, or specific products so the hourly update leaves them exactly as they are.</span>
+              <span class="dash-card__title">Freezes</span>
+              <span class="dash-card__stat" id="dash-stat-blocks"></span>
+              <span class="dash-card__desc">Freeze a whole store, only its prices, or specific styles so the hourly update leaves them alone.</span>
             </button>
             <button class="dash-card" type="button" data-view="mix">
               <span class="dash-card__title">Product Mix</span>
+              <span class="dash-card__stat" id="dash-stat-mix"></span>
               <span class="dash-card__desc">Control exactly which products each store carries - or let FDM4 decide.</span>
             </button>
             <button class="dash-card" type="button" data-view="stock">
-              <span class="dash-card__title">Fake Inventory</span>
-              <span class="dash-card__desc">Make specific styles always show as in stock (third-party goods we can always order), or force real stock counts.</span>
+              <span class="dash-card__title">Stock Display</span>
+              <span class="dash-card__desc">Choose which brands show real warehouse counts and which always show as in stock.</span>
             </button>
           </div>
         </div>
@@ -164,7 +169,7 @@
           <div class="dashboard__cards">
             <button class="dash-card" type="button" data-view="categories">
               <span class="dash-card__title">Category Editor</span>
-              <span class="dash-card__desc">Import live category snapshots from dev or production, then plan and apply the new category tree.</span>
+              <span class="dash-card__desc">Reorganise store categories from one draft and apply it to every store.</span>
             </button>
           </div>
         </div>
@@ -174,6 +179,7 @@
           <div class="dashboard__cards">
             <button class="dash-card" type="button" data-view="health">
               <span class="dash-card__title">Health</span>
+              <span class="dash-card__stat" id="dash-stat-health"></span>
               <span class="dash-card__desc">Check that data pulls and store updates are running normally.</span>
             </button>
             <button class="dash-card" type="button" data-view="help">
@@ -193,7 +199,7 @@
           <p class="eyebrow">Logo configuration</p>
           <h1 id="selection-title">Choose a storefront and style</h1>
         </div>
-        <button id="refresh-button" class="icon-button" type="button" title="Refresh current data" aria-label="Refresh current data">
+        <button id="refresh-button" class="icon-button" type="button" title="Reload this style from the warehouse" aria-label="Reload this style from the warehouse">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 5.6A9 9 0 1 0 21 12h-2a7 7 0 1 1-2-4.9L14 10h8V2l-3.6 3.6Z"/></svg>
         </button>
       </div>
@@ -241,6 +247,10 @@
       </div>
       <h2 id="empty-title">Select a style to begin</h2>
       <p>Search by product style after choosing a store. You’ll see every active garment color and its three logo positions.</p>
+      <div id="style-browse" class="style-browse" hidden>
+        <p id="style-browse-hint" class="muted text-small" aria-live="polite"></p>
+        <div id="style-browse-list" class="style-browse__list" role="list"></div>
+      </div>
     </section>
 
     <div id="style-workspace" hidden>
@@ -269,16 +279,16 @@
           </button>
           <button id="copy-style-button" class="button button--secondary" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V3h13v13h-5v5H3V8h5Zm2 0h6v6h3V5h-9v3Zm4 2H5v9h9v-9Z"/></svg>
-            Copy config
+            Copy this style's logos
           </button>
           <button id="copy-many-button" class="button button--secondary" type="button">Copy to many styles…</button>
-          <div class="split-action">
-            <button id="sync-style-button" class="button button--primary" type="button" title="Push this style's logo assignments to {{ wp_target_host }}">
+          <div class="split-action split-action--spaced">
+            <button id="sync-style-button" class="button button--secondary" type="button" title="Push only this style's logos to {{ wp_target_host }}">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10V4l5 5-5 5v-3H7V7Zm10 10H7v3l-5-5 5-5v3h10v4Z"/></svg>
               Sync style
             </button>
-            <button id="sync-store-button" class="button button--primary" type="button" title="Sync the entire store to {{ wp_target_host }}" aria-label="Sync the entire store">
-              Sync store
+            <button id="sync-store-button" class="button button--primary" type="button" title="Push every style's logos in this store to {{ wp_target_host }}" aria-label="Sync the entire store">
+              Sync store<span id="sync-store-count" class="sync-store-count"></span>
             </button>
           </div>
         </div>
@@ -294,8 +304,8 @@
         <div class="card__header">
           <div>
             <p class="eyebrow">Assignments</p>
-            <h3 id="grid-title">Garment colors × logo rows</h3>
-            <p class="muted text-small">Each row is one choice the customer can pick at checkout; positions 1-3 are the placements inside that choice. Use “Add row” to offer another logo on the same color.</p>
+            <h3 id="grid-title">Logos by garment color</h3>
+            <p class="muted text-small">Each row is one choice the customer can pick at checkout; positions 1 to 3 are the spots on the garment inside that choice. Use “Add row” to offer another logo on the same color.</p>
           </div>
           <div class="legend" aria-label="Assignment status legend">
             <span><i class="status-dot status-dot--active"></i>Active</span>
@@ -303,7 +313,10 @@
           </div>
         </div>
         <div class="grid-toolbar">
-          <span class="muted">Drag the ⋮⋮ handle to reorder logo rows (shoppers see that order) or garment colors (editor only). With the box checked, the same order is applied to every color that carries those logos.</span>
+          <aside id="drag-tip" class="notice notice--tight grid-tip" role="note" hidden>
+            <span class="notice__icon" aria-hidden="true">i</span>
+            <div>Drag the ⋮⋮ handle to reorder logo rows (shoppers see that order) or garment colors (editor only). With the box checked, the same order is applied to every color that carries those logos. <button id="drag-tip-dismiss" class="button button--ghost button--small" type="button">Got it</button></div>
+          </aside>
           <label class="check-row check-row--inline"><input id="reorder-all-colors" type="checkbox" checked><span>Row order applies to every color on this style (matched by logo)</span></label>
         </div>
         <div id="assignment-grid" class="assignment-grid" aria-live="polite"></div>
@@ -318,39 +331,54 @@
           <div>
             <p class="eyebrow">Multi-style jobs</p>
             <h2 id="bulk-title">Bulk Operations</h2>
-            <p class="muted text-small">Pick a job, choose target styles, preview, apply. Every run lands in Bulk history with one-click undo.</p>
+            <p class="muted text-small">Pick a job, choose target styles, preview, apply. Every run lands in the bulk history with one-click undo.</p>
           </div>
-          <div class="field bulk-store-field">
-            <label class="field__label" for="bulk-store">Store</label>
-            <select id="bulk-store"><option value="">Choose a store…</option></select>
+          <div class="bulk-head-actions">
+            <button id="bulk-history-open" class="button button--secondary button--small" type="button" aria-controls="bulk-history-card" aria-expanded="false">Show bulk history</button>
+            <div class="field bulk-store-field">
+              <label class="field__label" for="bulk-store">Store</label>
+              <select id="bulk-store"><option value="">Choose a store…</option></select>
+            </div>
           </div>
         </div>
+      </section>
+
+      <section id="bulk-history-card" class="card" hidden aria-labelledby="bulk-history-card-title">
+        <div class="card__header card__header--compact">
+          <div>
+            <p class="eyebrow">Bulk history</p>
+            <h3 id="bulk-history-card-title">Recent bulk runs for this store</h3>
+            <p class="muted text-small">The last 10 runs. Undo puts back what a run changed; edits made since are kept.</p>
+          </div>
+          <button id="bulk-history-refresh" class="button button--ghost button--small" type="button">Reload history</button>
+        </div>
+        <div id="bulk-ops-history" class="stack bulk-ops-history" aria-live="polite"></div>
       </section>
 
       <div id="bulk-jobs" class="dashboard__cards">
         <button class="dash-card" type="button" data-bulk-job="fill">
           <span class="dash-card__title">Fill missing colors</span>
-          <span class="dash-card__desc">Copy each style's own logos onto its colors that have none. Occupied slots are never touched.</span>
+          <span class="dash-card__desc">Copy each style's own logos onto its colors that have none. Colors that already have a logo are never changed.</span>
         </button>
         <button class="dash-card" type="button" data-bulk-job="coverage">
           <span class="dash-card__title">Coverage report</span>
-          <span class="dash-card__desc">Every style with logo-less colors, split into fixable and no-logos-anywhere. Exportable.</span>
+          <span class="dash-card__desc">Every style with a color that has no logo, split into fixable styles and styles with no logos anywhere. Export to CSV.</span>
         </button>
         <button class="dash-card" type="button" data-bulk-job="paste">
           <span class="dash-card__title">Paste logos to many styles</span>
-          <span class="dash-card__desc">Copy a color in the Logo editor, then paste it onto selected styles by color scope.</span>
+          <span class="dash-card__desc">Copy a color in the Logo editor, then choose which colors of the selected styles receive it.</span>
         </button>
         <button class="dash-card" type="button" data-bulk-job="bulkapply">
           <span class="dash-card__title">Bulk apply a logo</span>
-          <span class="dash-card__desc">Put one logo on the selected styles - light/dark aware.</span>
+          <span class="dash-card__desc">Put one logo on the selected styles. Picks the white or black version automatically for each garment color.</span>
         </button>
         <button class="dash-card" type="button" data-bulk-job="activate">
           <span class="dash-card__title">Activate / deactivate styles</span>
           <span class="dash-card__desc">Turn every logo assignment on the selected styles on or off.</span>
         </button>
         <button class="dash-card" type="button" data-bulk-job="copy">
-          <span class="dash-card__title">Copy style config to many</span>
-          <span class="dash-card__desc">Copy one style's whole logo setup onto the selected styles, color-matched.</span>
+          <span class="dash-card__title">Copy one style's logos to others</span>
+          <span class="dash-card__desc">Copy every logo from one style onto the selected styles, matched by garment color.</span>
         </button>
       </div>
 
@@ -364,9 +392,9 @@
           <div class="card__header">
             <div>
               <p class="eyebrow">Fill missing colors</p>
-              <p class="muted text-small">Each style copies from its own configured color. The source is picked automatically when every configured color carries the same logos; otherwise choose one. Occupied slots are skipped.</p>
+              <p class="muted text-small">Each style copies from one of its own colors that already has logos. That color is picked automatically when every configured color carries the same logos; otherwise choose one. Colors that already have a logo are never changed.</p>
             </div>
-            <button id="fill-refresh" class="button button--ghost button--small" type="button">Refresh</button>
+            <button id="fill-refresh" class="button button--ghost button--small" type="button">Reload the plan</button>
           </div>
           <div id="fill-summary" class="muted text-small" aria-live="polite"></div>
           <div id="fill-copyable" class="table-wrap"></div>
@@ -385,7 +413,7 @@
           <div class="card__header">
             <div>
               <p class="eyebrow">Coverage report</p>
-              <p class="muted text-small">Live styles with at least one garment color lacking an active logo.</p>
+              <p class="muted text-small">Live styles with at least one garment color that has no active logo. Click a style number to open it in Logo Configuration.</p>
             </div>
             <button id="coverage-export" class="button button--secondary button--small" type="button" disabled>Export CSV</button>
           </div>
@@ -431,8 +459,8 @@
       <div class="pricing">
         <div class="pricing__head">
           <p class="eyebrow">Store</p>
-          <h1>Store Pricing Levels</h1>
-          <p class="muted">The price from FDM4 always wins. When FDM4 sends no price for an item, the store's assigned pricing level fills the gap from the price list. Stores that already price correctly are never affected. Changes take effect within the hour.</p>
+          <h1>Pricing levels</h1>
+          <p class="muted">The price from FDM4 always wins. When FDM4 sends no price for an item, the store's pricing level fills the gap from that level's price list. Stores that already price correctly are never affected. Changes take effect within the hour.</p>
         </div>
 
         <div class="pricing__cols">
@@ -448,14 +476,14 @@
                 <input id="tier-store-code" type="hidden">
                 <div id="tier-store-options" class="combobox__options" role="listbox" hidden></div>
               </div>
-              <label class="field"><span class="field__label">Pricing level</span><select id="tier-select" required><option value="">Choose a pricing level...</option></select><small id="tier-current" class="muted" aria-live="polite"></small><span class="field__help">Used when FDM4 sends no price. MSRP = full retail price, same as having no level set.</span></label>
-              <label class="field"><span class="field__label">Note</span><input id="tier-note" maxlength="500" placeholder="Optional - why this store gets special pricing"></label>
+              <label class="field"><span class="field__label">Pricing level</span><select id="tier-select" required><option value="">Choose a pricing level...</option></select><small id="tier-current" class="muted" aria-live="polite"></small><small id="tier-detected" class="muted tier-detected" hidden></small><span class="field__help">Fills in any price FDM4 leaves blank. MSRP means full retail, the same as having no level set.</span></label>
+              <label class="field"><span class="field__label">Note</span><input id="tier-note" maxlength="500" placeholder="Optional - why this store gets special pricing"><span class="field__help">Leave this blank to keep the note already saved for the store.</span></label>
               <button class="button button--primary" type="submit">Save pricing level</button>
             </form>
           </section>
 
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Reference</p><h3>Available pricing levels</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Reference</p><h3>Available pricing levels</h3><p class="muted text-small">Any level fills a missing FDM4 price from that level's price list. MSRP means full retail, the same as having no level set.</p></div></div>
             <div id="tier-list" class="table-wrap" aria-live="polite"></div>
           </section>
         </div>
@@ -474,7 +502,12 @@
         <div class="pricing__head">
           <p class="eyebrow">Colors review</p>
           <h1>Light / dark classification</h1>
-          <p class="muted">Is each garment color light or dark? Dark garments get the white logo, light garments get the black logo - this is what Bulk Apply uses. An AI made the first guess; click a chip to cycle light → dark → both. Changes save immediately.</p>
+          <p class="muted">Is each garment color light or dark? Dark garments get the white logo, light garments get the black logo - this is what Bulk Apply uses. Click a chip to cycle light → dark → both; "both" means either logo version works on this color. Changes save immediately, with an Undo in the confirmation.</p>
+          <p class="muted"><strong>These settings apply to every store.</strong> The store picker in the header does not change this list.</p>
+          <div class="legend colors-legend" aria-label="Colors review legend">
+            <span><i class="review-bar-swatch" aria-hidden="true"></i>Needs review - the first guess was automatic and nobody has confirmed it yet</span>
+            <span><span class="chip chip--unconfirmed">Unconfirmed</span>Nobody has confirmed this color; clicking the chip confirms it</span>
+          </div>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -485,7 +518,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5Zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14Z"/></svg>
               <input id="color-search" type="search" placeholder="Search color name or code..." autocomplete="off">
             </div>
-            <label class="field--checkbox" title="Only AI guesses that are less than 70% sure"><input id="color-review-only" type="checkbox"> Needs review only</label>
+            <label class="field--checkbox" title="Only unconfirmed colors where the automatic guess was unsure"><input id="color-review-only" type="checkbox"> Needs review only</label>
             <select id="color-class-filter" class="field__select" aria-label="Class filter">
               <option value="">All classes</option>
               <option value="light">Light</option>
@@ -495,7 +528,7 @@
             <span id="color-summary" class="muted"></span>
           </div>
           <div class="table-wrap">
-            <table id="color-table" class="data-table"><thead><tr><th data-sort="name" title="Sort">Color</th><th data-sort="code" title="Sort">Code</th><th data-sort="styles" title="Sort">Styles</th><th data-sort="class" title="Sort">Light or dark</th><th data-sort="source" title="Sort">Who set it</th><th data-sort="confidence" title="Sort">Confidence</th></tr></thead><tbody></tbody></table>
+            <table id="color-table" class="data-table"><thead><tr><th data-sort="name" title="Sort">Color</th><th data-sort="code" title="Sort">Code</th><th data-sort="styles" title="Sort">Styles</th><th data-sort="class" title="Sort">Light or dark</th><th data-sort="source" title="Sort">Who set it</th><th data-sort="confidence" title="Sort">Status</th></tr></thead><tbody></tbody></table>
           </div>
           <div id="color-pager" class="pager" hidden>
             <button id="color-prev" class="button button--ghost button--small" type="button">Previous</button>
@@ -512,7 +545,11 @@
         <div class="pricing__head">
           <p class="eyebrow">Pricing</p>
           <h1>Price rules</h1>
-          <p class="muted">Price overrides Arborwear controls directly (not from FDM4). Rules are checked in order (1 first); the first match wins unless a rule is marked combinable. Rules can carry exceptions, retail price endings (.99), and never-above or never-below bounds. Changes reach the store websites within the hour. <strong>Preview is required before a rule can be turned on.</strong></p>
+          <p class="muted">Price rules are price changes Arborwear controls directly, on top of what FDM4 sends. Changes reach the store websites within the hour, and every rule is previewed before it can be turned on.</p>
+        </div>
+        <div class="cat-guide pr-guide">
+          <p><strong>What this is.</strong> A rule picks stores and products, then changes their price: a percentage or dollar change, an exact price, a pricing level's price, or a multiple of cost. Rules run lowest priority number first, and the first rule that matches a product wins unless that rule lets later rules also apply. A rule can carry exceptions (stores, brands, categories or styles it skips), a retail ending such as .99, and a never-below or never-above price.</p>
+          <p><strong>What to do.</strong> Press <em>New rule</em>, choose the stores and products, set the effect and save. Press <em>Preview</em> to see exactly which products change and by how much, then <em>Turn on</em>. Use <em>Check a price</em> to see the final price of one product after every active rule.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -551,12 +588,12 @@
     </section>
 
     <!-- Sync blocks -->
-    <section id="view-stock" class="view" hidden aria-label="Fake inventory">
+    <section id="view-stock" class="view" hidden aria-label="Stock display">
       <div class="pricing">
         <div class="pricing__head">
           <p class="eyebrow">Product sync</p>
-          <h1>Fake inventory</h1>
-          <p class="muted">Two levels of control. <strong>Brand rules</strong> decide whole brands: Arborwear and the stocked premium brands show real warehouse counts, every other brand shows as always in stock (third-party goods we can always order). <strong>Style exceptions</strong> override the brand rule for a single style. For brands without a rule, footwear, arborist gear, and tools always show real stock. Changes reach the store websites within the hour.</p>
+          <h1>Stock display</h1>
+          <p class="muted">Stock display (formerly Fake Inventory) decides which products show real warehouse counts and which always show as in stock. <strong>Brand rules</strong> decide whole brands: Arborwear and the stocked premium brands show real warehouse counts; every other brand shows as always in stock, because third-party goods can always be ordered. <strong>Style exceptions</strong> override the brand rule for a single style. For brands without a rule, footwear, arborist gear and tools show real stock. Changes reach the store websites within the hour.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -564,8 +601,8 @@
           </div>
           <div class="table-toolbar">
             <input id="bs-search" type="search" placeholder="Search brands..." aria-label="Search brands">
-            <select id="bs-mode" class="field__select" aria-label="Filter by behavior">
-              <option value="">All behaviors</option>
+            <select id="bs-mode" class="field__select" aria-label="Filter by rule">
+              <option value="">All rules</option>
               <option value="real">Real stock</option>
               <option value="fake">Always in stock</option>
               <option value="auto">Automatic</option>
@@ -604,8 +641,8 @@
           </div>
           <div class="table-toolbar">
             <input id="so-search" type="search" placeholder="Search by style, product, brand, or reason..." aria-label="Search exceptions">
-            <select id="so-mode-filter" class="field__select" aria-label="Filter by behavior">
-              <option value="">All behaviors</option>
+            <select id="so-mode-filter" class="field__select" aria-label="Filter by rule">
+              <option value="">All rules</option>
               <option value="fake">Always in stock</option>
               <option value="real">Real stock</option>
             </select>
@@ -627,12 +664,12 @@
       </div>
     </section>
 
-    <section id="view-blocks" class="view" hidden aria-label="Sync blocks">
+    <section id="view-blocks" class="view" hidden aria-label="Freezes">
       <div class="pricing">
         <div class="pricing__head">
           <p class="eyebrow">Product sync</p>
-          <h1>Sync blocks</h1>
-          <p class="muted">Freeze whole stores, just their prices, or specific products so the hourly update leaves them alone. Frozen items are skipped completely - no price, stock, or product-detail changes, and they are never hidden or removed. Everything stays exactly as it is until you turn the freeze off.</p>
+          <h1>Freezes</h1>
+          <p class="muted">Freezes (formerly Sync Blocks) keep the hourly update away from a whole store, just its prices, or specific styles. Frozen items are skipped completely - no price, stock or product-detail changes, and they are never hidden or removed. Everything stays exactly as it is until you turn the freeze off.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -641,13 +678,15 @@
           <div class="card__body">
             <div class="form-row">
               <div class="field combobox"><span class="field__label">Store</span><input id="sb-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="sb-store-options" aria-expanded="false"><input type="hidden" id="sb-store"><div id="sb-store-options" class="combobox__options" role="listbox" hidden></div></div>
-              <div class="sb-freeze-options">
-                <label class="field--checkbox"><input id="sb-whole" type="checkbox"> <span>Freeze the ENTIRE store<small>Nothing on this store changes until the freeze is turned off.</small></span></label>
-                <label class="field--checkbox has-help"><input id="sb-pricing-only" type="checkbox" disabled> <span>Freeze prices only<small>Tick "Freeze the ENTIRE store" first, then narrow it to prices: stock, product visibility, and new products still update; existing prices are never touched.</small></span></label>
-              </div>
             </div>
+            <fieldset class="sb-freeze-options" id="sb-kind">
+              <legend class="field__label">What to freeze</legend>
+              <label class="check-row"><input type="radio" name="sb-kind" value="whole" checked><span><strong>Whole store</strong><small>Everything on this store stays as it is until the freeze is turned off.</small></span></label>
+              <label class="check-row"><input type="radio" name="sb-kind" value="pricing"><span><strong>Prices only</strong><small>Stock, product visibility and new products still update; existing prices never change.</small></span></label>
+              <label class="check-row"><input type="radio" name="sb-kind" value="styles"><span><strong>Specific styles</strong><small>Only the styles you list are skipped; the rest of the store updates normally.</small></span></label>
+            </fieldset>
             <div class="form-row">
-              <label class="field"><span class="field__label">Or specific style #s (one per line, or separated by commas)</span><textarea id="sb-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
+              <label class="field" id="sb-styles-field" hidden><span class="field__label">Style numbers (one per line, or separated by commas)</span><textarea id="sb-styles" rows="3" placeholder="e.g.&#10;18500&#10;400340"></textarea></label>
               <label class="field"><span class="field__label">Reason (shown in the list)</span><input id="sb-note" type="text" maxlength="1000" placeholder="Why is this frozen?"></label>
             </div>
             <div class="form-row"><button id="sb-add" class="button button--primary" type="button">Add freeze</button></div>
@@ -669,7 +708,7 @@
         <div class="pricing__head">
           <p class="eyebrow">Store</p>
           <h1>Product mix</h1>
-          <p class="muted">Control exactly which products a store carries. Stores not listed here follow FDM4 automatically. Mix changes reach the storefront on the next hourly sync (&le; ~1h15).</p>
+          <p class="muted">Control exactly which products a store carries. Stores not listed here follow FDM4 automatically. Changes reach the store website on the next hourly update, within about an hour and a quarter.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -678,7 +717,7 @@
           <div class="card__body">
             <div class="form-row">
               <div class="field combobox field--md"><span class="field__label">Store</span><input id="mix-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="mix-store-options" aria-expanded="false"><input type="hidden" id="mix-store"><div id="mix-store-options" class="combobox__options" role="listbox" hidden></div></div>
-              <div class="field field--grow"><span class="field__label">Stores with a custom product list</span><div id="mix-enrolled" class="chip-row chip-row--flush"><span class="muted">Loading...</span></div></div>
+              <div class="field field--grow"><span class="field__label">Stores with their own product mix</span><div id="mix-enrolled" class="chip-row chip-row--flush"><span class="muted">Loading...</span></div></div>
             </div>
           </div>
         </section>
@@ -692,7 +731,7 @@
         <div class="pricing__head">
           <p class="eyebrow">Logo names</p>
           <h1>Customer-facing logo names</h1>
-          <p class="muted">This is the name shoppers see for each logo. It starts out as FDM4's description; edit it here, or refresh it from FDM4. Changes appear on the storefront after the store's next logo sync.</p>
+          <p class="muted">This is the name shoppers see for each logo. It starts out as FDM4's description; edit it here, or reload it from FDM4 (names you edited by hand are kept). Names that still carry FDM4 size text such as "3.01w X 1.98h" are flagged so you can clean them up. Changes appear on the storefront after the store's next logo sync.</p>
         </div>
         <section class="card">
           <div class="card__header card__header--compact">
@@ -707,7 +746,7 @@
                 <span class="field__label">Search</span>
                 <div class="input-with-icon">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5Zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14Z"/></svg>
-                  <input id="names-search" type="search" placeholder="Search by name, logo code, design id, art id, or color..." autocomplete="off">
+                  <input id="names-search" type="search" placeholder="Search by name, logo code, design number, art number, or logo version..." autocomplete="off">
                 </div>
               </div>
             </div>
@@ -731,7 +770,6 @@
           <p class="eyebrow">Category editor</p>
           <h1>Categories</h1>
           <p class="muted">Reorganise the product categories on every store from one place. You work on a draft here; the store websites only change when you press Apply on the Preview &amp; Apply tab, and a store can always be put back the way it was.</p>
-          <p class="muted cat-steps">Work left to right: <strong>1</strong> copy the live categories, <strong>2</strong> shape the target tree, <strong>3</strong> decide what happens to each existing category, <strong>4</strong> fine-tune products if needed, <strong>5</strong> check the plan and apply, <strong>6</strong> watch the run.</p>
         </div>
         <div id="cat-env-banner" class="cat-env-banner" hidden>
           <span id="cat-env-banner-label"></span>
@@ -782,7 +820,7 @@
                 <label class="field field--xs"><span>Environment</span>
                   <select id="cat-seed-env"></select>
                 </label>
-                <label class="field field--xs"><span>Site #</span>
+                <label class="field field--xs"><span>Site number</span>
                   <input id="cat-seed-blog" type="number" min="1" value="1">
                 </label>
                 <button id="cat-seed-run" class="button" type="button">Start from this store</button>
@@ -791,7 +829,7 @@
             <div class="cat-guide">
               <p><strong>What this is.</strong> The category structure every store will end up with. A store can differ from it (a different name, a hidden category, a category of its own): pick the store under <em>View</em> to see and edit its version.</p>
               <p><strong>What to do.</strong> Drag a category to move or reorder it. Double-click a name (or press F2) to rename. Click a category to edit its name, web address or description on the right, add a category under it, or delete it. Web addresses are the part of the link after <code>/product-category/</code>; keep them when you can so existing links and search results carry on working.</p>
-              <p>Each row shows how many stores have the category and how many products it holds across them, taken from the store copies. <em>empty</em> means no store has any product in it; <em>new</em> means no store has it yet. Press <em>Show only empty</em> to list the empty ones and delete the ones nobody needs, one at a time or all at once.</p>
+              <p>Each row shows how many stores have the category and how many products it holds across them, taken from the store copies. <em>empty</em> means no store has any product in it; <em>new</em> means no store has it yet. Press <em>Show only empty</em> to list the empty ones and delete the ones nobody needs, one at a time or all at once. The arrow at the start of a row folds or unfolds what sits under it. Uncategorized shows <em>needs sorting</em> while products are still parked in it.</p>
             </div>
             <div class="cat-tree-layout">
               <div class="cat-tree-col">
@@ -799,7 +837,7 @@
                   <button id="cat-add-root" class="button button--secondary button--small" type="button">+ Top-level category</button>
                   <input id="cat-tree-search" class="cat-tree-search" type="search" placeholder="Find a category by name or web address&hellip;" aria-label="Find a category" autocomplete="off">
                   <button id="cat-tree-empty-toggle" class="button button--ghost button--small cat-tree-toggle" type="button" aria-pressed="false" title="Show only categories that hold no products on any store">Show only empty</button>
-                  <span class="muted" id="cat-tree-hint">Click a category to edit or delete it. Drag to move. Double-click or F2 to rename.</span>
+                  <span class="muted" id="cat-tree-hint">Click a category to edit or delete it. Drag the &#x22EE;&#x22EE; handle to move. Double-click or F2 to rename. The arrow folds a branch.</span>
                 </div>
                 <p id="cat-tree-matches" class="muted cat-tree-matches" hidden></p>
                 <div id="cat-tree" class="cat-tree-box"></div>
@@ -865,10 +903,10 @@
           </div>
           <div class="card__body">
             <div class="cat-guide">
-              <p><strong>What this is.</strong> Every category that exists on a store today is listed here, one row per web address. Each row needs a decision before the plan can be checked. Rows whose web address already matches a draft category are decided for you.</p>
+              <p><strong>What this is.</strong> Every category that exists on a store today is listed here, one row per web address. Each row needs a decision before the plan can be checked. Rows whose web address already matches a draft category are decided for you. When several existing categories are merged into one, the one that keeps its web address is marked <em>surviving</em>.</p>
               <p><strong>What to do.</strong> Tick one or more rows, then choose:</p>
               <ul>
-                <li><strong>Move into&hellip;</strong> the products go to the draft category you pick. The first category moved into a draft category keeps its identity on the website (links and search keep working); any others merge into it.</li>
+                <li><strong>Move into&hellip;</strong> the products go to the draft category you pick. The first category moved into a draft category keeps its web address on the website (links and search keep working); any others merge into it. Press <em>Keep this one's web address</em> to choose a different one.</li>
                 <li><strong>Keep for this store only</strong> - it stays exactly as it is, outside the shared tree.</li>
                 <li><strong>Delete</strong> - for categories nobody needs. Products still on it need another category, or the check will stop and tell you.</li>
               </ul>
@@ -880,7 +918,7 @@
               <button type="button" class="button button--ghost button--small" data-quick="undecided" aria-pressed="false">Undecided</button>
               <button type="button" class="button button--ghost button--small" data-quick="empty" aria-pressed="false" title="Categories with no products on any store">Empty</button>
               <button type="button" class="button button--ghost button--small" data-quick="empty_undecided" aria-pressed="false">Empty and undecided</button>
-              <span class="muted cat-map-quick__hint">Hover a Stores count to see which stores have that category.</span>
+              <span class="muted cat-map-quick__hint">Press a Stores count to see which stores have that category.</span>
             </div>
             <div class="cat-action-bar" role="toolbar" aria-label="Mapping actions">
               <div class="cat-action-bar__group">
@@ -889,7 +927,7 @@
               <div class="cat-action-bar__group" role="group" aria-label="Other dispositions for the selected slugs">
                 <button id="cat-map-delete" class="button button--secondary" type="button" disabled title="Delete the selected categories from the websites once no product is left on them">Delete</button>
                 <button id="cat-map-custom" class="button button--secondary" type="button" disabled title="Leave the selected categories exactly as they are on their store, outside the shared tree">Keep for this store only</button>
-                <button id="cat-map-primary" class="button button--secondary" type="button" disabled title="When several old categories move into one draft category, this one keeps its identity on the website (links, search); the others merge into it">Make this the surviving one</button>
+                <button id="cat-map-primary" class="button button--secondary" type="button" disabled title="When several old categories move into one draft category, this one keeps its web address on the website so its links and search results carry on working; the others merge into it">Keep this one's web address</button>
                 <button id="cat-map-clear" class="button button--ghost" type="button" disabled title="Undo the decision on the selected rows">Undo decision</button>
               </div>
               <div class="cat-action-bar__group cat-action-bar__group--end">
@@ -962,8 +1000,9 @@
                     </label>
                   </div>
                   <div class="form-row">
-                    <label class="field"><span>Only products that were in these old categories (optional; web addresses, comma-separated)</span>
+                    <label class="field"><span>Only from these old categories (optional)</span>
                       <input id="cat-rule-from" type="text" placeholder="footwear-work-boots, footwear-socks">
+                      <span class="field__help">Web addresses, separated by commas.</span>
                     </label>
                   </div>
                   <div class="form-row">
@@ -1025,7 +1064,7 @@
           <div class="card__header card__header--compact">
             <div><p class="eyebrow">Step 6</p><h3>Runs and recovery</h3></div>
             <div class="cat-header-actions">
-              <span id="cat-freeze-state" class="chip chip--muted" title="Whether store admins can currently edit categories in wp-admin">wp-admin editing: checking&hellip;</span>
+              <span id="cat-freeze-state" class="chip chip--muted" title="Whether store admins can currently add, rename or delete categories on the store websites">Category editing on the websites: checking&hellip;</span>
               <button id="cat-freeze-toggle" class="button button--secondary cat-freeze-button" type="button" aria-pressed="false" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% endif %}>Lock category editing in WordPress</button>
               <button id="cat-drift-run" class="button button--secondary" type="button" {% if not categories_apply_allowed %}disabled title="Apply allowlist only"{% else %}title="Re-copy every store and report any that no longer match the target tree"{% endif %}>Check stores still match</button>
             </div>
@@ -1033,12 +1072,25 @@
           <div class="card__body">
             <div class="cat-guide">
               <p><strong>What this is.</strong> Every Apply becomes a run that works through the stores one at a time. Open a run's details to see each store's progress and result.</p>
-              <p><strong>What to do.</strong> <em>Pause</em> stops after the current store; <em>Resume</em> carries on. <em>Retry</em> re-runs a store that failed, picking up where it stopped. <em>Skip</em> leaves a store out (the run then shows as partial). <em>Restore</em> puts a store back exactly as it was before the run touched it. Lock category editing while a run is in progress so nobody changes categories in wp-admin underneath it, and use <em>Check stores still match</em> afterwards to confirm every store matches the target tree.</p>
+              <p><strong>What to do.</strong> <em>Pause</em> stops after the current store; <em>Resume</em> carries on. <em>Retry</em> re-runs a store that failed, picking up where it stopped. <em>Skip</em> leaves a store out (the run then shows as partial). <em>Restore</em> puts a store back exactly as it was before the run touched it. Lock category editing while a run is in progress so nobody changes categories on the websites underneath it, and use <em>Check stores still match</em> afterwards to confirm every store matches the target tree.</p>
             </div>
             <div id="cat-drift-result" class="cat-drift-result" hidden></div>
             <div id="cat-runs-list"></div>
           </div>
         </section>
+
+        <dialog id="cat-stores-dialog" class="dialog" aria-labelledby="cat-stores-title">
+          <div class="dialog__header">
+            <div><p class="eyebrow">Mapping</p><h2 id="cat-stores-title">Stores</h2><p id="cat-stores-context" class="muted"></p></div>
+            <button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+          </div>
+          <div class="dialog__body">
+            <ul id="cat-stores-list" class="cat-stores-list"></ul>
+          </div>
+          <div class="dialog__footer">
+            <button class="button button--ghost dialog-close" type="button">Close</button>
+          </div>
+        </dialog>
 
 
       </div>
@@ -1066,7 +1118,7 @@
             <div id="health-rules" class="health-card-body"></div>
           </section>
           <section class="card">
-            <div class="card__header card__header--compact"><div><p class="eyebrow">Sync</p><h3>Sync freezes</h3></div></div>
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Stores</p><h3>Freezes</h3></div></div>
             <div id="health-blocks" class="health-card-body"></div>
           </section>
           <section class="card">
@@ -1121,7 +1173,7 @@
               <li>Logos reach a website only when you press <strong>Sync</strong> on that store. Everything else (prices, stock, products) flows out automatically, within about an hour.</li>
               <li>Nothing is ever really deleted. Removed products are hidden, paused logos are kept, and almost every switch can be turned back on.</li>
               <li>Before anything big happens, the app tells you what it is about to do and how many products it will touch, and asks you to confirm.</li>
-              <li>Every change is recorded with your name in the Activity Log (Logos menu).</li>
+              <li>Every change is recorded with your name in the <button type="button" class="link-button help-link" data-help-open="audit-button">Activity Log</button> (Tools menu).</li>
               <li>If something fails, you get a message and a Try again button. A failed action changes nothing.</li>
             </ul>
           </div>
@@ -1139,11 +1191,11 @@
               <div class="flow-arrow">&darr;</div>
               <div class="flow-step flow-step--dest">The website shows the new logos</div>
             </div>
-            <p><strong>Logo Configuration</strong> is the main tool. The grid shows every garment color of a product against three logo positions. Click a cell to add or change a logo: search the designs, pick the color scheme and placement, and attach an image. A color can offer more than one logo choice to the shopper (use Add row).</p>
+            <p><button type="button" class="link-button help-link" data-view="logo">Logo Configuration</button> is the main tool. The grid shows every garment color of a product against three logo positions. Click a cell to add or change a logo: search the designs, pick the color scheme and placement, and attach an image. A color can offer more than one logo choice to the shopper (use Add row).</p>
             <p><strong>Bulk Apply</strong> (button at the top of Logo Configuration) puts one logo onto many garment colors at once. Choose the logo, choose the target (dark garments, light garments, or a hand-picked list of colors), press Preview to see exactly which products it will touch, then apply. Every batch has an Undo button.</p>
-            <p><strong>Logo Names</strong> is where you edit the names shoppers see for each logo. Names you type are kept even when FDM4 changes its own description. With no store selected you edit the shared name used everywhere; with a store selected your edit applies to that store only.</p>
-            <p><strong>Logo Colors</strong> answers one question per garment color: is it light or dark? Dark garments get the white version of a logo, light garments get the black one. Bulk Apply relies on these answers, so if the wrong logo version shows up, check here first. A computer made the first guess for every color, and this page is where people correct it.</p>
-            <p><strong>Logo Sync Stores</strong> (Logos menu) is the master switch. It lists every store and whether its logos come from this app (On) or are still on the old sheets (Off). Turning a store on runs a safety check first, so no product can silently lose its logos. See the next section.</p>
+            <p><button type="button" class="link-button help-link" data-view="names">Logo Names</button> is where you edit the names shoppers see for each logo. Names you type are kept even when FDM4 changes its own description. With no store selected you edit the shared name used everywhere; with a store selected your edit applies to that store only.</p>
+            <p><button type="button" class="link-button help-link" data-view="colors">Logo Colors</button> answers one question per garment color: is it light or dark? Dark garments get the white version of a logo, light garments get the black one. Bulk Apply relies on these answers, so if the wrong logo version shows up, check here first. A computer made the first guess for every color, and this page is where people correct it.</p>
+            <p><button type="button" class="link-button help-link" data-help-open="ownership-button">Logo Sync Stores</button> (Tools menu) is the master switch. It lists every store and whether its logos come from this app (On) or are still on the old sheets (Off). Turning a store on runs a safety check first, so no product can silently lose its logos. See the next section.</p>
           </div>
         </section>
 
@@ -1151,7 +1203,7 @@
           <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3 id="help-onboarding">Bringing a store onto the logo system</h3></div></div>
           <div class="card__body stack">
             <div class="flow" role="img" aria-label="Steps to turn on logo sync for a store">
-              <div class="flow-step">Open <strong>Logo Sync Stores</strong> (Logos menu) and press <strong>Turn on</strong> next to the store</div>
+              <div class="flow-step">Open <button type="button" class="link-button help-link" data-help-open="ownership-button">Logo Sync Stores</button> (Tools menu) and press <strong>Turn on</strong> next to the store</div>
               <div class="flow-arrow">&darr;</div>
               <div class="flow-step">The app checks every product that already has logos on the website</div>
               <div class="flow-branches">
@@ -1165,7 +1217,7 @@
                   <span class="flow-branch__label">Some styles missing</span>
                   <div class="flow-step">The app names the styles that would lose their logos</div>
                   <div class="flow-arrow">&darr;</div>
-                  <div class="flow-step">Import the store's old logo sheets first (Logos menu, Import Legacy Sheets), then try again</div>
+                  <div class="flow-step">Import the store's old logo sheets first with <button type="button" class="link-button help-link" data-help-open="legacy-import-button">Import Legacy Sheets</button> (Tools menu), then try again</div>
                 </div>
               </div>
             </div>
@@ -1176,37 +1228,37 @@
         <section class="card">
           <div class="card__header card__header--compact"><div><p class="eyebrow">Store</p><h3 id="help-store">Prices, products, and stock</h3></div></div>
           <div class="card__body stack">
-            <p>These four tools shape what the hourly update does. Changes here reach the store websites automatically, within about an hour. No Sync button is needed.</p>
-            <p><strong>Price Rules</strong> are discounts and adjustments Arborwear controls directly: a percentage off, a set price, and so on, aimed at chosen stores, brands, categories, or styles, with optional <strong>exceptions</strong> ("everything except boots"). A percent or flat change can start from the current price or from a level like MSRP ("MSRP minus 20%"), the result can be rounded to a retail ending (.99, .95, or whole dollars), and a rule can promise never to go below or above a chosen price, or above MSRP. New rules start turned off, and the app refuses to turn one on until you have pressed Preview, which shows exactly which items change and by how much. The <strong>Check a price</strong> box on the same page answers the final question for one product: what will it cost with every active rule applied. One caution: a rule aimed at a store with a price freeze has no effect there until the freeze is turned off, and the page warns you when that is the case.</p>
-            <p><strong>Store Pricing Levels</strong> only matter when FDM4 sends no price for an item. The store's chosen level (L1, L2, L3) fills the gap from the price list instead of defaulting to full retail.</p>
-            <p><strong>Sync Blocks</strong> freeze things so the hourly update leaves them alone. You can freeze a whole store, freeze only its prices (the store keeps getting new products and stock, but hand-set prices are never overwritten), or freeze single styles. Each freeze has an on and off switch in the list.</p>
-            <p><strong>Product Mix</strong> controls which products a store carries. By default a store simply follows FDM4. Switch it to a curated list to take control: add styles, remove them, or open a style to trim which colors and sizes the store sells. Removing a product hides it and marks it out of stock. It is never deleted and comes back if you re-add the style.</p>
-            <p><strong>Fake Inventory</strong> handles goods we sell but do not stock ourselves, like boots from another maker. Those show as always in stock so customers can always order. The page controls this at two levels. Brand rules decide whole brands: Arborwear and the stocked premium brands show real counts, everything else shows always in stock, and any brand can be flipped or reset to automatic. Style exceptions override the brand rule for a single style. Footwear, arborist gear, and tools show real stock when their brand has no rule.</p>
+            <p>These five tools shape what the hourly update does. Changes here reach the store websites automatically, within about an hour. No Sync button is needed.</p>
+            <p><button type="button" class="link-button help-link" data-view="prices">Price Rules</button> are discounts and adjustments Arborwear controls directly: a percentage off, a set price, and so on, aimed at chosen stores, brands, categories, or styles, with optional <strong>exceptions</strong> ("everything except boots"). A percent or flat change can start from the current price or from a level like MSRP ("MSRP minus 20%"), the result can be rounded to a retail ending (.99, .95, or whole dollars), and a rule can promise never to go below or above a chosen price, or above MSRP. New rules start turned off, and the app refuses to turn one on until you have pressed Preview, which shows exactly which items change and by how much. The <strong>Check a price</strong> box on the same page answers the final question for one product: what will it cost with every active rule applied. One caution: a rule aimed at a store with a price freeze has no effect there until the freeze is turned off, and the page warns you when that is the case.</p>
+            <p><button type="button" class="link-button help-link" data-view="pricing">Pricing Levels</button> only matter when FDM4 sends no price for an item. The store's chosen level (Level 1, 2 or 3) fills the gap from that price list instead of defaulting to full retail.</p>
+            <p><button type="button" class="link-button help-link" data-view="blocks">Freezes</button> (formerly Sync Blocks) keep things as they are so the hourly update leaves them alone. You can freeze a whole store, freeze only its prices (the store keeps getting new products and stock, but hand-set prices are never overwritten), or freeze single styles. Each freeze has an on and off switch in the list.</p>
+            <p><button type="button" class="link-button help-link" data-view="mix">Product Mix</button> controls which products a store carries. By default a store simply follows FDM4. Switch it to a curated list to take control: add styles, remove them, or open a style to trim which colors and sizes the store sells. Removing a product hides it and marks it out of stock. It is never deleted and comes back if you re-add the style.</p>
+            <p><button type="button" class="link-button help-link" data-view="stock">Stock Display</button> (formerly Fake Inventory) handles goods we sell but do not stock ourselves, like boots from another maker. Those show as always in stock so customers can always order. The page controls this at two levels. Brand rules decide whole brands: Arborwear and the stocked premium brands show real counts, everything else shows always in stock, and any brand can be flipped or reset to automatic. Style exceptions override the brand rule for a single style. Footwear, arborist gear, and tools show real stock when their brand has no rule.</p>
           </div>
         </section>
 
         <section class="card">
           <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3 id="help-bulk">Working on many styles at once</h3></div></div>
           <div class="card__body">
-            <p><strong>Bulk Operations</strong> (Logos menu) is the place for jobs that touch many styles: pick a job, choose the target styles, preview, apply. Every run lands in Bulk history with a one-click Undo.</p>
-            <p><strong>Fill missing colors</strong> copies each style's own logos onto the garment colors that have none. Occupied slots are never touched, so it is safe to run on a whole store. When a style's colors do not all carry the same logos, the preview asks you which color to copy from.</p>
+            <p><button type="button" class="link-button help-link" data-view="bulk">Bulk Operations</button> (Logos menu) is the place for jobs that touch many styles: pick a job, choose the target styles, preview, apply. Every run lands in Bulk history with a one-click Undo.</p>
+            <p><strong>Fill missing colors</strong> copies each style's own logos onto the garment colors that have none. Colors that already have a logo are never changed, so it is safe to run on a whole store. When a style's colors do not all carry the same logos, the preview asks you which color to copy from.</p>
             <p><strong>Coverage report</strong> lists every style that still has logo-less colors, split into ones Fill can fix and ones with no logos anywhere. It exports to CSV for the team.</p>
-            <p><strong>Paste to many</strong>, <strong>Bulk apply</strong>, <strong>Activate / deactivate</strong> and <strong>Copy style config</strong> do what their names say to the styles you select; each shows a preview first and can be undone from Bulk history.</p>
+            <p><strong>Paste to many</strong>, <strong>Bulk apply</strong>, <strong>Activate / deactivate</strong> and <strong>Copy one style's logos to others</strong> do what their names say to the styles you select; each shows a preview first and can be undone from the bulk history on the Bulk Operations page.</p>
           </div>
         </section>
         <section class="card">
           <div class="card__header card__header--compact"><div><p class="eyebrow">Categories</p><h3 id="help-categories">Reorganising the categories</h3></div></div>
           <div class="card__body">
-            <p>The <strong>Categories</strong> tool (under Tools) rebuilds the product categories on every store from a draft kept here. Nothing changes on a website until you press Apply, every store is copied first so it can be restored, and a store that someone edited in the meantime is refused rather than overwritten.</p>
+            <p>The {% if categories_enabled %}<button type="button" class="link-button help-link" data-view="categories">Categories</button>{% else %}<strong>Categories</strong>{% endif %} tool (under Tools) rebuilds the product categories on every store from a draft kept here. Nothing changes on a website until you press Apply, every store is copied first so it can be restored, and a store that someone edited in the meantime is refused rather than overwritten.</p>
             <ol>
               <li><strong>Snapshots</strong> - copy the live categories from every store. Do it again after anything changes on a website.</li>
               <li><strong>Tree</strong> - shape the target tree: drag to move, double-click to rename, click to edit. Pick a store under View for that store's own differences.</li>
               <li><strong>Mapping</strong> - decide what happens to each existing category: move it into a draft category, keep it for that store only, or delete it. Everything must be decided before the plan can be checked.</li>
               <li><strong>Products</strong> - optional: rules and style lists for categories that should hold more than they inherit.</li>
               <li><strong>Preview &amp; Apply</strong> - check the plan (it lists anything that stops it), then apply to the websites.</li>
-              <li><strong>Runs</strong> - watch progress, retry or skip a store, lock wp-admin editing during a run, restore a store, and confirm the stores still match.</li>
+              <li><strong>Runs</strong> - watch progress, retry or skip a store, lock category editing on the website during a run, restore a store, and confirm the stores still match.</li>
             </ol>
-            <p>Applying is limited to the people on the apply list. Right now applies go to the development site only.</p>
+            <p>Right now applies go to the development site only.</p>
           </div>
         </section>
         <section class="card">
@@ -1215,7 +1267,7 @@
             <details>
               <summary>A logo is wrong or missing on the website</summary>
               <ol>
-                <li>Open <strong>Logo Configuration</strong>, pick the store and the product style.</li>
+                <li>Open <button type="button" class="link-button help-link" data-view="logo">Logo Configuration</button>, pick the store and the product style.</li>
                 <li>Fix the logo row in the grid: the image, color scheme, or placement.</li>
                 <li>Press <strong>Sync style</strong> and wait for it to finish.</li>
                 <li>Refresh the product page on the website. If it still looks old, the site cache may need a few minutes.</li>
@@ -1225,7 +1277,7 @@
             <details>
               <summary>The wrong logo version shows on dark or light shirts</summary>
               <ol>
-                <li>Open <strong>Logo Colors</strong> and find the garment color.</li>
+                <li>Open <button type="button" class="link-button help-link" data-view="colors">Logo Colors</button> and find the garment color.</li>
                 <li>Check its light or dark setting and click the chip to correct it.</li>
                 <li>Re-run <strong>Bulk Apply</strong> for the affected logo if needed, then Sync the store.</li>
               </ol>
@@ -1234,24 +1286,24 @@
               <summary>A price is wrong on a store</summary>
               <ol>
                 <li>Prices normally come straight from FDM4. If FDM4 is right and the site is wrong, keep reading.</li>
-                <li>Check <strong>Price Rules</strong>: is a rule turned on that covers this item? Turn it off if it should not apply.</li>
-                <li>Check <strong>Store Pricing Levels</strong>: if the item has no FDM4 price, the store's level decides what shows.</li>
-                <li>Check <strong>Sync Blocks</strong>: a price freeze keeps old prices in place on purpose.</li>
+                <li>Check <button type="button" class="link-button help-link" data-view="prices">Price Rules</button>: is a rule turned on that covers this item? Turn it off if it should not apply.</li>
+                <li>Check <button type="button" class="link-button help-link" data-view="pricing">Pricing Levels</button>: if the item has no FDM4 price, the store's level decides what shows.</li>
+                <li>Check <button type="button" class="link-button help-link" data-view="blocks">Freezes</button>: a price freeze keeps old prices in place on purpose.</li>
                 <li>Fixes reach the website within the hour.</li>
               </ol>
             </details>
             <details>
               <summary>A store's hand-set prices must not be touched</summary>
               <ol>
-                <li>Open <strong>Sync Blocks</strong>.</li>
-                <li>Pick the store, tick "Freeze the ENTIRE store", then also tick "Freeze prices only".</li>
+                <li>Open <button type="button" class="link-button help-link" data-view="blocks">Freezes</button>.</li>
+                <li>Pick the store, choose to freeze the whole store, and tick the prices-only option.</li>
                 <li>Add the freeze. The store keeps updating normally, but its prices stay exactly as they are.</li>
               </ol>
             </details>
             <details>
               <summary>A product should not be on a store (or is missing from it)</summary>
               <ol>
-                <li>Open <strong>Product Mix</strong> and pick the store.</li>
+                <li>Open <button type="button" class="link-button help-link" data-view="mix">Product Mix</button> and pick the store.</li>
                 <li>If the store still follows FDM4, switch it to a curated list first.</li>
                 <li>Remove the style, or add it by style number. The app tells you how many products this touches before you confirm.</li>
                 <li>Removed products are hidden, never deleted, and return if you re-add the style.</li>
@@ -1260,7 +1312,7 @@
             <details>
               <summary>A style shows out of stock but we can always order it</summary>
               <ol>
-                <li>Open <strong>Fake Inventory</strong>.</li>
+                <li>Open <button type="button" class="link-button help-link" data-view="stock">Stock Display</button>.</li>
                 <li>Add an exception for the style and choose "Always in stock".</li>
                 <li>The stores update within the hour.</li>
               </ol>
@@ -1273,14 +1325,14 @@
                 <li>Removed mix styles can be re-added and their products come back.</li>
                 <li>Deactivated logos can be turned back on in the grid.</li>
                 <li>The one action that cannot be undone is deleting a logo assignment permanently, which is why the app warns you twice.</li>
-                <li>The <strong>Activity Log</strong> (Logos menu) shows exactly what changed and when, which helps with putting things back.</li>
+                <li>The <button type="button" class="link-button help-link" data-help-open="audit-button">Activity Log</button> (Tools menu) shows exactly what changed and when, which helps with putting things back.</li>
               </ul>
             </details>
             <details>
               <summary>I see a red error message</summary>
               <ul>
                 <li>Press <strong>Try again</strong>. Most errors are a brief hiccup, and a failed action changes nothing.</li>
-                <li>Check the <strong>Health</strong> page: it shows whether the data pulls and updates are running normally.</li>
+                <li>Check the <button type="button" class="link-button help-link" data-view="health">Health</button> page: it shows whether the data pulls and updates are running normally.</li>
                 <li>If the same error keeps coming back, note what you clicked and what the message says, and pass both to the site team.</li>
               </ul>
             </details>
@@ -1288,7 +1340,7 @@
               <summary>I made a change but the website has not updated</summary>
               <ul>
                 <li>Logos: did you press <strong>Sync</strong> on the store? That is the only way logos go live.</li>
-                <li>Everything else: give it up to an hour, then check the <strong>Health</strong> page to confirm the last data pull ran.</li>
+                <li>Everything else: give it up to an hour, then check the <button type="button" class="link-button help-link" data-view="health">Health</button> page to confirm the last data pull ran.</li>
                 <li>Still nothing after an hour and a sync? Pass it to the site team with the store and product.</li>
               </ul>
             </details>
@@ -1304,7 +1356,7 @@
     <div class="assistant-panel__header">
       <div>
         <p class="eyebrow">Warehouse assistant</p>
-        <h2 id="assistant-title">Ask about logo and pricing data</h2>
+        <h2 id="assistant-title">Ask about stores, logos, prices, products and categories</h2>
       </div>
       <div class="assistant-panel__header-actions">
         <button id="assistant-new" class="button button--ghost button--small" type="button">New chat</button>
@@ -1326,10 +1378,15 @@
         <div class="assistant-empty">
           <strong>Start with a question</strong>
           {% if agent_writes_enabled %}
-          <span>I can inspect bounded warehouse data. Any proposed change will be staged for your review.</span>
+          <span>Ask about stores, logos, prices, products or categories. If I suggest a change you see it first and choose whether to apply it.</span>
           {% else %}
-          <span>I can inspect bounded warehouse data. Changes are disabled during this read-only pilot.</span>
+          <span>Ask about stores, logos, prices, products or categories. Changes are turned off during this read-only pilot.</span>
           {% endif %}
+          <div class="assistant-examples">
+            <button class="button button--secondary button--small assistant-example" type="button" data-example="Which stores have logo sync turned off?">Which stores have logo sync turned off?</button>
+            <button class="button button--secondary button--small assistant-example" type="button" data-example="What is the price of style 18500 on Davey Tree?">What is the price of style 18500 on Davey Tree?</button>
+            <button class="button button--secondary button--small assistant-example" type="button" data-example="Which garment colors still need a light or dark decision?">Which garment colors still need a light or dark decision?</button>
+          </div>
         </div>
       </div>
 
@@ -1340,11 +1397,11 @@
     <div class="assistant-panel__composer">
       {% if agent_writes_enabled %}
       <div class="assistant-attachment-row">
-        <button id="assistant-attach" class="button button--ghost button--small" type="button">Attach CSV/XLSX</button>
+        <button id="assistant-attach" class="button button--ghost button--small" type="button" title="Attach a CSV or Excel spreadsheet"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>Attach a CSV or Excel file</button>
         <input id="assistant-file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
-        <label class="assistant-instruction" for="assistant-spreadsheet-instruction">
-          <span>Spreadsheet instruction</span>
-          <input id="assistant-spreadsheet-instruction" maxlength="500" placeholder="Optional: explain what these rows represent">
+        <label class="assistant-instruction" for="assistant-spreadsheet-instruction" hidden>
+          <span>Note for the next spreadsheet you attach</span>
+          <input id="assistant-spreadsheet-instruction" maxlength="500" placeholder="Optional: say what the rows mean, for example new prices per store">
         </label>
       </div>
       {% endif %}
@@ -1623,13 +1680,13 @@
 
   <dialog id="copy-dialog" class="dialog" aria-labelledby="copy-title">
     <form id="copy-form" method="dialog">
-      <div class="dialog__header"><div><p class="eyebrow">Bulk helper</p><h2 id="copy-title">Copy style configuration</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
+      <div class="dialog__header"><div><p class="eyebrow">Bulk helper</p><h2 id="copy-title">Copy logos from another style</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
       <div class="dialog__body stack">
         <p>Copy logos from another style in <strong id="copy-store"></strong> onto the style you have open. Logos copy over wherever both styles share the same garment color and logo position.</p>
         <div class="field combobox"><label class="field__label" for="copy-style-search">Source style</label><input id="copy-style-search" type="search" autocomplete="off" placeholder="Type a style number or name..." aria-autocomplete="list" aria-controls="copy-style-options"><input id="copy-source-style" type="hidden"><div id="copy-style-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></div>
         <label class="check-row"><input id="copy-overwrite" type="checkbox"><span><strong>Overwrite occupied positions</strong><small>Otherwise existing assignments are preserved.</small></span></label>
       </div>
-      <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button class="button button--primary" type="submit">Copy configuration</button></div></div>
+      <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button class="button button--primary" type="submit">Copy logos</button></div></div>
     </form>
   </dialog>
 
@@ -1646,6 +1703,26 @@
     </form>
   </dialog>
 
+  <dialog id="import-intro-dialog" class="dialog dialog--compact" aria-labelledby="import-intro-title">
+    <div class="dialog__header"><div><p class="eyebrow">CSV import</p><h2 id="import-intro-title">Import logo rows from a CSV</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
+    <div class="dialog__body stack stack--tight">
+      <p>The file needs the same header row as an export from this app, in this order: <code>fdm4_store</code>, <code>product_style</code>, <code>garment_color_code</code>, <code>option_row</code>, <code>position</code>, <code>design_id</code>, <code>logo_code</code>, <code>color_scheme_id</code>, <code>location</code>, <code>optional</code>, <code>background</code>, <code>cost_override</code>, <code>sort_order</code>, <code>image_url</code>, <code>active</code>. The easiest way to get it right is Export Assignments from the Tools menu, then edit that file. Up to 20,000 rows per file.</p>
+      <p id="import-intro-store" class="notice notice--tight" role="status"></p>
+      <p class="muted">Rows that match a logo row already on the store update it; the rest are added. Nothing is deleted. Rows the import cannot place go to the Import Punch List, and every change is recorded in the Activity log.</p>
+    </div>
+    <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button id="import-intro-choose" class="button button--primary" type="button">Choose file…</button></div></div>
+  </dialog>
+
+  <dialog id="legacy-images-dialog" class="dialog dialog--compact" aria-labelledby="legacy-images-title">
+    <div class="dialog__header"><div><p class="eyebrow">Legacy migration</p><h2 id="legacy-images-title">Mirror legacy images for every store?</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
+    <div class="dialog__body stack stack--tight">
+      <p><strong>One-time migration. Run it only when the site team asks.</strong></p>
+      <p>This copies every image from the old logo sheets into the warehouse and updates the image link on every store's logo rows - tens of thousands of rows across all stores at once, whichever store is selected. It is safe to run again: images already copied are skipped. Websites only change when a store is next synced.</p>
+      <label class="field"><span class="field__label">Type MIRROR to confirm</span><input id="legacy-images-ack" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="MIRROR" maxlength="20"></label>
+    </div>
+    <div class="dialog__footer"><span></span><div class="footer-actions"><button class="button button--ghost dialog-close" type="button">Cancel</button><button id="legacy-images-run" class="button button--danger" type="button" disabled>Mirror every store</button></div></div>
+  </dialog>
+
   <dialog id="import-dialog" class="dialog" aria-labelledby="import-title">
     <div class="dialog__header"><div><p class="eyebrow">CSV import</p><h2 id="import-title">Import results</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
     <div id="import-results" role="status" class="dialog__body"></div>
@@ -1657,19 +1734,20 @@
     <div class="dialog__body">
       <div class="form-row">
         <label class="field field--grow"><span class="field__label">Name</span><input id="pr-name" type="text" maxlength="200" required></label>
-        <label class="field field--xs"><span class="field__label">Priority <span class="hint" tabindex="0" data-hint="Rules are checked lowest number first, and the first matching rule wins unless it is combinable.">?</span></span><input id="pr-priority" type="number" min="1" max="100000" value="100"></label>
-        <label class="field--checkbox"><input id="pr-stackable" type="checkbox"> Combinable with later rules</label>
+        <label class="field field--xs"><span class="field__label">Priority <span class="hint" tabindex="0" data-hint="Rules run lowest number first. The first rule that matches a product wins unless it lets later rules also apply.">?</span></span><input id="pr-priority" type="number" min="1" max="100000" value="100"></label>
+        <label class="field--checkbox"><input id="pr-stackable" type="checkbox"> Let later rules also apply</label>
       </div>
+      <p class="field__help pr-row-help">Rules run lowest priority number first, and the first rule that matches a product wins. Tick "Let later rules also apply" to let rules with higher numbers change the price further.</p>
       <fieldset class="pr-fieldset">
         <legend class="eyebrow">Who - stores</legend>
         <div id="pr-target-summary" class="notice notice--tight" role="status"></div>
         <div class="field combobox combobox--constrained"><span class="field__label">Add stores (searchable - pick as many as you like)</span><input id="pr-store-search" type="search" placeholder="Type a store name or code..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-store-options" aria-expanded="false"><input type="hidden" id="pr-store-picked"><div id="pr-store-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></div>
         <div id="pr-store-chips" class="chip-row"></div>
-        <span class="field__label pr-subhead">Or whole pricing tiers</span>
+        <span class="field__label pr-subhead">Or every store at a pricing level</span>
         <div id="pr-tiers" class="chip-row"></div>
       </fieldset>
       <fieldset class="pr-fieldset">
-        <legend class="eyebrow">What - products (leave everything empty = all products in the selected stores)</legend>
+        <legend class="eyebrow">What - products (leave everything empty for all products in the chosen stores)</legend>
         <div class="form-row">
           <div class="field combobox"><span class="field__label">Brands</span><input id="pr-brand-input" type="search" placeholder="Type to search 240+ brands..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-brand-options" aria-expanded="false"><div id="pr-brand-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div><div id="pr-brand-chips" class="chip-row"></div></div>
           <div class="field combobox"><span class="field__label">Categories</span><input id="pr-cat-input" type="search" placeholder="Type or click to list categories..." autocomplete="off" aria-autocomplete="list" aria-controls="pr-cat-options" aria-expanded="false"><div id="pr-cat-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div><div id="pr-cat-chips" class="chip-row"></div></div>
@@ -1692,37 +1770,37 @@
         <div class="form-row">
           <label class="field field--md"><span class="field__label">Type</span><select id="pr-effect-type">
             <option value="percent">Percent change (±%)</option>
-            <option value="flat">Flat change (±$)</option>
+            <option value="flat">Dollar change (±$)</option>
             <option value="set_price">Set exact price ($)</option>
-            <option value="price_level">Use FDM4 price level</option>
-            <option value="margin_over_cost">Margin over cost (×)</option>
+            <option value="price_level">Use a pricing level's price</option>
+            <option value="margin_over_cost">Multiply cost by</option>
           </select></label>
           <label class="field field--sm" id="pr-value-wrap"><span class="field__label" id="pr-value-label">Value</span><input id="pr-effect-value" type="number" step="0.0001"></label>
-          <label class="field field--md" id="pr-basis-wrap"><span class="field__label">Based on <span class="hint" tabindex="0" data-hint="What the change starts from. MSRP basis with a value of -20 means MSRP minus 20 percent. Items missing the chosen level are skipped.">?</span></span><select id="pr-basis">
+          <label class="field field--md" id="pr-basis-wrap"><span class="field__label">Based on <span class="hint" tabindex="0" data-hint="What the change starts from. MSRP with a value of -20 means MSRP minus 20 percent. Items with no price at the chosen level are skipped.">?</span></span><select id="pr-basis">
             <option value="current">Current price</option>
             <option value="msrp">MSRP</option>
-            <option value="corp1">Corp1</option>
-            <option value="corp2">Corp2</option>
-            <option value="corp3">Corp3</option>
+            <option value="corp1">Level 1</option>
+            <option value="corp2">Level 2</option>
+            <option value="corp3">Level 3</option>
             <option value="wholesale">Wholesale</option>
             <option value="employee">Employee</option>
-            <option value="base">Base</option>
-          </select></label>
-          <label class="field field--md" id="pr-level-wrap" hidden><span class="field__label">Price level <span class="hint" tabindex="0" data-hint="Prices each matched item at its own value for this FDM4 price-list column, e.g. Corp2 means that item&#39;s Corp2 contract price. No math, pure FDM4 data. Items missing the level keep their current price.">?</span></span><select id="pr-level-key"><option value="">Choose a level...</option><option value="msrp">MSRP</option><option value="corp1">Corp1</option><option value="corp2">Corp2</option><option value="corp3">Corp3</option><option value="wholesale">Wholesale</option><option value="employee">Employee</option><option value="base">Base</option></select></label>
-          <label class="field field--md"><span class="field__label">Round the result <span class="hint" tabindex="0" data-hint="Gives the result a retail ending, e.g. $29.32 becomes $28.99. Without it, results are exact.">?</span></span><select id="pr-rounding">
+            <option value="base">Price before any rule</option>
+          </select><span class="field__help">What the change starts from. MSRP with −20 means MSRP minus 20 percent. Items with no price at the chosen level are skipped.</span></label>
+          <label class="field field--md" id="pr-level-wrap" hidden><span class="field__label">Pricing level <span class="hint" tabindex="0" data-hint="Each matched item takes its own price from this FDM4 price list, with no math. Items with no price at that level keep their current price.">?</span></span><select id="pr-level-key"><option value="">Choose a level...</option><option value="msrp">MSRP</option><option value="corp1">Level 1</option><option value="corp2">Level 2</option><option value="corp3">Level 3</option><option value="wholesale">Wholesale</option><option value="employee">Employee</option><option value="base">Price before any rule</option></select><span class="field__help">Each matched item takes its own price from this FDM4 price list, with no math. Items with no price at that level keep their current price.</span></label>
+          <label class="field field--md"><span class="field__label">Round the result <span class="hint" tabindex="0" data-hint="Gives the result a retail ending: $29.32 becomes $28.99. Without it, results are exact.">?</span></span><select id="pr-rounding">
             <option value="none">Exact - no rounding</option>
             <option value="99">End in .99</option>
             <option value="95">End in .95</option>
             <option value="00">Whole dollars (.00)</option>
-          </select></label>
-          <label class="field field--sm"><span class="field__label">Never below $ <span class="hint" tabindex="0" data-hint="Optional. The result never drops below this price. If bounds conflict, never below wins.">?</span></span><input id="pr-floor" type="number" step="0.0001" min="0"></label>
-          <label class="field field--sm"><span class="field__label">Never above $ <span class="hint" tabindex="0" data-hint="Optional. The result never rises above this price.">?</span></span><input id="pr-ceiling" type="number" step="0.0001" min="0"></label>
-          <label class="field--checkbox" title="Clamp the result to each item's own MSRP"><input id="pr-cap-msrp" type="checkbox"> Never above MSRP</label>
-          <label class="field field--sm field--date"><span class="field__label">Starts <span class="hint hint--left" tabindex="0" data-hint="Optional. The rule begins at the start of this day.">?</span></span><input id="pr-from" type="date"></label>
-          <label class="field field--sm field--date"><span class="field__label">Ends <span class="hint hint--left" tabindex="0" data-hint="Optional. The rule runs through the end of this day.">?</span></span><input id="pr-until" type="date"></label>
+          </select><span class="field__help">Gives the result a retail ending: $29.32 becomes $28.99. Without it, results are exact.</span></label>
+          <label class="field field--sm"><span class="field__label">Never below $ <span class="hint" tabindex="0" data-hint="Optional. The result never drops below this price. If the two limits conflict, never below wins.">?</span></span><input id="pr-floor" type="number" step="0.0001" min="0"><span class="field__help">Optional. The result never drops below this price. If the two limits conflict, never below wins.</span></label>
+          <label class="field field--sm"><span class="field__label">Never above $ <span class="hint" tabindex="0" data-hint="Optional. The result never rises above this price.">?</span></span><input id="pr-ceiling" type="number" step="0.0001" min="0"><span class="field__help">Optional. The result never rises above this price.</span></label>
+          <label class="field--checkbox" title="The result never rises above each item's own MSRP"><input id="pr-cap-msrp" type="checkbox"> Never above MSRP</label>
+          <label class="field field--sm field--date"><span class="field__label">Starts <span class="hint hint--left" tabindex="0" data-hint="Optional. The rule begins at the start of this day.">?</span></span><input id="pr-from" type="date"><span class="field__help">Optional. The rule begins at the start of this day.</span></label>
+          <label class="field field--sm field--date"><span class="field__label">Ends <span class="hint hint--left" tabindex="0" data-hint="Optional. The rule runs through the end of this day.">?</span></span><input id="pr-until" type="date"><span class="field__help">Optional. The rule runs through the end of this day.</span></label>
         </div>
         <span id="pr-effect-error" class="field-error" role="alert" hidden></span>
-        <p class="muted pr-effect-note">Percent example: −15 lowers by 15%. Without a rounding choice, results are exact (up to 4 decimal places). If bounds conflict, "never below" wins.</p>
+        <p class="muted pr-effect-note">Percent example: −15 lowers the price by 15%. Without a rounding choice, results are exact to 4 decimal places. If never below and never above conflict, never below wins.</p>
       </fieldset>
       <label class="field pr-note-field"><span class="field__label">Note</span><input id="pr-note" type="text" maxlength="2000" placeholder="Why this rule exists..."></label>
     </div>
@@ -1748,7 +1826,7 @@
   </dialog>
 
   <dialog id="reports-dialog" class="dialog dialog--wide" aria-labelledby="reports-title">
-    <div class="dialog__header"><div><p class="eyebrow">Migration follow-up</p><h2 id="reports-title">Import punch list</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
+    <div class="dialog__header"><div><p class="eyebrow">Rows that need a decision</p><h2 id="reports-title">Import punch list</h2></div><button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button></div>
     <div class="dialog__body">
       <form id="report-filters" class="filter-bar">
         <label class="field combobox combobox--wide"><span class="field__label">Store</span><input id="report-store-search" type="search" placeholder="All stores" autocomplete="off" aria-autocomplete="list" aria-controls="report-store-options" aria-expanded="false"><input type="hidden" id="report-store"><div id="report-store-options" class="combobox__options combobox__options--modal" role="listbox" hidden></div></label>

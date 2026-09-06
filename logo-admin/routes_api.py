@@ -3195,7 +3195,11 @@ def logo_names(
                     SELECT btrim(a.design_id) AS design_id,
                            upper(btrim(a.color_scheme_id)) AS color_scheme_id,
                            min(btrim(a.logo_code)) AS logo_code,
-                           count(*) AS n_assign
+                           count(*) AS n_assign,
+                           -- A thumbnail for the list: any assignment image
+                           -- for this design and scheme (same scan, no join).
+                           left(min(NULLIF(btrim(a.image_url), '')), 2048)
+                               AS image_url
                       FROM logo.assignment a
                      WHERE a.fdm4_store = %(store)s AND a.active
                        AND NULLIF(btrim(a.design_id), '') IS NOT NULL
@@ -3210,7 +3214,7 @@ def logo_names(
                            AS fdm4_description,
                        COALESCE(s.updated_at, g.updated_at) AS updated_at,
                        COALESCE(s.updated_by, g.updated_by) AS updated_by,
-                       u.logo_code, u.n_assign,
+                       u.logo_code, u.n_assign, u.image_url,
                        (SELECT btrim(dp.art_id) FROM fdm4.design_pool dp
                          WHERE btrim(dp.design_id) = u.design_id
                            AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
@@ -3252,6 +3256,7 @@ def logo_names(
                 SELECT dn.design_id, dn.color_scheme_id, dn.name, dn.source,
                        dn.locked, dn.uses, dn.fdm4_description, dn.updated_at,
                        dn.updated_by, dn.fdm4_store, la.logo_code, la.n_assign,
+                       la.image_url,
                        (SELECT btrim(dp.art_id) FROM fdm4.design_pool dp
                          WHERE btrim(dp.design_id) = dn.design_id
                            AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
@@ -3260,7 +3265,8 @@ def logo_names(
                        count(*) OVER() AS total_count
                   FROM logo.display_name dn
                   LEFT JOIN LATERAL (
-                      SELECT min(btrim(a.logo_code)) AS logo_code, count(*) AS n_assign
+                      SELECT min(btrim(a.logo_code)) AS logo_code, count(*) AS n_assign,
+                             left(min(NULLIF(btrim(a.image_url), '')), 2048) AS image_url
                         FROM logo.assignment a
                        WHERE btrim(a.design_id) = dn.design_id
                          AND upper(btrim(a.color_scheme_id)) = dn.color_scheme_id
