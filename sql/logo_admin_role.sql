@@ -7,8 +7,8 @@
 -- below, and running the disposable role/preflight tests before review.
 --
 -- Run as a superuser (or the database owner, where it also owns the objects)
--- AFTER sql/logo_schema.sql, sql/woo_transform.sql,
--- and every sql/migrations/*.sql file in lexical order. Every fail-closed
+-- LAST, after sql/bootstrap.sh has applied the schema files and every
+-- migration in sql/migrations/APPLY_ORDER order (NOT lexical). Every fail-closed
 -- validation runs before the first REVOKE, so a stale contract cannot strip a
 -- working deployment. The transaction makes the revoke/regrant phase atomic.
 -- ============================================================================
@@ -280,12 +280,24 @@ BEGIN
              'logo', 'audit_row'),
             ('logo.display_name', 'logo_display_name_audit', 29, 'O',
              'logo', 'audit_display_name_row'),
+            -- Feed-dependency bumps: an edit to a served name or cost
+            -- re-versions the assignments it changes
+            -- (migrations/2026-09-06-logo-feed-dependency-bumps.sql).
+            ('logo.display_name', 'display_name_feed_bump', 29, 'O',
+             'logo', 'display_name_feed_bump'),
+            ('logo.default_cost', 'default_cost_feed_bump', 29, 'O',
+             'logo', 'default_cost_feed_bump'),
             ('woo.price_rule', 'price_rule_audit', 29, 'O',
              'woo', 'audit_price_rule_row'),
             ('woo.store_mix_store', 'store_mix_store_audit', 29, 'O',
              'woo', 'audit_store_mix_row'),
             ('woo.store_mix_item', 'store_mix_item_audit', 29, 'O',
-             'woo', 'audit_store_mix_row')
+             'woo', 'audit_store_mix_row'),
+            -- Deferred constraint trigger: an active list-mode store may not
+            -- commit an empty item list
+            -- (migrations/2026-09-06-mix-nonempty-guard.sql).
+            ('woo.store_mix_item', 'store_mix_item_nonempty', 9, 'O',
+             'woo', 'mix_items_nonempty')
     ), actual AS (
         SELECT format('%I.%I', namespace.nspname, relation.relname),
                trigger.tgname,
@@ -670,6 +682,11 @@ GRANT EXECUTE ON FUNCTION
     )
     TO woo_reader, insights_reader, etl_writer, logo_admin;
 GRANT EXECUTE ON FUNCTION woo.refresh_product_state() TO etl_writer;
+
+-- Read-only artwork resolver for /feed/logos: the feed calls it per assignment
+-- row (migrations/2026-09-06-logo-art-pool.sql).
+GRANT EXECUTE ON FUNCTION logo.art_pool(text, text, text)
+    TO woo_reader, insights_reader, etl_writer, logo_admin;
 
 DO $optional_function_grants$
 BEGIN

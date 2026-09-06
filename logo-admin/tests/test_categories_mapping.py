@@ -249,3 +249,31 @@ def test_routes_and_csv_round_trip(client_as, monkeypatch):
     assert ok_rows and ok_rows[0]["count"] == 1
     assert bad and bad[0]["node_slug"] == "unknown-slug"
     get_settings.cache_clear()
+
+
+def test_workbench_membership_counts_implicit_identity_mappings():
+    """A live slug equal to a draft node's slug is mapped to it implicitly
+    (no slug_map row). The workbench used to read physical rows only, so a
+    freshly seeded draft showed zero products for a node the plan fills."""
+    import categories_planner
+
+    _snapshot()
+    footwear = _write(categories_draft.create_node, parent_id=None,
+                      name="Work Boots", slug="footwear-work-boots")
+    with database.cursor() as cursor:
+        cursor.execute("SELECT count(*) AS n FROM catmgr.slug_map")
+        assert cursor.fetchone()["n"] == 0        # nothing was decided by hand
+
+    membership = _read(categories_mapping.effective_membership, "prod",
+                       footwear["node_id"])
+    assert membership["carried_count"] == 2
+    assert set(membership["final_sample"]) == {"BOOT-M", "BOOT-W"}
+
+    # ... and it is exactly what the planner keeps on that node.
+    _write(categories_mapping.set_mapping, old_slug="men-s", action="delete")
+    _write(categories_mapping.set_mapping, old_slug="men-s-bottoms", action="delete")
+    _write(categories_mapping.set_mapping, old_slug="saws", action="delete")
+    plan = _read(categories_planner.build_blog_plan, "prod", 1)
+    kept = {row["expected_sku"] for row in plan["memberships"]
+            if row["final_slugs"] == ["footwear-work-boots"]}
+    assert kept | set(membership["final_sample"]) == {"BOOT-M", "BOOT-W"}

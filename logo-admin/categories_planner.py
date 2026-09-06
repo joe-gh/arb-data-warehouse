@@ -627,8 +627,15 @@ def delete_ack(cursor, sku: str, *, actor: str) -> None:
                  entity="ack", entity_key=sku, detail={})
 
 
-def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str, Any]:
-    """Aggregate blockers, warnings, and per-blog stats for a plan."""
+def preview(cursor, env: str, blog_ids: Optional[List[int]] = None, *,
+            keep_plans: bool = False) -> Dict[str, Any]:
+    """Aggregate blockers, warnings, and per-blog stats for a plan.
+
+    keep_plans returns the plans themselves under "plans" (blog_id -> plan) so
+    a caller that must freeze exactly what it checked - run creation - does not
+    rebuild them from a second, later read of the draft. Off by default: the
+    plans are large and every other caller only needs the stats.
+    """
 
     cursor.execute(
         "SELECT blog_id FROM catmgr.snapshot WHERE env = %s ORDER BY blog_id",
@@ -654,6 +661,7 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
     acked = {row["sku"] for row in list_acks(cursor)}
 
     blogs: List[Dict[str, Any]] = []
+    plans: Dict[int, Dict[str, Any]] = {}
     blocked_blogs: List[Dict[str, Any]] = []
     collisions: Dict[int, List[str]] = {}
     zero_by_sku: Dict[str, int] = {}
@@ -678,6 +686,8 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
             except DraftError as exc:
                 blocked_blogs.append({"blog_id": blog_id, "error": str(exc)})
                 continue
+            if keep_plans:
+                plans[blog_id] = plan
             row_collisions = _plan_slug_collisions(plan)
             if row_collisions:
                 collisions[blog_id] = row_collisions
@@ -763,7 +773,7 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
         })
     warnings.append({"kind": "redirects", "count": redirect_count})
 
-    return {
+    outcome = {
         "env": env,
         "ok": not blockers,
         "blockers": blockers,
@@ -771,6 +781,9 @@ def preview(cursor, env: str, blog_ids: Optional[List[int]] = None) -> Dict[str,
         "totals": totals,
         "blogs": blogs,
     }
+    if keep_plans:
+        outcome["plans"] = plans
+    return outcome
 
 
 def _plan_recreated_slugs(plan: Dict[str, Any]) -> List[str]:

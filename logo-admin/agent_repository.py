@@ -7,6 +7,8 @@ from typing import Iterable, Optional
 
 from psycopg2.extras import Json
 
+from snapshots import dumps_exact
+
 
 MESSAGE_ROLES = frozenset({"user", "assistant"})
 MESSAGE_STATUSES = frozenset({"complete", "failed", "cancelled"})
@@ -550,7 +552,7 @@ def append_message(
             role,
             status,
             content,
-            Json(replay_list),
+            Json(replay_list, dumps=dumps_exact),
             session_id,
             user_login,
         ),

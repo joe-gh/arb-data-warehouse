@@ -8,6 +8,8 @@ import http.client
 import io
 import ipaddress
 import json
+
+from snapshots import dumps_exact
 import logging
 import os
 from pathlib import Path
@@ -39,6 +41,7 @@ from auth import (
     wordpress_json_request,
 )
 from authorization import AccessContext
+from categories_api import catmgr_visible
 from commands import (
     SetExternalMixStoreCommand,
     RemoveExternalMixStoreCommand,
@@ -143,6 +146,9 @@ class AssignmentBody(BaseModel):
     name_override: Optional[str] = Field(default=None, max_length=200)
     expected_updated_at: Optional[datetime.datetime] = None
     active: bool = True
+    # Insert-only: the Add-row button sends it so a new option row can never
+    # land on top of an existing one.
+    create_only: bool = False
 
 
 class StyleActiveBody(BaseModel):
@@ -1701,7 +1707,7 @@ def export_audit_log(
                         "" if row["option_row"] is None else row["option_row"],
                         "" if row["position"] is None else row["position"],
                         _csv_safe_text(
-                            json.dumps(row["detail"], separators=(",", ":"))
+                            dumps_exact(row["detail"])
                             if row["detail"] is not None
                             else ""
                         ),
@@ -2458,6 +2464,11 @@ def _mix_known_store(cursor, store: str) -> None:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
+def _mix_lock_store(cursor, store: str) -> None:
+    """Serialize concurrent mix writes for one store (write cursors only)."""
+    mix_service.lock_store(cursor, store)
+
+
 def _mix_seed_items(cursor, store: str, actor: str) -> int:
     return mix_service.seed_items(cursor, store, actor)
 
@@ -2552,6 +2563,7 @@ def enable_mix_store(body: MixStoreBody, user: Dict[str, str] = Depends(require_
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         _mix_known_store(cursor, store)
         existing = _mix_registry(cursor, store, required=False)
+        _mix_lock_store(cursor, store)
         if existing and existing["active"]:
             raise HTTPException(
                 status_code=400,
@@ -2592,6 +2604,7 @@ def switch_mix_mode(body: MixStoreModeBody, user: Dict[str, str] = Depends(requi
         raise HTTPException(status_code=400, detail="mode must be 'all' or 'list'")
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         registry = _mix_registry(cursor, store)
+        _mix_lock_store(cursor, store)
         if registry["mode"] == mode:
             return {"ok": True, "mode": mode, "imported": 0, "note": "Mode unchanged"}
         imported = 0
@@ -2627,6 +2640,7 @@ def disable_mix_store(
 ):
     store = _mix_norm(store)
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        _mix_lock_store(cursor, store)
         cursor.execute(
             """
             UPDATE woo.store_mix_store
@@ -2753,6 +2767,7 @@ def save_mix_style(body: MixStyleBody, user: Dict[str, str] = Depends(require_cs
     style = _mix_norm(body.style_code)
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         registry = _mix_registry(cursor, store)
+        _mix_lock_store(cursor, store)
         _mix_require_list_mode(registry)
         available = _mix_style_universe(cursor, store, style)
         colors, sx_json = _mix_clean_style_config(
@@ -2781,6 +2796,7 @@ def add_mix_styles(body: MixStylesBody, user: Dict[str, str] = Depends(require_c
         raise HTTPException(status_code=400, detail="Provide at least one style")
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         registry = _mix_registry(cursor, store)
+        _mix_lock_store(cursor, store)
         _mix_require_list_mode(registry)
         saved = 0
         for style in styles:
@@ -2819,6 +2835,7 @@ def remove_mix_styles(body: MixStylesBody, user: Dict[str, str] = Depends(requir
         raise HTTPException(status_code=400, detail="Provide at least one style")
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         registry = _mix_registry(cursor, store)
+        _mix_lock_store(cursor, store)
         _mix_require_list_mode(registry)
         cursor.execute(
             """
@@ -2830,11 +2847,14 @@ def remove_mix_styles(body: MixStylesBody, user: Dict[str, str] = Depends(requir
         removed = cursor.rowcount
         if removed and _mix_item_count(cursor, store) == 0:
             # Never leave an active list-mode store empty - the transform
-            # would remove every product. The txn rolls back.
+            # skips the filter for an empty list and projects the whole FDM4
+            # assortment back onto the store. The txn rolls back.
             raise HTTPException(
                 status_code=400,
-                detail="This would leave the mix empty and remove every "
-                       "product from the store. Disable the override instead")
+                detail="This would leave the mix empty, and an empty list "
+                       "makes the next sync fall back to the full FDM4 "
+                       "assortment for this store. Disable the override "
+                       "instead")
     return {"ok": True, "removed": removed}
 
 
@@ -2846,6 +2866,7 @@ def import_mix(body: MixImportBody, user: Dict[str, str] = Depends(require_csrf)
         raise HTTPException(status_code=400, detail="mode must be 'merge' or 'reset'")
     with database.cursor(write=True, actor=user["user_login"]) as cursor:
         registry = _mix_registry(cursor, store)
+        _mix_lock_store(cursor, store)
         _mix_require_list_mode(registry)
         removed = 0
         if mode == "reset":
@@ -3995,7 +4016,7 @@ def product_state(store: str = Query(min_length=1,max_length=100), style: Option
 @router.get("/change-history")
 def change_history(store: Optional[str] = Query(None,max_length=100), style: Optional[str] = Query(None,max_length=100), logo_code: Optional[str] = Query(None,max_length=100), rule_id: Optional[int] = Query(None,ge=1), since_days: int = Query(7,ge=1,le=90), actor: Optional[str] = Query(None,max_length=100), limit: int = Query(100,ge=1,le=300), user: Dict[str,str] = Depends(require_user)):
     login = AccessContext.from_session(user).user_login
-    return _read_service(read_queries.get_change_history,store=store,style=style,logo_code=logo_code,rule_id=rule_id,since_days=since_days,actor=actor,limit=limit,user_login=login,category_access=login in get_settings().catmgr_view_users)
+    return _read_service(read_queries.get_change_history,store=store,style=style,logo_code=logo_code,rule_id=rule_id,since_days=since_days,actor=actor,limit=limit,user_login=login,category_access=catmgr_visible(login))
 
 
 @router.get("/stock")
@@ -4026,7 +4047,7 @@ def order_status(order_id: int = Query(ge=1), store: Optional[str] = Query(None,
 @router.get("/issues")
 def issues(store: Optional[str] = Query(None,max_length=100), checks: Optional[List[str]] = Query(None,max_length=7), limit: int = Query(50,ge=1,le=200), user: Dict[str,str] = Depends(require_user)):
     login = AccessContext.from_session(user).user_login
-    return _read_service(read_queries.find_issues,store=store,checks=checks,limit=limit,category_access=login in get_settings().catmgr_view_users)
+    return _read_service(read_queries.find_issues,store=store,checks=checks,limit=limit,category_access=catmgr_visible(login))
 
 
 @router.get("/product-explanation")

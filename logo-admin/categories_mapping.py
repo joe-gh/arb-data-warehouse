@@ -577,19 +577,30 @@ def effective_membership(cursor, env: str, node_id: int,
     if cursor.fetchone() is None:
         raise DraftError(f"unknown node: {node_id}")
 
-    cursor.execute(
-        f"""
-        SELECT DISTINCT p.sku
-          FROM catmgr.slug_map m
-          JOIN catmgr.wp_term t ON {LOGICAL_SLUG_SQL} = m.old_slug AND t.env = %s
-          JOIN catmgr.wp_term_product p ON p.env = t.env
-                                        AND p.blog_id = t.blog_id
-                                        AND p.term_id = t.term_id
-         WHERE m.action = 'map' AND m.target_node_id = %s AND p.sku <> ''
-        """,
-        (env, node_id),
+    # The slug_map holds only the dispositions somebody typed; a live slug
+    # equal to a draft node's slug is mapped to it implicitly, and the planner
+    # carries its products. Reading physical rows alone made a freshly seeded
+    # draft show zero products for every node the plan would fill.
+    import categories_planner   # local: the planner imports this module
+    dispositions = categories_planner.load_dispositions(cursor)
+    carried_slugs = sorted(
+        slug for slug, row in dispositions.items()
+        if row.get("action") == "map" and row.get("target_node_id") == node_id
     )
-    carried = {row["sku"] for row in cursor.fetchall()}
+    carried: set = set()
+    if carried_slugs:
+        cursor.execute(
+            f"""
+            SELECT DISTINCT p.sku
+              FROM catmgr.wp_term t
+              JOIN catmgr.wp_term_product p ON p.env = t.env
+                                            AND p.blog_id = t.blog_id
+                                            AND p.term_id = t.term_id
+             WHERE t.env = %s AND {LOGICAL_SLUG_SQL} = ANY(%s) AND p.sku <> ''
+            """,
+            (env, carried_slugs),
+        )
+        carried = {row["sku"] for row in cursor.fetchall()}
 
     rule_results = []
     rule_skus: set = set()

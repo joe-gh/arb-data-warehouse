@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
-import json
 import uuid
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -34,6 +33,7 @@ from snapshots import (
     canonical_json,
     compact_scopes,
     diff_states,
+    dumps_exact,
     lock_scopes,
     lock_scope_tables,
     restore_state,
@@ -56,15 +56,9 @@ class Preview:
 
 
 def _json(value: Any) -> Json:
-    return Json(
-        value,
-        dumps=lambda item: json.dumps(
-            item,
-            default=str,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-    )
+    # dumps_exact keeps a Decimal (how db.py decodes json/jsonb numbers) as a
+    # bare number, so a journaled value survives the round trip unrounded.
+    return Json(value, dumps=dumps_exact)
 
 
 def _uuid(value: str | uuid.UUID) -> uuid.UUID:

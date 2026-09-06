@@ -4,8 +4,10 @@ Every function takes a caller-owned cursor and raises domain errors
 (NotFound / InvalidCommand); HTTP callers translate them to status codes.
 The invariants live here once: a store must be in the catalog, a list-mode
 store is seeded from its current FDM4 mix before the mode flips, and an
-active list-mode store is never left empty (the transform would remove
-every product)."""
+active list-mode store is never left empty (an empty list makes the
+transform skip the filter and fall back to the full FDM4 assortment).
+Every write takes the store's registry row lock first, so two concurrent
+edits to the same store cannot each see the other's uncommitted rows."""
 
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +39,25 @@ def registry(cursor, store: str, *, required: bool = True) -> Optional[Dict[str,
     if required and (row is None or not row["active"]):
         raise NotFound(f"{store} is not using a custom product list")
     return dict(row) if row else None
+
+
+def lock_store(cursor, store: str) -> None:
+    """Serialize writes for one store on its registry row.
+
+    The empty-list guard (and the seed/import flows) read a count after
+    writing; under READ COMMITTED two transactions editing the same store each
+    miss the other's uncommitted rows and both pass. Taking this row lock
+    right after the registry read makes them queue instead. No-op when the
+    store has no registry row yet - the ON CONFLICT upsert that follows locks
+    the row it creates. Never call this on a read cursor: those run in
+    read-only transactions, where FOR UPDATE errors.
+    """
+
+    cursor.execute(
+        "SELECT 1 FROM woo.store_mix_store WHERE fdm4_store = %s FOR UPDATE",
+        (store,),
+    )
+    cursor.fetchone()
 
 
 def require_list_mode(registry_row: Dict[str, Any]) -> None:
@@ -124,6 +145,7 @@ def enable(cursor, store: str, mode: str, note: str, actor: str, *, active: bool
         raise InvalidCommand("mode must be 'all' or 'list'")
     known_store(cursor, store)
     existing = registry(cursor, store, required=False)
+    lock_store(cursor, store)
     cursor.execute(
         """
         INSERT INTO woo.store_mix_store
@@ -154,6 +176,7 @@ def enable(cursor, store: str, mode: str, note: str, actor: str, *, active: bool
 
 
 def disable(cursor, store: str, actor: str) -> None:
+    lock_store(cursor, store)
     cursor.execute(
         """
         UPDATE woo.store_mix_store
@@ -168,6 +191,7 @@ def disable(cursor, store: str, actor: str) -> None:
 
 def add_styles(cursor, store: str, styles: List[str], actor: str) -> Dict[str, Any]:
     reg = registry(cursor, store)
+    lock_store(cursor, store)
     require_list_mode(reg)
     saved = 0
     added: List[str] = []
@@ -193,6 +217,7 @@ def add_styles(cursor, store: str, styles: List[str], actor: str) -> Dict[str, A
 
 def remove_styles(cursor, store: str, styles: List[str]) -> int:
     reg = registry(cursor, store)
+    lock_store(cursor, store)
     require_list_mode(reg)
     cursor.execute(
         "DELETE FROM woo.store_mix_item WHERE fdm4_store = %s AND style_code = ANY(%s)",
@@ -201,7 +226,8 @@ def remove_styles(cursor, store: str, styles: List[str]) -> int:
     removed = cursor.rowcount
     if removed and item_count(cursor, store) == 0:
         raise InvalidCommand(
-            "This would leave the mix empty and remove every product from the store. "
+            "This would leave the mix empty, and an empty list makes the next "
+            "sync fall back to the full FDM4 assortment for this store. "
             "Disable the override instead"
         )
     return removed

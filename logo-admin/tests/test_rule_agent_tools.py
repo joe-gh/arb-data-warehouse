@@ -154,3 +154,74 @@ def test_sync_block_whole_store_and_styles_round_trips():
     change_set = new_change_set(_session(), USER)
     with pytest.raises(NotFound):
         stage_write(change_set["id"], "set_sync_block", {"store": "S_NOPE", "styles": [], "scope": "full", "note": "", "active": True}, "block-bad", USER, max_items=50)
+
+
+def _seed_price_rule(name, **columns):
+    columns.setdefault("active", True)
+    columns.setdefault("stackable", True)
+    columns.setdefault("priority", 1)
+    columns.setdefault("effect_type", "percent")
+    columns.setdefault("effect_value", 0)
+    columns.setdefault("basis", "current")
+    names = ["name", *columns]
+    values = [name, *columns.values()]
+    placeholders = ", ".join(["%s"] * len(names))
+    rows = _admin(
+        f"INSERT INTO woo.price_rule ({', '.join(names)}) "
+        f"VALUES ({placeholders}) RETURNING rule_id",
+        tuple(values),
+    )
+    return int(rows[0][0])
+
+
+def test_price_rule_listing_matches_the_evaluator_on_tiers():
+    """Listing and evaluation must agree about which rules touch a store.
+
+    The listing used to ignore store_tiers entirely: a rule aimed at a store
+    OR a pricing tier was hidden from the store it actually prices, and
+    tier-only rules were shown to stores outside the tier.
+    """
+
+    from queries import list_price_rules
+
+    _admin(
+        "INSERT INTO woo.store_pricing_tier (fdm4_store, tier_name, note) "
+        "VALUES ('S_TIERTEST', 'MSRP', 'fixture') "
+        "ON CONFLICT (fdm4_store) DO UPDATE SET tier_name = EXCLUDED.tier_name"
+    )
+    seeded = {}
+    try:
+        seeded["store"] = _seed_price_rule("rule store", stores=["S_TEST"])
+        seeded["tier"] = _seed_price_rule("rule tier", store_tiers=["Corporate"])
+        seeded["store_or_tier"] = _seed_price_rule(
+            "rule store or tier", stores=["S_OTHER"], store_tiers=["Corporate"],
+        )
+        seeded["other_tier"] = _seed_price_rule("rule other tier", store_tiers=["MSRP"])
+        seeded["excluded"] = _seed_price_rule("rule excluded", excl_stores=["S_TEST"])
+        seeded["unrelated"] = _seed_price_rule("rule unrelated", stores=["S_OTHER"])
+        ids = set(seeded.values())
+
+        with database.cursor() as cursor:
+            listed = {
+                int(rule["rule_id"])
+                for rule in list_price_rules(cursor, store="S_TEST")["rules"]
+            } & ids
+        evaluated = set(
+            _admin(
+                "SELECT applied_rule_ids FROM woo.eval_price_rules("
+                "'S_TEST', 'STYLE-1', '', '', 100, '{}'::jsonb, 50)"
+            )[0][0]
+        ) & ids
+
+        expected = {seeded["store"], seeded["tier"], seeded["store_or_tier"]}
+        assert listed == evaluated == expected
+        assert seeded["other_tier"] not in listed
+        assert seeded["excluded"] not in listed
+        assert seeded["unrelated"] not in listed
+    finally:
+        if seeded:
+            _admin(
+                "DELETE FROM woo.price_rule WHERE rule_id = ANY(%s)",
+                (list(seeded.values()),),
+            )
+        _admin("DELETE FROM woo.store_pricing_tier WHERE fdm4_store='S_TIERTEST'")

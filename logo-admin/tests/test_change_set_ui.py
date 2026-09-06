@@ -72,6 +72,23 @@ def test_public_state_ids_are_validated_before_becoming_route_segments():
     assert "encodeURIComponent(displayedJob.id)" in source
 
 
+def test_running_flags_clear_when_an_import_finishes_or_fails():
+    """The first CSV import of a page set importRunning and never cleared it,
+    so every later import and the image mirror refused for the life of the
+    tab."""
+
+    for start, end, flag in (
+        ("  async function importCsv()", "  async function importLegacySheets(", "importRunning"),
+        ("  async function mirrorLegacyImages()", "  const RESULT_STAT_LABELS = {", "mirrorRunning"),
+    ):
+        body = JAVASCRIPT[JAVASCRIPT.index(start):JAVASCRIPT.index(end)]
+        assert f"{flag} = true;" in body
+        assert f"{flag} = false;" in body, f"{flag} is never cleared in {start.strip()}"
+        assert body.index("} finally {") < body.index(f"{flag} = false;"), (
+            f"{flag} must clear in the finally block, not only on the happy path"
+        )
+
+
 def test_price_impact_and_resolved_names_are_shown_before_confirmation():
     source = _assistant_javascript()
     review = source[source.index("function renderChangeSet"):source.index("function renderChangeSet") + 13000]

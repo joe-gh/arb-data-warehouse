@@ -16,6 +16,7 @@ import categories_service
 from categories_draft import DraftConflict, DraftError
 from db import database
 from tests.conftest import TEST_ADMIN_DSN
+from tests.fake_wp import FakeWordPress
 from tests.test_categories_planner import _build_scenario, _read, _write
 from tests.test_categories_runs import BrokerRecorder
 
@@ -71,11 +72,18 @@ def test_stale_running_job_is_reclaimed_and_resumes_from_its_cursor(ready):
     listed = _read(categories_runs.list_runs, "prod")
     assert listed[0]["worker_stale"] is True
     recorder.calls.clear()
+    recorder.record_probes = True
     done = categories_runs.process_run(run["run_id"], actor="tester")
     assert done["status"] == "completed", done["jobs"][0]["result"]
     paths = [p for _, p, _ in recorder.calls]
     assert "/apply-terms" not in paths          # terms_done cursor honoured
-    assert paths[0] == "/apply-memberships" and paths[-1] == "/finalize"
+    # The remaining phases already landed under THIS attempt's keys, so the
+    # resumed worker adopts WordPress's own job rows instead of posting a
+    # second copy of each phase against the blog lock.
+    assert set(paths) == {"/job"}
+    probed = [p["key"] for _, path, p in recorder.calls if path == "/job"]
+    assert any(k.endswith(":apply-memberships:0") for k in probed)
+    assert any(k.endswith(":finalize") for k in probed)
     with database.cursor() as cursor:
         cursor.execute("SELECT count(*) AS n FROM catmgr.audit_log WHERE action = 'job_reclaimed'")
         assert cursor.fetchone()["n"] == 1
@@ -725,10 +733,351 @@ def test_in_flight_job_continues_past_a_bumped_snapshot_version(ready, monkeypat
             cursor.execute("UPDATE catmgr.run SET status='queued', finished_at=NULL WHERE run_id=%s", (run["run_id"],))
             cursor.execute("UPDATE catmgr.snapshot SET version = version + 1 WHERE env='prod' AND blog_id=1")
     recorder.calls.clear()
+    recorder.record_probes = True
     categories_runs.process_run(run["run_id"], actor="tester")
     detail = _read(categories_runs.get_run, run["run_id"])
     assert detail["jobs"][0]["status"] == "done", detail["jobs"][0]["result"]
     paths = [p for _, p, _ in recorder.calls]
-    assert "/apply-terms" not in paths and "/finalize" in paths
+    assert "/apply-terms" not in paths
+    # Same attempt, so finalize is adopted from WordPress's job row rather
+    # than run twice (Redirection rows would duplicate).
+    probed = [p["key"] for _, path, p in recorder.calls if path == "/job"]
+    assert any(k.endswith(":finalize") for k in probed)
     fence = detail["jobs"][0]["result"]["resumed_past_version_fence"]
     assert fence["snapshot"] > fence["plan"]
+
+
+# ---------------------------------------------------------------- admission (2026-09-05)
+
+
+def test_a_run_created_for_later_is_not_started_by_recovery(ready, monkeypatch):
+    """start:false means no apply until a person starts it - a restart must
+    not decide otherwise. started_at is the durable record of that decision."""
+    _, recorder = ready
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    assert _read(categories_runs.get_run, run["run_id"])["started_at"] is None
+    started = []
+    monkeypatch.setattr(categories_runs, "start_run", lambda run_id, actor: started.append(run_id))
+    assert categories_runs.recover_runs() == []
+    assert started == [] and recorder.calls == []
+    # Once started, the same restart picks it up.
+    _write(categories_runs.start, run["run_id"])
+    assert _read(categories_runs.get_run, run["run_id"])["started_at"] is not None
+    assert categories_runs.recover_runs() == [run["run_id"]]
+    assert started == [run["run_id"]]
+
+
+def test_the_create_route_starts_only_when_asked(ready, client_as, monkeypatch):
+    _enable(monkeypatch, apply_users="ADMIN-ONE")
+    started = []
+    monkeypatch.setattr(categories_runs, "start_run", lambda run_id, actor: started.append(run_id))
+    client = client_as("admin-one")
+    later = client.post("/api/categories/runs", json={"env": "prod", "blog_ids": [1], "start": False})
+    assert later.status_code == 200, later.text
+    run_id = later.json()["run"]["run_id"]
+    assert started == []
+    assert _read(categories_runs.get_run, run_id)["started_at"] is None
+    _write(categories_runs.cancel, run_id)
+
+    now = client.post("/api/categories/runs", json={"env": "prod", "blog_ids": [1], "start": True})
+    assert now.status_code == 200, now.text
+    run_id = now.json()["run"]["run_id"]
+    assert started == [run_id]
+    assert _read(categories_runs.get_run, run_id)["started_at"] is not None
+    from config import get_settings
+    get_settings.cache_clear()
+
+
+def test_the_frozen_payload_is_the_plan_the_check_passed(monkeypatch):
+    """A draft edit that lands while readiness is being checked must not end
+    up in the run: the plan is built (and checked) under the draft lock."""
+    nodes = _build_scenario()
+    _write(categories_planner.set_acks, skus=["RESCUE-2"], note="test")
+    # ORPHAN-1 is rescued by an assignment, not by an acknowledgement.
+    _write(categories_mapping.set_assignments, node_id=nodes["footwear"]["node_id"],
+           skus=["ORPHAN-1"], mode="add")
+    recorder = BrokerRecorder().install(monkeypatch)
+    assert _read(categories_planner.preview, "prod", [1])["ok"]
+
+    probe = {"deleted": False, "locked": None}
+
+    def deleting_status(env):
+        if not probe["deleted"]:
+            probe["deleted"] = True
+            with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("DELETE FROM catmgr.product_assignment WHERE sku = 'ORPHAN-1'")
+        return recorder.status(env)
+
+    original = categories_planner.build_blog_plan
+
+    def watched(cursor, env, blog_id, **kwargs):
+        if probe["locked"] is None:
+            connection = psycopg2.connect(TEST_ADMIN_DSN)
+            try:
+                with connection.cursor() as other:
+                    other.execute("SELECT pg_try_advisory_xact_lock(hashtext('catmgr_draft'))")
+                    probe["locked"] = other.fetchone()[0]
+                connection.rollback()
+            finally:
+                connection.close()
+        return original(cursor, env, blog_id, **kwargs)
+
+    monkeypatch.setattr(categories_runs, "fetch_wp_status", deleting_status)
+    monkeypatch.setattr(categories_planner, "build_blog_plan", watched)
+    with pytest.raises(DraftConflict) as excinfo:
+        _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    assert "plan check" in str(excinfo.value)
+    assert probe["locked"] is False        # the draft was locked while the plan was built
+    with database.cursor() as cursor:
+        cursor.execute("SELECT payload FROM catmgr.run_job")
+        payloads = [row["payload"] for row in cursor.fetchall()]
+    assert payloads == []                  # nothing unacknowledged was frozen
+
+    # With the assignment back, the frozen payload carries the rescue.
+    monkeypatch.setattr(categories_planner, "build_blog_plan", original)
+    _write(categories_mapping.set_assignments, node_id=nodes["footwear"]["node_id"],
+           skus=["ORPHAN-1"], mode="add")
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    rows = run["jobs"][0] and _read(categories_runs.get_run, run["run_id"])["jobs"][0]
+    with database.cursor() as cursor:
+        cursor.execute("SELECT payload FROM catmgr.run_job WHERE job_id = %s", (rows["job_id"],))
+        payload = cursor.fetchone()["payload"]
+    orphan = next(m for m in payload["memberships"] if m["expected_sku"] == "ORPHAN-1")
+    assert orphan["final_slugs"] == ["footwear"]
+    # Every product the payload leaves without a category was acknowledged.
+    acked = {row["sku"] for row in _read(categories_planner.list_acks)}
+    emptied = {m["expected_sku"] for m in payload["memberships"] if m["final_slugs"] == []}
+    assert emptied and emptied <= acked
+
+
+def test_two_restores_of_one_environment_admit_exactly_one(ready, monkeypatch):
+    import threading
+    _, fake = ready
+    run = _write(categories_runs.create_run, env="prod", blog_ids=None)
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    assert done["status"] == "completed", done["jobs"][0]["result"]
+    job_ids = [j["job_id"] for j in done["jobs"]]
+    monkeypatch.setattr(categories_runs, "_restore_worker", lambda *args, **kwargs: None)
+    barrier = threading.Barrier(len(job_ids))
+    outcomes = []
+
+    def attempt(job_id):
+        barrier.wait()
+        try:
+            categories_runs.restore_blog(run["run_id"], job_id, actor="tester")
+            outcomes.append(("accepted", job_id))
+        except Exception as exc:  # noqa: BLE001 - the refusal is the assertion
+            outcomes.append(("refused", exc))
+
+    threads = [threading.Thread(target=attempt, args=(j,)) for j in job_ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert sorted(kind for kind, _ in outcomes) == ["accepted", "refused"]
+    assert isinstance(next(v for k, v in outcomes if k == "refused"), DraftConflict)
+    running = [j for j in _read(categories_runs.get_run, run["run_id"])["jobs"]
+               if (j["restore"] or {}).get("status") == "running"]
+    assert len(running) == 1
+
+
+def test_two_resumes_of_one_environment_admit_exactly_one(ready):
+    import threading
+    first = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE catmgr.run SET status='failed' WHERE run_id = %s", (first["run_id"],))
+    second = _write(categories_runs.create_run, env="prod", blog_ids=[7])
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE catmgr.run SET status='failed' WHERE run_id = %s", (second["run_id"],))
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def attempt(run_id):
+        barrier.wait()
+        try:
+            with database.cursor(write=True, actor="tester") as cursor:
+                categories_runs.resume(cursor, run_id, actor="tester")
+            outcomes.append(("resumed", run_id))
+        except Exception as exc:  # noqa: BLE001 - the refusal is the assertion
+            outcomes.append(("refused", exc))
+
+    threads = [threading.Thread(target=attempt, args=(r,))
+               for r in (first["run_id"], second["run_id"])]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert sorted(kind for kind, _ in outcomes) == ["refused", "resumed"]
+    assert isinstance(next(v for k, v in outcomes if k == "refused"), DraftConflict)
+    queued = [r for r in _read(categories_runs.list_runs, "prod") if r["status"] == "queued"]
+    assert len(queued) == 1
+
+
+def test_one_worker_and_one_blog_in_flight_per_run(ready):
+    import threading
+    import time as clock
+    run = _write(categories_runs.create_run, env="prod", blog_ids=None)
+    claimed = categories_runs._claim_next_job(run["run_id"])
+    assert claimed is not None
+    # The first blog has not finished: nothing else may be claimed.
+    assert categories_runs._claim_next_job(run["run_id"]) is None
+
+    seen = []
+
+    def slow_process(run_id, *, actor="worker", max_jobs=None):
+        seen.append(run_id)
+        clock.sleep(0.3)
+        return {}
+
+    threads = [threading.Thread(target=categories_runs.start_run,
+                               args=(run["run_id"],), kwargs={"actor": "tester"})
+               for _ in range(2)]
+    original = categories_runs.process_run
+    categories_runs.process_run = slow_process
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        clock.sleep(0.5)
+    finally:
+        categories_runs.process_run = original
+    assert seen == [run["run_id"]]
+
+
+# ---------------------------------------------------------------- broker job keys
+
+
+def test_job_keys_are_the_ones_the_broker_files_jobs_under():
+    key = categories_runs.job_key
+    assert key("/apply-terms", {"request_id": "j1a1"}) == "j1a1:apply-terms"
+    assert key("/apply-memberships", {"request_id": "j1a1", "page": 400}) == "j1a1:apply-memberships:400"
+    assert key("/finalize", {"request_id": "j1a1"}) == "j1a1:finalize"
+    assert key("/restore", {"request_id": "r1", "phase": "terms"}) == "r1:restore-terms"
+    assert key("/restore", {"request_id": "r1", "phase": "memberships", "page": 0}) == "r1:restore-memberships:0"
+    assert key("/restore", {"request_id": "r1", "phase": "finalize"}) == "r1:restore-finalize"
+    assert key("/restore", {"request_id": "r1"}) == "r1:restore-all"
+    assert key("/restore", {}) is None
+
+
+def test_a_lost_restore_receipt_is_found_under_the_brokers_own_key(ready, monkeypatch):
+    """The phase landed on WordPress but the response died in the proxy. The
+    engine probes the key WordPress actually filed the job under."""
+    _, fake = ready
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    job = done["jobs"][0]
+
+    class Dropping(FakeWordPress):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+            self.calls = inner.calls
+            self.dropped = False
+
+        def __call__(self, env, path, payload):
+            if path == "/restore" and payload.get("phase") == "terms" and not self.dropped:
+                self.dropped = True
+                self.inner(env, path, payload)      # WordPress did the work and filed the row
+                raise categories_service.BrokerError("upstream timed out", 504)
+            return self.inner(env, path, payload)
+
+    monkeypatch.setattr(categories_runs, "broker_call", Dropping(fake))
+    result = categories_runs.restore_blog(run["run_id"], job["job_id"], actor="tester", background=False)
+    assert result["restore"]["status"] == "done", result["restore"]
+    request_id = result["restore"]["request_id"]
+    assert fake.jobs[f"{request_id}:restore-terms"]["status"] == "done"
+
+
+def test_a_retry_reruns_a_refused_phase_but_waits_for_a_running_one(ready, monkeypatch):
+    _, fake = ready
+    finalize_payload = {"blog_id": 1, "run_id": 1, "request_id": "j9a2", "deletes": [],
+                        "redirects": [], "unspsc_renames": {}, "unspsc_merges": {},
+                        "expected_blog_path": "/", "run_es": False}
+    fake.jobs["j9a1:finalize"] = {
+        "key": "j9a1:finalize", "phase": "finalize", "blog_id": 1, "status": "failed",
+        "result": {"ok": False, "redirects_failed": [{"old_path": "/product-category/saws/"}]},
+        "error": "reported refusals",
+    }
+    outcome = categories_runs.broker_job("prod", "/finalize", finalize_payload,
+                                         prior_keys=["j9a1:finalize"])
+    assert outcome["ok"] is True                       # the phase ran again
+    assert fake.jobs["j9a2:finalize"]["status"] == "done"
+    assert [p for _, p, _ in fake.calls if p == "/finalize"]
+
+    class StillRunning(BrokerRecorder):
+        """A prior attempt WordPress is still working on: adopted, not re-posted."""
+
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def __call__(self, env, path, payload):
+            if path == "/job" and payload.get("key") == "j9a3:finalize":
+                self.polls += 1
+                if self.polls < 3:
+                    return {"ok": True, "job": {"key": "j9a3:finalize", "status": "running",
+                                                "heartbeat_age": 1, "stale": False}}
+                return {"ok": True, "job": {"key": "j9a3:finalize", "status": "done"},
+                        "result": {"ok": True, "adopted": True}, "error": None}
+            return super().__call__(env, path, payload)
+
+    broker = StillRunning().install(monkeypatch)
+    adopted = categories_runs.broker_job(
+        "prod", "/finalize", {**finalize_payload, "request_id": "j9a4"},
+        prior_keys=["j9a3:finalize"])
+    assert adopted == {"ok": True, "adopted": True}
+    assert broker.polls >= 3
+    assert [p for _, p, _ in broker.calls if p == "/finalize"] == []
+
+
+# ---------------------------------------------------------------- startup order
+
+
+def test_startup_checks_the_write_contract_before_recovering_runs(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    import main
+
+    order = []
+
+    class StubDatabase:
+        def open(self):
+            order.append("pool")
+
+        def close(self):
+            order.append("closed")
+
+        @contextmanager
+        def cursor(self, **kwargs):
+            yield None
+
+    stub = SimpleNamespace(
+        agent_writes_enabled=True, catmgr_enabled=True,
+        upload_dir=tmp_path / "uploads", agent_upload_dir=tmp_path / "agent",
+        agent_repull_function_sha256=None,
+    )
+    monkeypatch.setattr(main, "settings", stub)
+    monkeypatch.setattr(main, "database", StubDatabase())
+    monkeypatch.setattr(main, "validate_registry", lambda **kwargs: None)
+    monkeypatch.setattr(main, "validate_write_tool_allowlist", lambda value: None)
+    monkeypatch.setattr(categories_runs, "recover_runs",
+                        lambda **kwargs: order.append("recover") or [])
+
+    def drifted(cursor, **kwargs):
+        order.append("contract")
+        raise RuntimeError("kernel table drifted")
+
+    monkeypatch.setattr(main, "validate_write_database_contract", drifted)
+    with pytest.raises(RuntimeError):
+        main.startup()
+    assert "recover" not in order and order.index("contract") < len(order)
+
+    order.clear()
+    monkeypatch.setattr(main, "validate_write_database_contract",
+                        lambda cursor, **kwargs: order.append("contract"))
+    main.startup()
+    assert order == ["pool", "contract", "recover"]

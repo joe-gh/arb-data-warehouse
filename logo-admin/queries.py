@@ -10,6 +10,8 @@ import time
 from typing import Any, Optional
 
 import legacy_import
+from color_classify import classify_store_colors
+from design_resolver import resolve_design
 
 
 # Every collection-returning query has a fixed service-owned cap.  Callers
@@ -30,6 +32,7 @@ STORE_PRICING_TIER_RESULT_LIMIT = 500
 COLOR_CLASS_RESULT_LIMIT = 500
 SIMILAR_STYLE_RESULT_LIMIT = 500
 COVERAGE_STYLE_RESULT_LIMIT = 2_000
+FILL_GAPS_ASSIGNMENT_LIMIT = 20_000
 LOGO_SET_RESULT_LIMIT = 500
 READ_TEXT_CHAR_LIMIT = 1_024
 READ_URL_CHAR_LIMIT = 2_048
@@ -721,7 +724,8 @@ def fill_gaps_plan(cursor, *, fdm4_store: str, styles=None) -> dict:
     cursor.execute(
         f"""
         SELECT style_code AS product_style,
-               max(name) FILTER (WHERE kind = 'parent') AS name,
+               left(max(name) FILTER (WHERE kind = 'parent'),
+                    {READ_TEXT_CHAR_LIMIT}) AS name,
                COALESCE(array_agg(DISTINCT color_code) FILTER (
                    WHERE kind = 'variation'
                      AND NULLIF(btrim(color_code), '') IS NOT NULL
@@ -738,20 +742,32 @@ def fill_gaps_plan(cursor, *, fdm4_store: str, styles=None) -> dict:
     live = {str(r["product_style"]): (str(r["name"] or ""), sorted(str(c) for c in r["colors"]))
             for r in cursor.fetchall()}
     if not live:
-        return {"store": store, "copyable": [], "no_source": [], "truncated": False}
-    cursor.execute(
-        """
+        return {"store": store, "copyable": [], "no_source": [], "truncated": False,
+                "truncation": {"styles": False, "rows": False, "bytes": False}}
+    # Up to 2,000 styles can be planned at once, so the assignment read that
+    # backs them needs its own row, byte and string bounds; an over-large plan
+    # is reported truncated rather than materialized.
+    assignment_rows, rows_truncated, bytes_truncated = _bounded_query(
+        cursor,
+        f"""
         SELECT product_style, garment_color_code, option_row, position, design_id,
-               logo_code, color_scheme_id, location, optional, background,
-               cost_override, sort_order, image_url, name_override
+               logo_code, color_scheme_id,
+               left(location, {READ_TEXT_CHAR_LIMIT}) AS location,
+               optional,
+               left(background, {READ_TEXT_CHAR_LIMIT}) AS background,
+               cost_override, sort_order,
+               left(image_url, {READ_TEXT_CHAR_LIMIT}) AS image_url,
+               left(name_override, {READ_TEXT_CHAR_LIMIT}) AS name_override
           FROM logo.assignment
          WHERE fdm4_store = %s AND active AND product_style = ANY(%s)
          ORDER BY product_style, garment_color_code, option_row, position
+         LIMIT %s
         """,
-        (store, list(live)),
+        (store, list(live), FILL_GAPS_ASSIGNMENT_LIMIT + 1),
+        FILL_GAPS_ASSIGNMENT_LIMIT,
     )
     assigned: dict = {}
-    for row in cursor.fetchall():
+    for row in assignment_rows:
         style = str(row["product_style"])
         color = str(row["garment_color_code"])
         assigned.setdefault(style, {}).setdefault(color, []).append((
@@ -786,8 +802,11 @@ def fill_gaps_plan(cursor, *, fdm4_store: str, styles=None) -> dict:
             "needs_choice": not identical,
             "slots": len(by_color[auto_source]) * len(targets) if auto_source else None,
         })
+    styles_truncated = len(live) >= COVERAGE_STYLE_RESULT_LIMIT
     return {"store": store, "copyable": copyable, "no_source": no_source,
-            "truncated": len(live) >= COVERAGE_STYLE_RESULT_LIMIT}
+            "truncated": styles_truncated or rows_truncated or bytes_truncated,
+            "truncation": {"styles": styles_truncated, "rows": rows_truncated,
+                           "bytes": bytes_truncated}}
 
 
 def search_designs(
@@ -1550,37 +1569,21 @@ def compute_bulk_preview(
     scheme = color_scheme.upper()
 
     design_index = legacy_import.load_design_lookup(cursor)
-    designs = set(design_index.candidates(fdm4_store, logo_code, scheme))
-    wanted = str(design_id).strip() if design_id not in (None, "") else ""
-    if wanted:
-        # A logo code is an art-file prefix and can be shared by several
-        # designs of one customer; an explicit design id settles it.
-        if designs and wanted not in designs:
-            return {
-                "rows": [],
-                "counts": {"total": 0},
-                "unresolved_reason": (
-                    f"design {wanted} does not carry {logo_code}/{scheme}"
-                    f" (candidates: {', '.join(sorted(designs))})"
-                ),
-            }
-        designs = {wanted}
-    if not designs:
+    # A logo code is an art-file prefix and can be shared by several designs
+    # of one customer; an explicit design id settles it, but it still has to
+    # be one of the candidates. One resolver, shared with bulk_apply_execute.
+    design_id, unresolved_reason = resolve_design(
+        set(design_index.candidates(fdm4_store, logo_code, scheme)),
+        str(design_id or ""),
+        logo_code,
+        scheme,
+    )
+    if design_id is None:
         return {
             "rows": [],
             "counts": {"total": 0},
-            "unresolved_reason": f"no design for {logo_code}/{scheme}",
+            "unresolved_reason": unresolved_reason,
         }
-    if len(designs) > 1:
-        return {
-            "rows": [],
-            "counts": {"total": 0},
-            "unresolved_reason": (
-                f"ambiguous design {logo_code}/{scheme}: {', '.join(sorted(designs))};"
-                " pass design_id"
-            ),
-        }
-    design_id = next(iter(designs))
 
     where = [
         "s.fdm4_store=%(store)s",
@@ -1600,9 +1603,15 @@ def compute_bulk_preview(
     if mode == "light_dark":
         if target.get("class") not in ("light", "dark"):
             raise ValueError("target.class must be 'light' or 'dark'")
-        # 'both'-classified colors match either target.
-        where.append("cc.light_dark IN (%(cls)s, 'both')")
-        params["cls"] = target["class"]
+        # 'both'-classified colors match either target. One shared classifier
+        # (color_classify.classify_store_colors) so this preview, paste and
+        # copy-to-many can never disagree about a color's class.
+        classes = classify_store_colors(cursor, store=fdm4_store)
+        where.append("s.color_code = ANY(%(codes)s)")
+        params["codes"] = sorted(
+            code for code, light_dark in classes.items()
+            if light_dark in (target["class"], "both")
+        )
     elif mode == "colors":
         where.append("s.color_code = ANY(%(codes)s)")
         params["codes"] = list(target["color_codes"])
@@ -1618,19 +1627,6 @@ def compute_bulk_preview(
         WITH tgt AS (
           SELECT DISTINCT s.style_code, s.color_code, max(s.color) AS color
             FROM woo.store_product_state s
-            -- Classification resolves by the store's actual color NAME first,
-            -- then by code. FDM4 color codes are NOT globally unique (code
-            -- 0002 is "Black" at Lewis but "White" in the global class table),
-            -- so a bare code join can flip a color's class entirely.
-            LEFT JOIN LATERAL (
-                SELECT c2.light_dark
-                  FROM logo.color_class c2
-                 WHERE lower(btrim(c2.color_name)) = lower(btrim(s.color))
-                    OR c2.color_code = s.color_code
-                 ORDER BY (lower(btrim(c2.color_name)) = lower(btrim(s.color))) DESC,
-                          (c2.source = 'manual') DESC
-                 LIMIT 1
-            ) cc ON true
            WHERE {' AND '.join(where)}
            GROUP BY s.style_code, s.color_code)
         SELECT t.style_code, t.color_code, t.color,
@@ -1870,9 +1866,20 @@ def list_price_rules(cursor, *, store: Optional[str] = None) -> dict:
     store: only rules that can touch it (aimed at all stores or naming it,
     and not excluding it). Also lists stores whose prices are frozen."""
     store = _clean(store, "store") if store else None
+    # Verbatim the applicability half of woo.eval_price_rules (see
+    # sql/migrations/2026-08-21-price-rule-exclusions-rounding.sql): a rule
+    # aimed at a pricing TIER applies to every store in that tier, and a rule
+    # with no stores and no tiers applies everywhere. Listing and evaluation
+    # must never disagree about which rules can touch a store.
     store_sql = (
-        "WHERE (COALESCE(cardinality(stores), 0) = 0 OR %(store)s = ANY(stores)) "
-        "AND NOT (%(store)s = ANY(COALESCE(excl_stores, '{}')))"
+        "WHERE ((COALESCE(cardinality(stores), 0) = 0 "
+        "        AND COALESCE(cardinality(store_tiers), 0) = 0) "
+        "       OR %(store)s = ANY(COALESCE(stores, '{}')) "
+        "       OR EXISTS (SELECT 1 FROM woo.store_pricing_tier spt "
+        "                   WHERE spt.fdm4_store = %(store)s "
+        "                     AND spt.tier_name = ANY(COALESCE(store_tiers, '{}')))) "
+        "AND (COALESCE(cardinality(excl_stores), 0) = 0 "
+        "     OR NOT (%(store)s = ANY(excl_stores)))"
         if store else ""
     )
     rows, truncated, byte_truncated = _bounded_query(

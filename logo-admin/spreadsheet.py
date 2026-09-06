@@ -65,6 +65,9 @@ MAX_ACTIVE_SPREADSHEET_JOBS_PER_USER = 10
 MAX_ACTIVE_SPREADSHEET_BYTES_MULTIPLIER = 5
 MAX_ACTIVE_SPREADSHEET_JOBS_GLOBAL = 100
 MAX_ACTIVE_SPREADSHEET_BYTES_GLOBAL_MULTIPLIER = 50
+# Largest power of ten a sheet's integer cell may carry. Row numbers,
+# positions, sort orders and rule ids are all far below this.
+_MAX_SHEET_INT_MAGNITUDE = 12
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,10 @@ class ParsedSpreadsheet:
     format_name: str
     headers: tuple[str, ...]
     rows: tuple[dict[str, Any], ...]
+    # Physical line of each kept row in the uploaded file. Blank lines are
+    # dropped from `rows`, so their positions must be carried separately or a
+    # rejection points the operator at the wrong line.
+    row_numbers: tuple[int, ...] = ()
 
 
 async def _joinable_to_thread(function, /, *args, **kwargs):
@@ -167,7 +174,7 @@ def _cell(value: Any, limits: SpreadsheetLimits) -> Any:
 def _rows_from_matrix(
     matrix: list[list[Any]],
     limits: SpreadsheetLimits,
-) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...]]:
+) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...], tuple[int, ...]]:
     if not matrix:
         raise InvalidCommand("Spreadsheet is empty")
     if len(matrix[0]) > limits.max_columns:
@@ -176,6 +183,7 @@ def _rows_from_matrix(
     if len(set(headers)) != len(headers):
         raise InvalidCommand("Spreadsheet headers must be unique")
     output = []
+    numbers = []
     for line, values in enumerate(matrix[1:], start=2):
         if line - 1 > limits.max_rows:
             raise InvalidCommand("Spreadsheet has too many rows")
@@ -188,9 +196,10 @@ def _rows_from_matrix(
         if not any(str(value).strip() for value in normalized):
             continue
         output.append(dict(zip(headers, normalized)))
+        numbers.append(line)
     if not output:
         raise InvalidCommand("Spreadsheet has no data rows")
-    return headers, tuple(output)
+    return headers, tuple(output), tuple(numbers)
 
 
 def _parse_csv(data: bytes, limits: SpreadsheetLimits) -> ParsedSpreadsheet:
@@ -211,8 +220,8 @@ def _parse_csv(data: bytes, limits: SpreadsheetLimits) -> ParsedSpreadsheet:
             matrix.append(list(row))
     except csv.Error as exc:
         raise InvalidCommand(f"Malformed CSV: {exc}") from None
-    headers, rows = _rows_from_matrix(matrix, limits)
-    return ParsedSpreadsheet("csv", headers, rows)
+    headers, rows, numbers = _rows_from_matrix(matrix, limits)
+    return ParsedSpreadsheet("csv", headers, rows, numbers)
 
 
 def _inspect_xlsx(data: bytes, limits: SpreadsheetLimits) -> None:
@@ -320,39 +329,36 @@ def _parse_xlsx(data: bytes, limits: SpreadsheetLimits) -> ParsedSpreadsheet:
         if not workbook.worksheets:
             raise InvalidCommand("XLSX has no worksheets")
         worksheet = workbook.worksheets[0]
-        if worksheet.max_row > limits.max_rows + 1:
-            raise InvalidCommand("Spreadsheet has too many rows")
-        if worksheet.max_column > limits.max_columns:
-            raise InvalidCommand("Spreadsheet has too many columns")
+        # <dimension> is a writer's claim about the sheet's extent: it can be
+        # missing, too small (dropping populated columns) or too large
+        # (rejecting a small sheet). _inspect_xlsx has already measured the real
+        # rows and columns against the caps from the worksheet XML, so discard
+        # the claim and read the cells that are actually present.
+        reset_dimensions = getattr(worksheet, "reset_dimensions", None)
+        if callable(reset_dimensions):
+            reset_dimensions()
         matrix: list[list[Any]] = []
-        # Iterate the sheet's actual width (already validated <= max_columns).
-        # iter_rows(max_col=limits.max_columns) pads every row out to that width
-        # with None cells, which then fails header normalization for any sheet
-        # narrower than max_columns (i.e. essentially all real spreadsheets).
-        column_span = worksheet.max_column or limits.max_columns
-        for row_index, row in enumerate(
+        for row_index, values in enumerate(
             worksheet.iter_rows(
                 max_row=limits.max_rows + 1,
-                max_col=column_span,
+                values_only=True,
             ),
             start=1,
         ):
             if row_index > limits.max_rows + 1:
                 raise InvalidCommand("Spreadsheet has too many rows")
-            if len(row) > limits.max_columns:
+            if len(values) > limits.max_columns:
                 raise InvalidCommand("Spreadsheet has too many columns")
-            values = []
-            for cell in row:
-                if cell.data_type == "f" or (
-                    isinstance(cell.value, str) and cell.value.lstrip().startswith("=")
-                ):
+            # _inspect_xlsx rejects any <f> element, so a formula never reaches
+            # this loop; a cached text value that still looks like one does.
+            for value in values:
+                if isinstance(value, str) and value.lstrip().startswith("="):
                     raise InvalidCommand("Spreadsheet formulas are not supported")
-                values.append(cell.value)
-            matrix.append(values)
+            matrix.append(list(values))
     finally:
         workbook.close()
-    headers, rows = _rows_from_matrix(matrix, limits)
-    return ParsedSpreadsheet("xlsx", headers, rows)
+    headers, rows, numbers = _rows_from_matrix(matrix, limits)
+    return ParsedSpreadsheet("xlsx", headers, rows, numbers)
 
 
 def parse_spreadsheet(
@@ -431,6 +437,11 @@ def _integer(value: Any, field: str) -> int:
         raise ValueError(f"{field} must be an integer") from None
     if not parsed.is_finite() or parsed != parsed.to_integral_value():
         raise ValueError(f"{field} must be an integer")
+    # Decimal holds an exponent lazily; int() would write out every digit, so a
+    # two-character cell like 1e1000000 costs half a minute of CPU that the
+    # translation thread cannot be asked to give up. Bound it before converting.
+    if parsed and abs(parsed.adjusted()) > _MAX_SHEET_INT_MAGNITUDE:
+        raise ValueError(f"{field} is out of range")
     return int(parsed)
 
 
@@ -457,7 +468,10 @@ def _translate_rows_with_numbers(
     commands: list[tuple[int, MutationCommand]] = []
     rejected: list[dict] = []
     csv_format = parsed.format_name == "csv"
-    for index, row in enumerate(parsed.rows, start=2):
+    # Report the line the row actually occupies in the file. A directly built
+    # ParsedSpreadsheet (tests, callers) carries no numbers; assume no blanks.
+    numbers = parsed.row_numbers or tuple(range(2, len(parsed.rows) + 2))
+    for index, row in zip(numbers, parsed.rows):
         values = dict(proposal.constants)
         values.update({
             target: _restore_csv_text(

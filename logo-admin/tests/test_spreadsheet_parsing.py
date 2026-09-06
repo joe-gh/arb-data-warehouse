@@ -1,12 +1,15 @@
 """Defensive CSV/XLSX parsing rejects active and oversized content."""
 
 from io import BytesIO
+import re
+import time
 import zipfile
 
 import openpyxl
 import pytest
 
 from domain import InvalidCommand
+import spreadsheet
 from spreadsheet import (
     ASSIGNMENT_COLUMNS,
     SpreadsheetLimits,
@@ -158,3 +161,95 @@ def test_xlsx_archive_entry_and_expanded_size_caps_are_enforced():
             "expanded.xlsx",
             SpreadsheetLimits(max_xlsx_uncompressed_bytes=10),
         )
+
+
+def _xlsx_with_dimension(rows, dimension: str) -> bytes:
+    """A real workbook whose <dimension> element is replaced by hand. A writer
+    may omit it, understate it or overstate it; none of that is data."""
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(_xlsx(rows))) as source:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as target:
+            for entry in source.infolist():
+                payload = source.read(entry)
+                if entry.filename == "xl/worksheets/sheet1.xml":
+                    text = payload.decode("utf-8")
+                    replaced = re.sub(r"<dimension[^>]*/>", dimension, text, count=1)
+                    assert replaced != text or dimension in text
+                    payload = replaced.encode("utf-8")
+                target.writestr(entry.filename, payload)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("dimension", "why"),
+    [
+        ("", "absent dimension"),
+        ('<dimension ref="A1:A2"/>', "understated dimension"),
+        ('<dimension ref="A1:A99999"/>', "overstated dimension"),
+    ],
+)
+def test_xlsx_dimension_metadata_never_decides_what_is_read(dimension, why):
+    data = _xlsx_with_dimension(
+        [["fdm4_store", "tier_name"], ["S_TEST", "MSRP"], ["S_OTHER", "MAP"]],
+        dimension,
+    )
+    parsed = parse_spreadsheet(data, "pricing.xlsx", SpreadsheetLimits())
+    assert parsed.headers == ("fdm4_store", "tier_name"), why
+    assert parsed.rows == (
+        {"fdm4_store": "S_TEST", "tier_name": "MSRP"},
+        {"fdm4_store": "S_OTHER", "tier_name": "MAP"},
+    ), why
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("0", 0), ("-5", -5), ("1e12", 10 ** 12), (7, 7), ("  3  ", 3)],
+)
+def test_sheet_integer_cells_accept_ordinary_magnitudes(value, expected):
+    assert spreadsheet._integer(value, "position") == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("1e13", "position is out of range"),
+        ("1e1000000", "position is out of range"),
+        ("1e-1000000", "position must be an integer"),
+        ("1.5", "position must be an integer"),
+        ("nan", "position must be an integer"),
+    ],
+)
+def test_sheet_integer_cells_are_bounded_before_conversion(value, message):
+    started = time.monotonic()
+    with pytest.raises(ValueError, match=re.escape(message)):
+        spreadsheet._integer(value, "position")
+    assert time.monotonic() - started < 1
+
+
+def _assignment_csv(rows) -> bytes:
+    lines = [",".join(ASSIGNMENT_COLUMNS)]
+    lines.extend(rows)
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+GOOD_ASSIGNMENT = ("S_TEST,STYLE-1,RED,1,1,DESIGN-1,C1,SCHEME-1,Left Chest,"
+                   "false,,,0,,true")
+
+
+def test_huge_exponent_cell_is_refused_with_its_physical_row():
+    parsed = parse_spreadsheet(
+        _assignment_csv([
+            GOOD_ASSIGNMENT,
+            "",
+            GOOD_ASSIGNMENT.replace(",RED,1,1,", ",BLU,1,1e1000000,"),
+        ]),
+        "assignments.csv",
+        SpreadsheetLimits(),
+    )
+    assert parsed.row_numbers == (2, 4)
+    proposal = known_mapping(parsed)
+    started = time.monotonic()
+    commands, rejected = translate_rows(parsed, proposal)
+    assert time.monotonic() - started < 1
+    assert len(commands) == 1
+    assert rejected == [{"row": 4, "detail": "position is out of range"}]

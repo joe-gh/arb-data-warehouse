@@ -471,11 +471,18 @@ def _get_product_state(cursor, command, settings):
 
 
 def _category_read_allowed(context, settings) -> bool:
-    """The editor's own visibility rule: category data is readable when the
-    feature is on and the login is on CATMGR_VIEW_USERS, or that list is empty."""
-    login = context.user_login.strip().lower()
+    """The editor's own visibility rule, exactly as categories_api.catmgr_visible
+    states it: category data is readable when the feature is on and either
+    CATMGR_VIEW_USERS is empty (everyone with app access) or the login is on it.
+    Spelled out against the passed-in settings rather than calling
+    catmgr_visible, because tool execution is always handed the settings it must
+    judge; the two must stay identical, and nothing else may restate the rule."""
+    if not bool(getattr(settings, "catmgr_enabled", False)):
+        return False
     allowed = getattr(settings, "catmgr_view_users", frozenset())
-    return bool(getattr(settings, "catmgr_enabled", False)) and (not allowed or login in allowed)
+    if not allowed:
+        return True
+    return str(getattr(context, "user_login", "") or "").strip().lower() in allowed
 
 
 def _get_change_history(cursor, command, settings, *, context):
@@ -1455,9 +1462,7 @@ def _assert_read_access(name, context, settings):
     empty, otherwise only the logins listed."""
     if not name.startswith("cat_"):
         return
-    login = context.user_login.strip().lower()
-    allowed = settings.catmgr_view_users
-    if not settings.catmgr_enabled or (allowed and login not in allowed):
+    if not _category_read_allowed(context, settings):
         raise UnknownTool("Not found")
 
 

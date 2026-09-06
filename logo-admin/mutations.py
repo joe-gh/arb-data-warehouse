@@ -14,6 +14,7 @@ import psycopg2
 from urllib.parse import urlsplit
 
 import mix_service
+from color_classify import classify_store_colors
 from commands import (
     CatCommand, CatCategoryTarget,
     CatDecideCommand,
@@ -79,6 +80,7 @@ from commands import (
 from design_resolver import (
     design_available_to_store,
     load_design_index,
+    resolve_design,
     validate_design_asset,
 )
 from domain import Conflict, InvalidCommand, NotFound
@@ -737,7 +739,16 @@ def save_assignment(cursor, actor: str, command: SaveAssignmentCommand) -> Mutat
                 "Assignment changed after it was loaded; reload before saving"
             )
     _validate_warehouse_keys(cursor, values)
-    _upsert_assignment(cursor, values, actor)
+    if command.create_only:
+        # Adding a row must never replace one. The display order is not the
+        # identity order, so a client can propose an option_row that already
+        # exists; DO NOTHING plus this refusal keeps the existing row intact.
+        if not _upsert_assignment(cursor, values, actor, overwrite=False):
+            raise Conflict(
+                "A logo row already occupies that slot; reload before saving"
+            )
+    else:
+        _upsert_assignment(cursor, values, actor)
     cursor.execute(
         """
         SELECT * FROM logo.assignment
@@ -2485,21 +2496,26 @@ def bulk_apply_execute(cursor, *, fdm4_store, logo_code, color_scheme, placement
     scheme = color_scheme.upper()
 
     design_lookup = load_design_index(cursor)
-    designs = set(design_lookup.candidates(fdm4_store, logo_code, scheme))
-    wanted = str(design_id).strip() if design_id not in (None, "") else ""
-    if wanted:
-        if designs and wanted not in designs:
-            raise ValueError(
-                f"design {wanted} does not carry {logo_code}/{scheme}"
-                f" (candidates: {', '.join(sorted(designs))})"
-            )
-        designs = {wanted}
-    if not designs or len(designs) > 1:
-        raise ValueError(
-            f"variant {logo_code}/{scheme} did not resolve to a single design"
-            + (f" (ambiguous: {', '.join(sorted(designs))}; pass design_id)" if designs else "")
-        )
-    design_id = next(iter(designs))
+    # Same resolver the preview uses, so what a person confirmed on the card
+    # is what the apply writes; an explicit id must be one of the candidates.
+    resolved, unresolved_reason = resolve_design(
+        set(design_lookup.candidates(fdm4_store, logo_code, scheme)),
+        str(design_id or ""),
+        logo_code,
+        scheme,
+    )
+    if resolved is None:
+        raise ValueError(unresolved_reason)
+    design_id = resolved
+    # The design must also still exist in FDM4: the index is built from the
+    # art files, and a design retired between preview and apply must not be
+    # written onto products.
+    cursor.execute(
+        "SELECT 1 FROM fdm4.dec_design WHERE btrim(design_id) = %s LIMIT 1",
+        (design_id,),
+    )
+    if cursor.fetchone() is None:
+        raise ValueError(f"design {design_id} is not on file in FDM4")
 
     # Use an explicit image_url when provided (validated), else derive one from
     # an existing active sibling assignment in the same store (same logo + scheme).
@@ -2547,7 +2563,7 @@ def bulk_apply_execute(cursor, *, fdm4_store, logo_code, color_scheme, placement
             (fdm4_store, style, color, option_row),
         )
         prev = cursor.fetchone()
-        before_json = json.dumps(prev["j"]) if (prev and prev["j"] is not None) else None
+        before_json = _journal_json(prev["j"]) if (prev and prev["j"] is not None) else None
 
         cursor.execute(
             """
@@ -2600,7 +2616,7 @@ def bulk_apply_execute(cursor, *, fdm4_store, logo_code, color_scheme, placement
              WHERE batch_id = %s AND product_style = %s
                AND garment_color_code = %s AND option_row = %s AND position = 1
             """,
-            (json.dumps(after["j"]), batch_id, style, color, option_row),
+            (_journal_json(after["j"]), batch_id, style, color, option_row),
         )
         applied += 1
 
@@ -2625,7 +2641,7 @@ def _restore_row(cursor, before_row: Mapping[str, Any]) -> None:
             image_url=EXCLUDED.image_url, name_override=EXCLUDED.name_override,
             active=EXCLUDED.active,
             updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at
-    """, (json.dumps(before_row),))
+    """, (_journal_json(before_row),))
 
 
 def bulk_apply_undo(cursor, *, batch_id: int, actor: str) -> dict:
@@ -2728,6 +2744,20 @@ def set_color_class(cursor, *, color_code: str, light_dark: str, actor: str) -> 
 # ---------------------------------------------------------------------------
 
 
+def _journal_json(value: Any) -> str:
+    """Serialize a to_jsonb() row for the bulk journal without rounding it.
+
+    db.py decodes json/jsonb numbers as Decimal so the undo kernel keeps the
+    digits PostgreSQL sent; plain json.dumps cannot render a Decimal, and
+    default=str would turn it into a quoted string. Imported lazily because
+    snapshots imports this module.
+    """
+
+    from snapshots import dumps_exact
+
+    return dumps_exact(value)
+
+
 def _open_batch(cursor, *, fdm4_store: str, target: Mapping[str, Any], actor: str) -> int:
     """One logo.bulk_batch header for a non-bulk-apply operation (kind in target)."""
     cursor.execute(
@@ -2742,7 +2772,14 @@ def _open_batch(cursor, *, fdm4_store: str, target: Mapping[str, Any], actor: st
     return cursor.fetchone()["batch_id"]
 
 
-def _journal_before(cursor, batch_id: int, key: Mapping[str, Any]) -> Optional[dict]:
+def _journal_before(cursor, batch_id: int, key: Mapping[str, Any]) -> tuple:
+    """Record a row's before-image. Returns (before_row, journaled_here).
+
+    ``journaled_here`` is False when this batch already holds a journal row for
+    the key, so a caller that later abandons the write only removes the journal
+    row its own call created.
+    """
+
     cursor.execute(
         """
         SELECT to_jsonb(a) AS j FROM logo.assignment a
@@ -2764,9 +2801,62 @@ def _journal_before(cursor, batch_id: int, key: Mapping[str, Any]) -> Optional[d
         ON CONFLICT DO NOTHING
         """,
         (batch_id, key["fdm4_store"], key["product_style"], key["garment_color_code"],
-         key["option_row"], key["position"], json.dumps(before) if before is not None else None),
+         key["option_row"], key["position"], _journal_json(before) if before is not None else None),
     )
-    return before
+    return before, cursor.rowcount > 0
+
+
+def _journal_option_row(cursor, batch_id: int, key: Mapping[str, Any]) -> tuple:
+    """Journal every live position of one option row before it is written.
+
+    A position-1 anchor written inactive deactivates its companions (see
+    _upsert_assignment), and the clipboard is applied anchor-first, so a
+    before-image taken per written slot would miss the companions entirely and
+    would read positions 2-3 only after the cascade had already changed them.
+    Returns (all position keys of the option row, the ones journaled here);
+    logo_assignment_position_check bounds an option row to three positions.
+    """
+
+    cursor.execute(
+        """
+        SELECT position FROM logo.assignment
+         WHERE fdm4_store = %s AND product_style = %s AND garment_color_code = %s
+           AND option_row = %s
+         ORDER BY position
+         LIMIT 3
+        """,
+        (key["fdm4_store"], key["product_style"], key["garment_color_code"],
+         key["option_row"]),
+    )
+    positions = [int(row["position"]) for row in cursor.fetchall()]
+    present = []
+    journaled = []
+    for position in positions:
+        row_key = {**dict(key), "position": position}
+        _before, inserted = _journal_before(cursor, batch_id, row_key)
+        present.append(position)
+        if inserted:
+            journaled.append(position)
+    return tuple(present), tuple(journaled)
+
+
+def _unjournal(cursor, batch_id: int, key: Mapping[str, Any]) -> None:
+    """Drop a journal row this call created for a slot it never wrote.
+
+    Left in place, undo would treat it as a row the batch deleted and
+    re-insert it even though the batch never touched it.
+    """
+
+    cursor.execute(
+        """
+        DELETE FROM logo.bulk_batch_row
+         WHERE batch_id = %s AND fdm4_store = %s AND product_style = %s
+           AND garment_color_code = %s AND option_row = %s AND position = %s
+           AND after_row IS NULL
+        """,
+        (batch_id, key["fdm4_store"], key["product_style"],
+         key["garment_color_code"], key["option_row"], key["position"]),
+    )
 
 
 def _journal_after(cursor, batch_id: int, key: Mapping[str, Any]) -> None:
@@ -2999,6 +3089,10 @@ def paste_assignments(cursor, *, fdm4_store: str, product_style: str, colors,
     counts = {"created": 0, "updated": 0, "skipped_occupied": 0,
               "skipped_missing_color": 0, "skipped_invalid": 0}
     problems = []
+    # Per (color, option_row): the positions present before this call touched
+    # the option row, the ones this call journaled, whether the anchor was
+    # written inactive (so the companions were cascaded), and what was written.
+    groups: Dict[tuple, Dict[str, Any]] = {}
     for color in colors:
         color = _clean(color, "garment_color_code")
         if color not in live:
@@ -3028,7 +3122,19 @@ def paste_assignments(cursor, *, fdm4_store: str, product_style: str, colors,
                 continue
             key = {k: values[k] for k in ("fdm4_store", "product_style",
                                           "garment_color_code", "option_row", "position")}
-            before = _journal_before(cursor, batch_id, key)
+            group_key = (color, option_row)
+            group = groups.get(group_key)
+            if group is None:
+                option_key = {"fdm4_store": store, "product_style": style,
+                              "garment_color_code": color, "option_row": option_row}
+                present, journaled = _journal_option_row(cursor, batch_id, option_key)
+                group = {"key": option_key, "present": set(present),
+                         "journaled": set(journaled), "written": set(),
+                         "anchor_inactive": False}
+                groups[group_key] = group
+            before, journaled_here = _journal_before(cursor, batch_id, key)
+            if journaled_here:
+                group["journaled"].add(int(values["position"]))
             if before is not None and not overwrite:
                 counts["skipped_occupied"] += 1
                 continue
@@ -3040,7 +3146,22 @@ def paste_assignments(cursor, *, fdm4_store: str, product_style: str, colors,
                 continue
             _upsert_assignment(cursor, values, actor, overwrite=True)
             _journal_after(cursor, batch_id, key)
+            group["written"].add(int(values["position"]))
+            if int(values["position"]) == 1 and not values["active"]:
+                group["anchor_inactive"] = True
             counts["updated" if before is not None else "created"] += 1
+    for group in groups.values():
+        option_key = group["key"]
+        recorded = set(group["written"])
+        if group["anchor_inactive"]:
+            # The anchor's cascade deactivated the companions; record what
+            # they became so undo puts them back.
+            for position in sorted(group["present"] - recorded):
+                if position > 1:
+                    _journal_after(cursor, batch_id, {**option_key, "position": position})
+                    recorded.add(position)
+        for position in sorted(group["journaled"] - recorded):
+            _unjournal(cursor, batch_id, {**option_key, "position": position})
     if own_batch:
         _close_batch(cursor, batch_id, counts["created"] + counts["updated"])
     return {"ok": True, "batch_id": batch_id, **counts, "problems": problems[:50]}
@@ -3056,14 +3177,16 @@ def _scoped_colors(cursor, *, store: str, catalog: str, style: str,
     if color_scope == "all":
         return sorted(live)
     if color_scope in ("light", "dark"):
-        cursor.execute(
-            """
-            SELECT color_code FROM logo.color_class
-             WHERE color_code = ANY(%s) AND light_dark IN (%s, 'both')
-            """,
-            (sorted(live), color_scope),
+        try:
+            classes = classify_store_colors(
+                cursor, store=store, catalog=catalog, codes=sorted(live)
+            )
+        except ValueError as exc:
+            raise InvalidCommand(str(exc)) from exc
+        return sorted(
+            code for code, light_dark in classes.items()
+            if light_dark in (color_scope, "both")
         )
-        return sorted(str(r["color_code"]) for r in cursor.fetchall())
     raise InvalidCommand("color_scope must be match, all, light or dark")
 
 
@@ -3130,6 +3253,22 @@ def fill_gaps(cursor, *, fdm4_store: str, entries, overwrite: bool, actor: str) 
         raise NotFound("Store not found")
     if not entries:
         raise InvalidCommand("Nothing to fill")
+    # The preview (queries.fill_gaps_plan) stops reading assignments at
+    # FILL_GAPS_ASSIGNMENT_LIMIT and says so. This re-derives its own rows, so
+    # refuse the same size here: with overwrite=true the caller's colors could
+    # otherwise come from a truncated plan.
+    from queries import FILL_GAPS_ASSIGNMENT_LIMIT
+    cursor.execute(
+        """
+        SELECT count(*) AS n FROM logo.assignment
+         WHERE fdm4_store = %s AND active AND product_style = ANY(%s)
+        """,
+        (store, [_clean(entry["style"], "product_style") for entry in entries]),
+    )
+    if int(cursor.fetchone()["n"]) > FILL_GAPS_ASSIGNMENT_LIMIT:
+        raise InvalidCommand(
+            "Too many logo rows to plan safely; fill fewer styles at a time"
+        )
     batch_id = _open_batch(cursor, fdm4_store=store, actor=actor, target={
         "kind": "fill_gaps",
         "styles": [str(entry.get("style", "")) for entry in entries],
@@ -3194,14 +3333,16 @@ def fill_gaps(cursor, *, fdm4_store: str, entries, overwrite: bool, actor: str) 
     return {"ok": True, "batch_id": batch_id, **totals, "results": results}
 
 
-def _color_classes(cursor, codes) -> Dict[str, str]:
+def _color_classes(cursor, codes, *, store: str, catalog: str) -> Dict[str, str]:
+    """Light/dark class of the given codes AS THIS STORE names them."""
     if not codes:
         return {}
-    cursor.execute(
-        "SELECT color_code, light_dark FROM logo.color_class WHERE color_code = ANY(%s)",
-        (list(codes),),
-    )
-    return {str(r["color_code"]): str(r["light_dark"]) for r in cursor.fetchall()}
+    try:
+        return classify_store_colors(
+            cursor, store=store, catalog=catalog, codes=list(codes)
+        )
+    except ValueError as exc:
+        raise InvalidCommand(str(exc)) from exc
 
 
 def plan_copy_style_batch(cursor, *, fdm4_store: str, source_style: str,
@@ -3241,7 +3382,7 @@ def plan_copy_style_batch(cursor, *, fdm4_store: str, source_style: str,
     channels: Dict[str, list] = {}
     for row in source_rows:
         channels.setdefault(str(row.pop("garment_color_code")), []).append(row)
-    classes = _color_classes(cursor, list(channels))
+    classes = _color_classes(cursor, list(channels), store=store, catalog=catalog)
     templates: Dict[str, list] = {}
     for color in sorted(channels, key=lambda c: (-len(channels[c]), c)):
         if classes.get(color):
@@ -3257,7 +3398,10 @@ def plan_copy_style_batch(cursor, *, fdm4_store: str, source_style: str,
             if not _style_exists(cursor, store, catalog, target):
                 raise NotFound("Target style not found")
             live = sorted(_live_colors(cursor, store, catalog, target))
-            target_classes = _color_classes(cursor, live) if color_match == "like" else {}
+            target_classes = (
+                _color_classes(cursor, live, store=store, catalog=catalog)
+                if color_match == "like" else {}
+            )
             for color in live:
                 if color in channels:
                     entry["mappings"].append({"target_color": color, "source_color": color,
@@ -3634,7 +3778,8 @@ def design_swap(cursor, *, fdm4_store, from_design_id, from_color_scheme_id,
                 problems.append({**key, "reason": row["reason"]})
             if row["verdict"] != "ok":
                 continue
-            if _journal_before(cursor, batch_id, key) is None:
+            before, _journaled = _journal_before(cursor, batch_id, key)
+            if before is None:
                 continue
             new_image = plan["image_url_replacement"] if row["image_action"] == "replaced" else ""
             cursor.execute(

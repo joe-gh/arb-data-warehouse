@@ -131,3 +131,77 @@ def test_dashboard_renders_bulk_view(client_as):
     assert 'id="open-bulk-view"' in html
     assert 'data-bulk-job="fill"' in html
     assert 'id="batch-dialog"' not in html  # retired: target picker is inline now
+
+
+def _admin(statement):
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(statement)
+
+
+def _seed_over_the_assignment_cap():
+    """1,000 gap styles, each with 21 logo rows on its one configured color:
+    21,000 assignments, past the plan's 20,000-row bound."""
+    _admin("""
+        INSERT INTO woo.store_product_state(fdm4_store,catalog_id,sku,kind,style_code,name,payload,content_hash)
+        SELECT 'S_TEST','S_TEST_catalog','GAP-'||n,'parent','GAP-'||lpad(n::text,4,'0'),
+               repeat('n',4000),'{}','gap' FROM generate_series(1,1000) n""")
+    _admin("""
+        INSERT INTO woo.store_product_state(fdm4_store,catalog_id,sku,kind,style_code,color_code,color,payload,content_hash)
+        SELECT 'S_TEST','S_TEST_catalog','GAP-'||n||'-'||c,'variation','GAP-'||lpad(n::text,4,'0'),
+               'C'||c,'Color '||c,'{}','gap' FROM generate_series(1,1000) n, generate_series(0,1) c""")
+    _admin("""
+        INSERT INTO logo.assignment(fdm4_store,product_style,garment_color_code,option_row,position,
+                                    design_id,logo_code,color_scheme_id,location,image_url,name_override)
+        SELECT 'S_TEST','GAP-'||lpad(n::text,4,'0'),'C0',r,p,'DESIGN-1','C1','SCHEME-1',
+               CASE WHEN n=1 THEN repeat('L',200) ELSE '' END,
+               CASE WHEN n=1 THEN repeat('u',2000) ELSE '' END,
+               CASE WHEN n=1 THEN repeat('o',200) ELSE NULL END
+          FROM generate_series(1,1000) n, generate_series(1,7) r, generate_series(1,3) p""")
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def test_preview_caps_assignment_rows_and_truncates_strings(client_as):
+    import queries
+
+    _seed_over_the_assignment_cap()
+    client = client_as()
+    response = client.post("/api/styles/fill-gaps/preview", json={"store": "S_TEST"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["truncated"] is True
+    assert body["truncation"] == {"styles": False, "rows": True, "bytes": False}
+    counted = sum(source["rows"] for entry in body["copyable"] for source in entry["sources"])
+    assert counted == queries.FILL_GAPS_ASSIGNMENT_LIMIT
+    assert max(len(text) for text in _strings(body)) <= queries.READ_TEXT_CHAR_LIMIT
+
+
+def test_fill_refuses_when_the_style_set_is_past_the_preview_cap(
+    client_as,
+    monkeypatch,
+):
+    """The preview stops reading at FILL_GAPS_ASSIGNMENT_LIMIT and says so;
+    the executor re-derives its own rows, so it refuses the same size rather
+    than acting on colors chosen from a truncated plan."""
+
+    import queries
+
+    monkeypatch.setattr(queries, "FILL_GAPS_ASSIGNMENT_LIMIT", 0)
+    client = client_as()
+    response = client.post("/api/styles/fill-gaps", json={
+        "store": "S_TEST",
+        "entries": [{"style": "STYLE-1", "source_color": "RED"}],
+    })
+    assert response.status_code == 422, response.text
+    assert "fewer styles" in response.json()["detail"]

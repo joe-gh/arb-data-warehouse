@@ -33,6 +33,13 @@ auto-applied - install them by hand (`crontab -e` for the correct user on each h
 55 * * * * /usr/bin/flock -n /tmp/media-generate.lock /usr/bin/timeout 3000 nice -n 10 /usr/bin/python3 /opt/fdm4-extractor/generate-renditions.py --workers 4 >> /home/ubuntu/media-generate-cron.log 2>&1
 ```
 
+Exit codes for both media jobs: `0` clean, `1` could not start (no work list, no
+canonical key list), `2` incomplete. `2` now also covers a run whose uploads
+succeeded but whose mapping rows could not be written: the publisher prints
+`INCOMPLETE:` and spills the rows to `/home/ubuntu/media-publish-failed-rows.tsv`
+(renditions to `media-rendition-failed-rows.tsv`). Replay the spill file before
+treating the bucket as current - the objects exist but nothing points at them.
+
 The middle step of the hourly cascade (`:45` incremental rendition export) runs on
 the **production WordPress box** `ubuntu` crontab - it needs WP-CLI and the blog
 tables. Each stage self-heals if the previous one hasn't run yet
@@ -70,3 +77,10 @@ tables. Each stage self-heals if the previous one hasn't run yet
 Key lives in root-only /opt/fdm4-extractor/pim.env. Log rotated weekly via
 /etc/logrotate.d/arb-pim-pull. Landing tables pim.api_* are isolated: nothing
 downstream reads them until the projection wiring step.
+
+The weekly `--full` run really does the deletion reconciliation now: records the
+API stops returning get `retired_at` stamped (nothing is deleted, and a record
+that comes back is set live again). It needs
+`sql/migrations/2026-09-06-pim-api-retire.sql` applied first, or the run fails on
+the missing column. Retirement is skipped, with a printed line, when a run would
+retire more than 20% of the live rows or when the walk raised part-way through.

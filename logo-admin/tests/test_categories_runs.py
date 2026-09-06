@@ -9,7 +9,7 @@ import pytest
 import categories_planner
 import categories_runs
 import categories_service
-from categories_draft import DraftConflict
+from categories_draft import DraftConflict, DraftError
 from db import database
 from tests.fake_wp import FakeWordPress
 from tests.test_categories_planner import _build_scenario, _read, _write
@@ -49,10 +49,12 @@ def broker(monkeypatch, ready_scenario):
     return BrokerRecorder().install(monkeypatch)
 
 
-def test_create_run_requires_clean_preview():
+def test_create_run_requires_clean_preview(monkeypatch):
     _build_scenario()  # zero-category blockers present, no acks
-    with pytest.raises(DraftConflict):
+    BrokerRecorder().install(monkeypatch)          # readiness passes; the plan does not
+    with pytest.raises(DraftConflict) as excinfo:
         _write(categories_runs.create_run, env="prod", blog_ids=None)
+    assert "plan check" in str(excinfo.value)
 
 
 def test_create_and_process_run(broker):
@@ -112,7 +114,7 @@ def test_failure_stops_run_and_retry_resumes(ready_scenario, monkeypatch):
     assert statuses[7] == "pending"   # stop_on_failure left it queued
 
     job1 = next(j for j in failed["jobs"] if j["blog_id"] == 1)
-    with pytest.raises(DraftConflict):
+    with pytest.raises(DraftError):      # no such run: refused before any lock
         _write(categories_runs.skip_job, run["run_id"] + 999, job1["job_id"])
 
     recorder.fail_on = set()          # WP recovered; retry converges

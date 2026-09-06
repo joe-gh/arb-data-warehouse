@@ -19,6 +19,15 @@ from typing import Any, Dict, List, Optional, Set
 
 from psycopg2.extras import Json
 
+from snapshots import dumps_exact
+
+
+def _json(value):
+    """jsonb read back through the pool decodes numbers as Decimal; write them
+    back as numbers, never as quoted strings."""
+    return Json(value, dumps=dumps_exact)
+
+import categories_draft
 import categories_planner
 import categories_service
 from categories_draft import DraftConflict, DraftError, normalize_wp_name
@@ -28,6 +37,9 @@ from db import database
 
 MEMBERSHIP_PAGE_SIZE = 400
 RESTORE_PAGE_SIZE = 400
+# The broker refuses a restore carrying more redirect rows than this in one
+# call, so the journal a job snapshot keeps is capped to match.
+RESTORE_REDIRECT_MAX = 2000
 ACTIVE_STATUSES = ("queued", "running", "paused")
 FINISHED_STATUSES = ("completed", "completed_with_skips", "completed_unverified",
                      "failed", "cancelled")
@@ -39,6 +51,10 @@ RESTORE_STALE_MINUTES = 15
 # The WordPress broker protocol this engine speaks (expected_blog_path,
 # expected_term_ids, parked_from, keyset export, verified redirects, ...).
 BROKER_MIN_VERSION = 2
+# Putting products back to "no category at all" and putting Redirection rules
+# back the way they were arrived with broker v3; a restore that needs either
+# is refused against an older site rather than reported as converged.
+BROKER_RESTORE_VERSION = 3
 
 
 def broker_call(env: str, path: str, payload: Dict[str, Any]) -> Any:
@@ -87,6 +103,16 @@ def _touch_run_heartbeat(run_id: int) -> None:
         )
 
 
+def job_phase(path: str, payload: Dict[str, Any]) -> str:
+    """The phase name the broker files a call under. Apply phases are the path
+    itself; a restore is filed per phase ('restore-terms', ...), so a lost
+    response is probed with the key WordPress actually holds."""
+    phase = path.strip("/")
+    if phase == "restore":
+        return "restore-" + (str(payload.get("phase") or "") or "all")
+    return phase
+
+
 def job_key(path: str, payload: Dict[str, Any]) -> Optional[str]:
     """The broker's durable-job key for a phase call: request_id:phase[:page].
     Deterministic per (job attempt, phase, page), so a reclaimed or retried
@@ -94,7 +120,7 @@ def job_key(path: str, payload: Dict[str, Any]) -> Optional[str]:
     request_id = str(payload.get("request_id") or "")
     if not request_id:
         return None
-    key = f"{request_id[:64]}:{path.strip('/')}"
+    key = f"{request_id[:64]}:{job_phase(path, payload)}"
     if payload.get("page") is not None and payload.get("page") != "":
         key += f":{int(payload['page'])}"
     return key
@@ -114,12 +140,17 @@ def _probe_job(env: str, key: str) -> Optional[Dict[str, Any]]:
 
 
 def _poll_job(env: str, key: str, label: str, run_id: Optional[int],
-              started: float) -> Any:
+              started: float, heartbeat=None) -> Any:
     status_failures = 0
     while True:
         time.sleep(JOB_POLL_SECONDS)
         if run_id is not None:
             _touch_run_heartbeat(run_id)
+        if heartbeat is not None:
+            # A restore's own liveness fence: without this a healthy phase that
+            # outlasts RESTORE_STALE_MINUTES would look orphaned and let
+            # another run in.
+            heartbeat()
         try:
             status = broker_call(env, "/job", {"key": key})
         except categories_service.BrokerError as exc:
@@ -176,7 +207,8 @@ def _settled_job(status: Any, label: str) -> Optional[Any]:
 
 def broker_job(env: str, path: str, payload: Dict[str, Any], *,
                run_id: Optional[int] = None,
-               prior_keys: Optional[List[str]] = None) -> Any:
+               prior_keys: Optional[List[str]] = None,
+               heartbeat=None) -> Any:
     """POST one phase call; when the broker detaches it as a durable job
     (202 + job key) poll /job until it lands. Returns the phase body the
     synchronous broker used to return, so callers stay unchanged.
@@ -190,19 +222,25 @@ def broker_job(env: str, path: str, payload: Dict[str, Any], *,
     key = job_key(path, payload)
     label = f"{path.strip('/')} for blog {payload.get('blog_id')}"
     started = time.monotonic()
-    for candidate in [key] + [k for k in (prior_keys or []) if k]:
+    for index, candidate in enumerate([key] + [k for k in (prior_keys or []) if k]):
         if not candidate:
             continue
         probe = _probe_job(env, candidate)
         if probe is None:
             continue
         job = probe.get("job") or {}
-        settled = _settled_job(probe, label) if job.get("status") != "running" else None
+        state = job.get("status")
+        if index > 0 and state in ("failed", "refused"):
+            # A PREVIOUS attempt's stored failure is a report of what went
+            # wrong, not this attempt's outcome: an explicit retry after the
+            # cause was repaired must do the work again.
+            continue
+        settled = _settled_job(probe, label) if state != "running" else None
         if settled is not None:
             return settled
-        if job.get("status") == "running" and not job.get("lock_free") and not job.get("stale"):
+        if state == "running" and not job.get("lock_free") and not job.get("stale"):
             # A live WordPress worker still owns this phase: wait for it.
-            return _poll_job(env, candidate, label, run_id, started)
+            return _poll_job(env, candidate, label, run_id, started, heartbeat)
     try:
         response = broker_call(env, path, payload)
     except categories_service.BrokerError as exc:
@@ -215,12 +253,12 @@ def broker_job(env: str, path: str, payload: Dict[str, Any], *,
                 settled = _settled_job(probe, label)
                 if settled is not None:
                     return settled
-                return _poll_job(env, key, label, run_id, started)
+                return _poll_job(env, key, label, run_id, started, heartbeat)
         raise
     job = response.get("job") if isinstance(response, dict) else None
     if not isinstance(job, dict) or job.get("status") != "running" or not job.get("key"):
         return response
-    return _poll_job(env, job["key"], label, run_id, started)
+    return _poll_job(env, job["key"], label, run_id, started, heartbeat)
 
 
 # ---------------------------------------------------------------- readiness
@@ -297,6 +335,30 @@ def apply_allowed(user_login: str) -> bool:
 
     allowed = get_settings().catmgr_apply_users
     return bool(allowed) and user_login.strip().lower() in allowed
+
+
+def lock_env(cursor, env: str) -> None:
+    """Reserve one environment for the duration of this transaction.
+
+    Every admission decision (create, start, resume, retry, skip, drift audit,
+    restore) reads the same state and then writes its reservation; without one
+    lock around both, two requests can each see "nothing else is active" and
+    both proceed. Transaction-scoped, so it survives PgBouncer."""
+
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('catmgr_run_' || %s))", (env,)
+    )
+
+
+def _lock_run_env(cursor, run_id: int) -> str:
+    """Take a run's environment reservation before reading its state."""
+
+    cursor.execute("SELECT env FROM catmgr.run WHERE run_id = %s", (run_id,))
+    row = cursor.fetchone()
+    if row is None:
+        raise DraftError(f"unknown run: {run_id}")
+    lock_env(cursor, row["env"])
+    return row["env"]
 
 
 def _assert_env_exclusive(cursor, env: str, run_id: Optional[int]) -> None:
@@ -384,12 +446,19 @@ def blogs_locked_by_runs(cursor, env: str) -> Dict[int, int]:
 
 def create_run(cursor, *, env: str, blog_ids: Optional[List[int]],
                stop_on_failure: bool = True, actor: str) -> Dict[str, Any]:
-    cursor.execute(
-        "SELECT pg_advisory_xact_lock(hashtext('catmgr_run_' || %s))", (env,)
-    )
-    _assert_env_exclusive(cursor, env, None)
+    # Readiness is a WordPress round trip (up to 20 s). It runs BEFORE the
+    # locks: holding the draft lock across a network call would block every
+    # editor, and checking the plan before the lock is what used to let a
+    # draft edit slip between the check and the payload that was frozen.
+    ready = _require_ready(env, blog_ids)
 
-    preview = categories_planner.preview(cursor, env, blog_ids)
+    lock_env(cursor, env)
+    _assert_env_exclusive(cursor, env, None)
+    # From here to COMMIT the draft cannot change, so the plan the blockers
+    # were computed from IS the plan the jobs carry.
+    categories_draft.lock_draft(cursor)
+
+    preview = categories_planner.preview(cursor, env, blog_ids, keep_plans=True)
     if not preview["ok"]:
         kinds = ", ".join(b["kind"] for b in preview["blockers"])
         raise DraftConflict(
@@ -398,12 +467,9 @@ def create_run(cursor, *, env: str, blog_ids: Optional[List[int]],
         )
     if not preview["blogs"]:
         raise DraftError("no blogs to apply")
-    ready = _require_ready(env, [b["blog_id"] for b in preview["blogs"]])
 
     ordered = sorted(preview["blogs"],
                      key=lambda b: (b["blog_id"] != 1, b["blog_id"]))
-    dispositions = categories_planner.load_dispositions(cursor)
-    extra_memberships = categories_planner.load_extra_memberships(cursor, env)
 
     cursor.execute(
         """
@@ -413,17 +479,15 @@ def create_run(cursor, *, env: str, blog_ids: Optional[List[int]],
         VALUES (%s, %s, 'queued', %s, %s, %s, %s)
         RETURNING run_id
         """,
-        (env, [b["blog_id"] for b in ordered], Json(preview["totals"]),
-         Json({str(b["blog_id"]): b["snapshot_version"] for b in ordered}),
+        (env, [b["blog_id"] for b in ordered], _json(preview["totals"]),
+         _json({str(b["blog_id"]): b["snapshot_version"] for b in ordered}),
          stop_on_failure, actor[:100]),
     )
     run_id = cursor.fetchone()["run_id"]
 
     for seq, blog in enumerate(ordered, start=1):
-        plan = categories_planner.build_blog_plan(
-            cursor, env, blog["blog_id"],
-            dispositions=dispositions, extra_memberships=extra_memberships,
-        )
+        # Exactly the plan the blockers above were computed from.
+        plan = preview["plans"][blog["blog_id"]]
         cursor.execute(
             """
             INSERT INTO catmgr.run_job
@@ -431,7 +495,7 @@ def create_run(cursor, *, env: str, blog_ids: Optional[List[int]],
             VALUES (%s, %s, %s, %s, %s)
             RETURNING job_id
             """,
-            (run_id, plan["blog_id"], plan["blog_path"], seq, Json(plan)),
+            (run_id, plan["blog_id"], plan["blog_path"], seq, _json(plan)),
         )
         job_id = cursor.fetchone()["job_id"]
         for redirect in plan["redirects"]:
@@ -564,6 +628,7 @@ def _reclaim_stale_jobs(cursor, run_id: int, *, actor: str) -> int:
 
 
 def resume(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
+    _lock_run_env(cursor, run_id)
     run = get_run(cursor, run_id)
     if run["status"] == "running":
         if not _stale(run):
@@ -576,6 +641,7 @@ def resume(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
     _require_ready(run["env"], list(run["target_blogs"] or []))
     cursor.execute(
         "UPDATE catmgr.run SET cancel_requested = false, status = 'queued',"
+        " started_at = COALESCE(started_at, now()),"
         " finished_at = NULL WHERE run_id = %s",
         (run_id,),
     )
@@ -588,19 +654,24 @@ def start(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
     """The only way a created-but-unstarted run begins: an atomic queued ->
     queued(started) transition under the environment lock, re-checking
     exclusivity and readiness. Any other status is refused (resume / retry
-    are the paths for paused and failed runs)."""
-    cursor.execute(
-        "SELECT pg_advisory_xact_lock(hashtext('catmgr_run_' || %s))",
-        ((get_run(cursor, run_id))["env"],),
-    )
+    are the paths for paused and failed runs).
+
+    started_at is the durable record that a person asked for this run: a run
+    created with start:false has none, and startup recovery leaves it alone."""
+    _lock_run_env(cursor, run_id)
     run = get_run(cursor, run_id)
     if run["status"] != "queued":
         raise DraftConflict(f"the run is {run['status']} - only a queued run can be started")
     _assert_env_exclusive(cursor, run["env"], run_id)
     _require_ready(run["env"], list(run["target_blogs"] or []))
+    cursor.execute(
+        "UPDATE catmgr.run SET started_at = COALESCE(started_at, now())"
+        " WHERE run_id = %s",
+        (run_id,),
+    )
     record_audit(cursor, actor=actor, action="run_started", entity="run",
                  entity_key=str(run_id), detail={})
-    return run
+    return get_run(cursor, run_id)
 
 
 def cancel(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
@@ -625,6 +696,7 @@ def cancel(cursor, run_id: int, *, actor: str) -> Dict[str, Any]:
 
 
 def retry_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]:
+    _lock_run_env(cursor, run_id)
     run = get_run(cursor, run_id)
     if run["status"] == "running" and not _stale(run):
         raise DraftConflict("the run is still working - wait for the current store to finish")
@@ -643,6 +715,7 @@ def retry_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]
         raise DraftConflict("only a store that failed or was skipped can be retried")
     cursor.execute(
         "UPDATE catmgr.run SET status = 'queued', cancel_requested = false,"
+        " started_at = COALESCE(started_at, now()),"
         " finished_at = NULL WHERE run_id = %s",
         (run_id,),
     )
@@ -652,6 +725,7 @@ def retry_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]
 
 
 def skip_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]:
+    _lock_run_env(cursor, run_id)
     cursor.execute(
         "UPDATE catmgr.run_job SET status = 'skipped', finished_at = now()"
         " WHERE run_id = %s AND job_id = %s AND status = 'failed'"
@@ -673,6 +747,7 @@ def skip_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]:
         _assert_env_exclusive(cursor, get_run(cursor, run_id)["env"], run_id)
         cursor.execute(
             "UPDATE catmgr.run SET status = 'queued', cancel_requested = false,"
+            " started_at = COALESCE(started_at, now()),"
             " finished_at = NULL WHERE run_id = %s",
             (run_id,),
         )
@@ -683,9 +758,10 @@ def skip_job(cursor, run_id: int, job_id: int, *, actor: str) -> Dict[str, Any]:
 
 def _finish_run(cursor, run_id: int) -> str:
     """The run's terminal status from its jobs: failed beats everything; a
-    skipped blog makes the migration PARTIAL; a job whose post-apply
-    verification could not run makes it UNVERIFIED. Plain completed means
-    every blog was applied and verified against a fresh export."""
+    skipped blog - or one an operator restored to its pre-apply state - makes
+    the migration PARTIAL; a job whose post-apply verification could not run
+    makes it UNVERIFIED. Plain completed means every blog was applied and
+    verified against a fresh export."""
     cursor.execute(
         "SELECT status, result FROM catmgr.run_job WHERE run_id = %s", (run_id,),
     )
@@ -693,6 +769,10 @@ def _finish_run(cursor, run_id: int) -> str:
     if any(j["status"] == "failed" for j in jobs):
         status = "failed"
     elif any(j["status"] == "skipped" for j in jobs):
+        status = "completed_with_skips"
+    elif any((j["result"] or {}).get("restored") for j in jobs):
+        # A restored blog is back at its pre-apply state: the run did not
+        # migrate it, whatever its job row says.
         status = "completed_with_skips"
     elif any(j["status"] == "done" and (j["result"] or {}).get("verified") is False
              for j in jobs):
@@ -735,6 +815,17 @@ def _claim_next_job(run_id: int) -> Optional[Dict[str, Any]]:
                 " cancel_requested = false WHERE run_id = %s",
                 (run_id,),
             )
+            return None
+        # A run converges one blog at a time: while any job of it is still
+        # running (a live worker, since the stale ones were just reclaimed) no
+        # second worker may claim the next blog - stop_on_failure could not
+        # stop a store that was already in flight.
+        cursor.execute(
+            "SELECT count(*) AS n FROM catmgr.run_job"
+            " WHERE run_id = %s AND status = 'running'",
+            (run_id,),
+        )
+        if cursor.fetchone()["n"]:
             return None
         cursor.execute(
             """
@@ -802,13 +893,13 @@ def _finish_job(job_id: int, run_id: int, status: str,
                 cursor, job_id, worker_token,
                 "UPDATE catmgr.run_job SET status = %s, result = %s,"
                 " finished_at = now() WHERE job_id = %s AND worker_token = %s",
-                (status, Json(result), job_id, worker_token),
+                (status, _json(result), job_id, worker_token),
             )
         else:
             cursor.execute(
                 "UPDATE catmgr.run_job SET status = %s, result = %s,"
                 " finished_at = now() WHERE job_id = %s",
-                (status, Json(result), job_id),
+                (status, _json(result), job_id),
             )
         cursor.execute(
             "UPDATE catmgr.run SET worker_heartbeat_at = now()"
@@ -1020,7 +1111,7 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
                     ON CONFLICT (job_id) DO UPDATE
                        SET payload = EXCLUDED.payload, taken_at = now()
                     """,
-                    (job_id, Json({"terms": live.get("terms") or [],
+                    (job_id, _json({"terms": live.get("terms") or [],
                                    "products": live.get("products") or [],
                                    "uncategorized": live.get("uncategorized") or [],
                                    "site_options": live.get("site_options") or {},
@@ -1108,6 +1199,19 @@ def _execute_job(env: str, run_id: int, job: Dict[str, Any], actor: str) -> None
 
     with database.cursor(write=True, actor=actor) as cursor:
         if blog_id == 1 and payload["redirects"]:
+            # What each planned path looked like BEFORE finalize touched it
+            # (the broker captures it before its first redirect write). It
+            # belongs with the pre-apply snapshot: a restore puts the rules
+            # back from there. The cap is what the broker's restore accepts in
+            # one call.
+            prior = [r for r in (finalize_body.get("redirects_prior") or [])
+                     if isinstance(r, dict)][:RESTORE_REDIRECT_MAX]
+            if prior:
+                cursor.execute(
+                    "UPDATE catmgr.job_snapshot"
+                    "   SET payload = payload || %s WHERE job_id = %s",
+                    (_json({"redirects_prior": prior}), job_id),
+                )
             created = {
                 r.get("old_path"): r.get("new_path")
                 for r in (finalize_body.get("redirects_created") or [])
@@ -1218,12 +1322,12 @@ def _save_progress(job_id: int, progress: Dict[str, Any],
             _guarded_update(
                 cursor, job_id, worker_token,
                 "UPDATE catmgr.run_job SET progress = %s WHERE job_id = %s AND worker_token = %s",
-                (Json(progress), job_id, worker_token),
+                (_json(progress), job_id, worker_token),
             )
         else:
             cursor.execute(
                 "UPDATE catmgr.run_job SET progress = %s WHERE job_id = %s",
-                (Json(progress), job_id),
+                (_json(progress), job_id),
             )
         # Every cursor advance is a heartbeat: a long membership loop must
         # never look dead to the stale-job reclaim.
@@ -1317,33 +1421,42 @@ def process_run(run_id: int, *, actor: str = "worker",
 
 
 _worker_threads: Dict[int, threading.Thread] = {}
+# Two start requests used to read the registry, both find no live thread and
+# both start a worker.
+_worker_threads_lock = threading.Lock()
 
 
 def start_run(run_id: int, *, actor: str) -> None:
     """Kick the worker thread (idempotent while one is alive)."""
 
-    existing = _worker_threads.get(run_id)
-    if existing and existing.is_alive():
-        return
-    for stale_id in [rid for rid, t in _worker_threads.items() if not t.is_alive()]:
-        _worker_threads.pop(stale_id, None)
-    thread = threading.Thread(
-        target=process_run, args=(run_id,), kwargs={"actor": actor},
-        name=f"catmgr-run-{run_id}", daemon=True,
-    )
-    _worker_threads[run_id] = thread
-    thread.start()
+    with _worker_threads_lock:
+        existing = _worker_threads.get(run_id)
+        if existing and existing.is_alive():
+            return
+        for stale_id in [rid for rid, t in _worker_threads.items() if not t.is_alive()]:
+            _worker_threads.pop(stale_id, None)
+        thread = threading.Thread(
+            target=process_run, args=(run_id,), kwargs={"actor": actor},
+            name=f"catmgr-run-{run_id}", daemon=True,
+        )
+        _worker_threads[run_id] = thread
+        thread.start()
 
 
 def recover_runs(*, actor: str = "startup") -> List[int]:
-    """At app start, wake every run the previous process left queued or
-    running. Stale running jobs are reclaimed by the worker's claim step, so
-    a restart mid-job resumes from the job's progress cursor instead of
-    wedging the run forever."""
+    """At app start, wake every run the previous process was working on.
+    Stale running jobs are reclaimed by the worker's claim step, so a restart
+    mid-job resumes from the job's progress cursor instead of wedging the run
+    forever.
+
+    A run that a person created but never started (start:false, started_at
+    still NULL) is NOT woken: 'apply later' must survive a restart."""
 
     with database.cursor(write=True, actor=actor) as cursor:
         cursor.execute(
-            "SELECT run_id FROM catmgr.run WHERE status IN ('queued', 'running')"
+            "SELECT run_id FROM catmgr.run"
+            " WHERE status = 'running'"
+            "    OR (status = 'queued' AND started_at IS NOT NULL)"
             " ORDER BY run_id",
         )
         run_ids = [row["run_id"] for row in cursor.fetchall()]
@@ -1382,7 +1495,7 @@ def recover_runs(*, actor: str = "startup") -> List[int]:
             restore["orphaned"] = True
             cursor.execute(
                 "UPDATE catmgr.run_job SET progress = progress || %s WHERE job_id = %s",
-                (Json({"restore": restore}), row["job_id"]),
+                (_json({"restore": restore}), row["job_id"]),
             )
             record_audit(cursor, actor=actor, action="restore_failed", entity="job",
                          entity_key=str(row["job_id"]),
@@ -1401,7 +1514,24 @@ def _save_restore_progress(job_id: int, restore: Dict[str, Any]) -> None:
     with database.cursor(write=True, actor="worker") as cursor:
         cursor.execute(
             "UPDATE catmgr.run_job SET progress = progress || %s WHERE job_id = %s",
-            (Json({"restore": restore}), job_id),
+            (_json({"restore": restore}), job_id),
+        )
+
+
+def _touch_restore_heartbeat(job_id: int, request_id: str) -> None:
+    """Renew a restore's liveness fence while a broker phase is being polled.
+    Fenced on the request id, so a heartbeat from an abandoned worker can never
+    keep a restore somebody else replaced looking alive."""
+
+    with database.cursor(write=True, actor="worker") as cursor:
+        cursor.execute(
+            "UPDATE catmgr.run_job"
+            "   SET progress = jsonb_set(progress, '{restore,heartbeat_at}',"
+            "                            to_jsonb(%s::text))"
+            " WHERE job_id = %s"
+            "   AND progress -> 'restore' ->> 'status' = 'running'"
+            "   AND progress -> 'restore' ->> 'request_id' = %s",
+            (datetime.now(timezone.utc).isoformat(), job_id, request_id),
         )
 
 
@@ -1426,6 +1556,14 @@ def _restore_pages(products: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]
     if current:
         pages.append(current)
     return pages
+
+
+def _uncategorized_pages(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Products that had NO category before the run, in pages of the same size.
+    One row per product, so any slice is safe."""
+    ordered = sorted(rows, key=lambda r: int(r.get("product_id") or 0))
+    return [ordered[i:i + RESTORE_PAGE_SIZE]
+            for i in range(0, len(ordered), RESTORE_PAGE_SIZE)]
 
 
 def _verify_restored(snapshot: Dict[str, Any], live: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1484,26 +1622,37 @@ def _verify_restored(snapshot: Dict[str, Any], live: Dict[str, Any]) -> List[Dic
 
 
 def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
-                    snapshot: Dict[str, Any], actor: str) -> None:
-    """Paged, resumable restore: terms pass -> membership pages -> finalize
-    -> verification against the snapshot. Each broker call is bounded so blog
-    1 never meets the WP time limit, every broker result is checked for
+                    snapshot: Dict[str, Any], actor: str,
+                    reserved: Optional[Dict[str, Any]] = None) -> None:
+    """Paged, resumable restore: terms pass -> membership pages -> pages of
+    products that had no category -> finalize (terms + redirects) ->
+    verification against the snapshot. Each broker call is bounded so blog 1
+    never meets the WP time limit, every broker result is checked for
     completeness, and the restore is only 'done' when a fresh export matches
-    the snapshot."""
+    the snapshot.
+
+    `reserved` is the progress row restore_blog already wrote under the
+    environment lock; the worker continues it instead of starting a second."""
 
     terms = snapshot.get("terms") or []
     products = snapshot.get("products") or []
+    uncategorized = snapshot.get("uncategorized") or []
+    redirects_prior = snapshot.get("redirects_prior") or []
     blog_path = snapshot.get("blog_path") or ""
     site_options = snapshot.get("site_options") or {}
-    restore = {"status": "running", "phase": "terms", "offset": 0,
-               "total": len(products), "terms": len(terms), "error": None}
+    restore = dict(reserved or {})
+    restore.update({"status": "running", "phase": "terms", "offset": 0,
+                    "total": len(products) + len(uncategorized),
+                    "terms": len(terms), "error": None})
     # One request id per restore attempt: each broker phase/page is keyed on
     # it, so a replayed page returns its stored result instead of re-running.
-    request_id = f"restore-{job_id}-{secrets.token_hex(6)}"
+    request_id = str(restore.get("request_id") or "") \
+        or f"restore-{job_id}-{secrets.token_hex(6)}"
     restore["request_id"] = request_id
     _save_restore_progress(job_id, restore)
     common = {"blog_id": blog_id, "run_id": run_id, "request_id": request_id,
               "expected_blog_path": blog_path}
+    beat = lambda: _touch_restore_heartbeat(job_id, request_id)  # noqa: E731
 
     def refused(outcome: Any, what: str) -> None:
         if not isinstance(outcome, dict):
@@ -1516,11 +1665,25 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
             )
 
     try:
+        if uncategorized or redirects_prior:
+            # Older sites cannot empty a product's categories or put a
+            # Redirection rule back: say so BEFORE the first mutation instead
+            # of failing verification after a half-done restore.
+            version = int((fetch_wp_status(env) or {}).get("broker_version") or 0)
+            if version < BROKER_RESTORE_VERSION:
+                raise DraftConflict(
+                    f"the WordPress side of the category editor is out of date"
+                    f" (version {version}, needs {BROKER_RESTORE_VERSION} or"
+                    " newer): it cannot put back"
+                    f" {len(uncategorized)} product(s) that had no category or"
+                    f" {len(redirects_prior)} redirect(s) - ask a developer to"
+                    " deploy the arb-admin plugin update"
+                )
         outcome = broker_job(env, "/restore", {
             **common, "phase": "terms",
             "snapshot": {"terms": terms, "blog_path": blog_path,
                          "site_options": site_options},
-        }, run_id=run_id)
+        }, run_id=run_id, heartbeat=beat)
         refused(outcome, "terms pass")
         if int(outcome.get("terms") or 0) != len(terms):
             raise DraftConflict(
@@ -1536,7 +1699,7 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
                 **common, "phase": "memberships", "page": offset,
                 "snapshot": {"terms": terms, "products": page, "blog_path": blog_path},
                 "products_offset": offset,
-            }, run_id=run_id)
+            }, run_id=run_id, heartbeat=beat)
             refused(outcome, f"membership page {offset}")
             expected_products = len({int(r.get("product_id") or 0) for r in page})
             if int(outcome.get("products_restored") or 0) != expected_products:
@@ -1549,12 +1712,38 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
             restore["offset"] = offset
             restore["products_restored"] = restored
             _save_restore_progress(job_id, restore)
+        # Products that had NO category before the run. The apply may have put
+        # them in one; only an explicit "empty this product's categories" puts
+        # that back, so they are their own pages of the membership phase.
+        for page in _uncategorized_pages(uncategorized):
+            outcome = broker_job(env, "/restore", {
+                **common, "phase": "memberships", "page": offset,
+                "snapshot": {"terms": terms, "products": [],
+                             "uncategorized": page, "blog_path": blog_path},
+                "products_offset": offset,
+            }, run_id=run_id, heartbeat=beat)
+            refused(outcome, f"uncategorized page {offset}")
+            expected_products = len({int(r.get("product_id") or 0) for r in page})
+            if int(outcome.get("products_restored") or 0) != expected_products:
+                raise DraftConflict(
+                    f"the restore emptied the categories of"
+                    f" {outcome.get('products_restored')} of {expected_products}"
+                    f" products that had none (page {offset})"
+                )
+            restored += int(outcome.get("products_restored") or 0)
+            offset += len(page)
+            restore["offset"] = offset
+            restore["products_restored"] = restored
+            _save_restore_progress(job_id, restore)
         restore["phase"] = "finalize"
         _save_restore_progress(job_id, restore)
         outcome = broker_job(env, "/restore", {
             **common, "phase": "finalize",
-            "snapshot": {"terms": terms, "blog_path": blog_path},
-        }, run_id=run_id)
+            "snapshot": {"terms": terms, "blog_path": blog_path,
+                         # Every Redirection rule the finalize created or
+                         # overwrote, exactly as it was before.
+                         "redirects": redirects_prior},
+        }, run_id=run_id, heartbeat=beat)
         refused(outcome, "finalize")
         restore["terms_removed"] = outcome.get("terms_removed")
         restore["phase"] = "verify"
@@ -1571,6 +1760,15 @@ def _restore_worker(env: str, run_id: int, job_id: int, blog_id: int,
         restore["status"] = "done"
         restore["phase"] = "done"
         _save_restore_progress(job_id, restore)
+        with database.cursor(write=True, actor=actor) as cursor:
+            # The blog is back at its pre-apply state: the run's own outcome
+            # must stop calling it migrated.
+            cursor.execute(
+                "UPDATE catmgr.run_job"
+                "   SET result = COALESCE(result, '{}'::jsonb) || %s"
+                " WHERE job_id = %s",
+                (_json({"restored": True}), job_id),
+            )
         try:
             with database.cursor(write=True, actor=actor) as cursor:
                 restore["snapshot"] = categories_service.import_export(
@@ -1608,11 +1806,15 @@ def restore_blog(run_id: int, job_id: int, *, actor: str,
     (every pass is convergent).
 
     Exclusive per environment: refused while ANY run of the environment is
-    active (a newer run's plan would be invalidated) and while another
-    restore is still running there (its WordPress phases would interleave
-    with this one's)."""
+    alive - queued, running or PAUSED (a paused run resumes into a plan built
+    on the state this restore is undoing) - and while another restore is still
+    running there (its WordPress phases would interleave with this one's).
 
-    with database.cursor() as cursor:
+    The checks and the durable reservation happen in ONE transaction under the
+    environment lock, so two restore requests cannot both be admitted."""
+
+    with database.cursor(write=True, actor=actor) as cursor:
+        _lock_run_env(cursor, run_id)
         run = get_run(cursor, run_id)
         cursor.execute(
             "SELECT payload FROM catmgr.job_snapshot WHERE job_id = %s",
@@ -1626,17 +1828,18 @@ def restore_blog(run_id: int, job_id: int, *, actor: str,
             raise DraftError(f"job {job_id} has no pre-apply snapshot")
         cursor.execute(
             "SELECT run_id, status, worker_heartbeat_at FROM catmgr.run"
-            " WHERE env = %s AND status IN ('queued', 'running') ORDER BY run_id",
-            (run["env"],),
+            " WHERE env = %s AND status IN %s ORDER BY run_id",
+            (run["env"], ACTIVE_STATUSES),
         )
         for other in cursor.fetchall():
-            # A queued run has no heartbeat yet but is active; a running run
-            # is active unless its worker is dead (stale heartbeat).
-            active = other["status"] == "queued" or not _stale(dict(other))
+            # A queued or paused run is alive by definition (no worker, so no
+            # heartbeat to judge it by); a running run is alive unless its
+            # worker is dead (stale heartbeat).
+            active = other["status"] != "running" or not _stale(dict(other))
             if active:
                 raise DraftConflict(
                     f"run #{other['run_id']} is {other['status']} on {run['env']}"
-                    " - pause or finish it before restoring a store"
+                    " - finish or cancel it before restoring a store"
                 )
         running = _running_restores(cursor, run["env"], exclude_job_id=job_id)
         if running:
@@ -1644,18 +1847,31 @@ def restore_blog(run_id: int, job_id: int, *, actor: str,
                 f"store {running[0]['blog_id']} (run #{running[0]['run_id']}) is still"
                 " being restored - one restore at a time"
             )
-    current = (job.get("restore") or {})
-    existing = _restore_threads.get(job_id)
-    if current.get("status") == "running" and existing and existing.is_alive():
-        raise DraftConflict("a restore is already running for this store")
-    if current.get("status") == "running" and not _restore_stale(current):
-        raise DraftConflict("a restore is already running for this store (it reported progress moments ago)")
-    with database.cursor(write=True, actor=actor) as cursor:
+        current = (job.get("restore") or {})
+        existing = _restore_threads.get(job_id)
+        if current.get("status") == "running" and existing and existing.is_alive():
+            raise DraftConflict("a restore is already running for this store")
+        if current.get("status") == "running" and not _restore_stale(current):
+            raise DraftConflict("a restore is already running for this store (it reported progress moments ago)")
+        payload = snapshot["payload"]
+        reserved = {
+            "status": "running", "phase": "terms", "offset": 0,
+            "total": len(payload.get("products") or []) + len(payload.get("uncategorized") or []),
+            "terms": len(payload.get("terms") or []), "error": None,
+            "request_id": f"restore-{job_id}-{secrets.token_hex(6)}",
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        }
+        cursor.execute(
+            "UPDATE catmgr.run_job SET progress = progress || %s WHERE job_id = %s",
+            (_json({"restore": reserved}), job_id),
+        )
         record_audit(cursor, actor=actor, action="restore_requested",
                      entity="job", entity_key=str(job_id),
                      detail={"run_id": run_id, "blog_id": job["blog_id"],
-                             "products": len(snapshot["payload"].get("products") or [])})
-    args = (run["env"], run_id, job_id, job["blog_id"], snapshot["payload"], actor)
+                             "request_id": reserved["request_id"],
+                             "products": len(payload.get("products") or []),
+                             "uncategorized": len(payload.get("uncategorized") or [])})
+    args = (run["env"], run_id, job_id, job["blog_id"], payload, actor, reserved)
     if not background:
         _restore_worker(*args)
         with database.cursor() as cursor:
@@ -1665,7 +1881,7 @@ def restore_blog(run_id: int, job_id: int, *, actor: str,
     _restore_threads[job_id] = thread
     thread.start()
     return {"accepted": True, "restore": {"status": "running", "phase": "terms",
-                                          "total": len(snapshot["payload"].get("products") or [])}}
+                                          "total": reserved["total"]}}
 
 
 def _job_restore_state(cursor, job_id: int) -> Dict[str, Any]:
@@ -1685,7 +1901,8 @@ def drift_audit(env: str, *, actor: str,
     snapshot versions and would fail every remaining job's staleness fence.
     Recorded in the audit log like every other apply-tier action."""
 
-    with database.cursor() as cursor:
+    with database.cursor(write=True, actor=actor) as cursor:
+        lock_env(cursor, env)
         _assert_env_exclusive(cursor, env, None)
         cursor.execute(
             "SELECT blog_id FROM catmgr.snapshot WHERE env = %s ORDER BY blog_id",

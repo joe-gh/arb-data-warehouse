@@ -808,3 +808,65 @@ async def test_every_chunk_change_set_is_review_blocked_while_the_sheet_builds(t
     _admin("UPDATE logo.agent_spreadsheet_job SET status='staged' WHERE id=%s",(job["id"],))
     with database.cursor() as cursor:
         assert not any(staging._spreadsheet_build_in_progress(cursor,i,"admin-one") for i in links)
+
+
+def _lines_csv(header, lines):
+    """A CSV written line by line so blank physical lines survive verbatim."""
+    return ("\n".join([",".join(header)] + lines) + "\n").encode("utf-8")
+
+
+def _lines_xlsx(header, lines):
+    from io import BytesIO
+    import openpyxl
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(list(header))
+    for line in lines:
+        sheet.append([value or None for value in line.split(",")])
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("build,name", [(_lines_csv, "rows.csv"), (_lines_xlsx, "rows.xlsx")])
+async def test_blank_lines_keep_every_row_at_its_physical_number(tmp_path, build, name):
+    session_id, _row, _data = _session_and_csv()
+    settings = _settings(tmp_path)
+    header = ("command", "fdm4_store", "tier_name", "store", "styles")
+    # 1 header, 2 good, 3 blank, 4 bad (a mixed sheet must name the styles).
+    data = build(header, [
+        "set_store_pricing_tier,S_TEST,MSRP,,",
+        ",,,,",
+        "remove_sync_block,,,S_EMPTY,",
+    ])
+    job = await create_spreadsheet_job(session_id, "admin-one", data, name,
+                                       "text/csv", "", settings)
+    staged = confirm_spreadsheet_mapping(job["id"], "admin-one",
+                                         job["mapping_revision"],
+                                         job["mapping_hash"], 50, settings)
+    assert [r["row"] for r in staged["rejected_rows"]] == [4], staged["rejected_rows"]
+    assert [i["call_id"].rsplit(":", 1)[-1] for i in staged["change_set"]["items"]] == ["2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("build,name", [(_lines_csv, "rows.csv"), (_lines_xlsx, "rows.xlsx")])
+async def test_leading_blank_block_offsets_the_reported_rows(tmp_path, build, name):
+    session_id, _row, _data = _session_and_csv()
+    settings = _settings(tmp_path)
+    header = ("command", "fdm4_store", "tier_name", "store", "styles")
+    # 1 header, 2-3 blank, 4 good, 5 bad.
+    data = build(header, [
+        ",,,,",
+        ",,,,",
+        "set_store_pricing_tier,S_TEST,MSRP,,",
+        "remove_sync_block,,,S_EMPTY,",
+    ])
+    job = await create_spreadsheet_job(session_id, "admin-one", data, name,
+                                       "text/csv", "", settings)
+    staged = confirm_spreadsheet_mapping(job["id"], "admin-one",
+                                         job["mapping_revision"],
+                                         job["mapping_hash"], 50, settings)
+    assert [r["row"] for r in staged["rejected_rows"]] == [5], staged["rejected_rows"]
+    assert [i["call_id"].rsplit(":", 1)[-1] for i in staged["change_set"]["items"]] == ["4"]

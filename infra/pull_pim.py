@@ -10,6 +10,12 @@ Field lists for $select are discovered from /catalog/$metadata at runtime so
 new PIM fields are picked up automatically. Pulls are incremental by
 modification date with a small overlap window; --full ignores watermarks.
 
+A completed --full run is also the deletion reconciliation: records the API no
+longer returns get retired_at stamped (never deleted), and any record that
+comes back is set live again. Retirement is skipped when a run would retire
+more than RETIRE_MAX_FRACTION of the live rows, and never happens at all if the
+walk raised part-way through.
+
 Run on the warehouse box as the postgres OS user:
 
     sudo -u postgres env PIM_API_KEY=... \
@@ -34,6 +40,10 @@ PAGE_SIZE = 100          # the API silently returns zero rows above this
 OVERLAP_SECONDS = 600    # re-read window behind the watermark
 TIMEOUT = 30
 MAX_RETRIES = 3
+# A full pull that lost half the catalog to a bad API answer must not retire
+# half the mirror. Above this share of the live rows, retirement is skipped and
+# said out loud so an operator looks at the run.
+RETIRE_MAX_FRACTION = 0.20
 
 DB_NAME = "arb_warehouse"
 DB_SOCKET = "/var/run/postgresql"
@@ -146,12 +156,44 @@ def since_expression(cursor, entity, full):
     return cursor.fetchone()[0]
 
 
+def retire_missing(cursor, table, ref_column, seen):
+    """Mark the live rows a completed full pull did not see.
+
+    Only ever called after the walk finished without raising, so a truncated
+    API answer cannot retire anything. Records are never deleted: a ref that
+    comes back is set live again by the pull that sees it.
+    """
+    if not seen:
+        print(f"pull_pim: {table}: full pull returned no rows; retirement skipped")
+        return 0
+    refs = list(seen)
+    cursor.execute(f"SELECT count(*) FROM pim.{table} WHERE retired_at IS NULL")
+    live = cursor.fetchone()[0]
+    cursor.execute(
+        f"SELECT count(*) FROM pim.{table}"
+        f" WHERE retired_at IS NULL AND NOT ({ref_column} = ANY(%s))",
+        (refs,),
+    )
+    missing = cursor.fetchone()[0]
+    if missing and live and missing > live * RETIRE_MAX_FRACTION:
+        print(f"pull_pim: {table}: would retire {missing} of {live} live rows, over "
+              f"{int(RETIRE_MAX_FRACTION * 100)}% of the mirror; retirement skipped")
+        return 0
+    cursor.execute(
+        f"UPDATE pim.{table} SET retired_at = now()"
+        f" WHERE retired_at IS NULL AND NOT ({ref_column} = ANY(%s))",
+        (refs,),
+    )
+    return cursor.rowcount
+
+
 def pull_products(connection, key, fields, full):
     since = None
     with connection.cursor() as cursor:
         since = since_expression(cursor, "products", full)
     count = 0
     newest = None
+    seen = set() if full else None
     with connection.cursor() as cursor:
         for item in walk(key, catalog_path("products", fields, "prod_modify", since)):
             ref = (item.get("prod_ref") or "").strip()
@@ -166,7 +208,8 @@ def pull_products(connection, key, fields, full):
                     style_number = EXCLUDED.style_number,
                     prod_modify = EXCLUDED.prod_modify,
                     payload = EXCLUDED.payload,
-                    pulled_at = now()
+                    pulled_at = now(),
+                    retired_at = NULL
                 """,
                 (
                     ref,
@@ -176,8 +219,14 @@ def pull_products(connection, key, fields, full):
                 ),
             )
             count += 1
+            if seen is not None:
+                seen.add(ref)
             if modify and (newest is None or modify > newest):
                 newest = modify
+        if seen is not None:
+            retired = retire_missing(cursor, "api_product", "prod_ref", seen)
+            if retired:
+                print(f"pull_pim: api_product: retired {retired} record(s) absent from the full pull")
         set_watermark(cursor, "products", newest, count, "incremental" if since else "full")
     connection.commit()
     return count
@@ -188,6 +237,7 @@ def pull_variants(connection, key, fields, full):
         since = since_expression(cursor, "variants", full)
     count = 0
     newest = None
+    seen = set() if full else None
     with connection.cursor() as cursor:
         for item in walk(key, catalog_path("variants", fields, "frmt_modify", since)):
             ref = (item.get("frmt_ref") or "").strip()
@@ -202,7 +252,8 @@ def pull_variants(connection, key, fields, full):
                     prod_ref = EXCLUDED.prod_ref,
                     frmt_modify = EXCLUDED.frmt_modify,
                     payload = EXCLUDED.payload,
-                    pulled_at = now()
+                    pulled_at = now(),
+                    retired_at = NULL
                 """,
                 (
                     ref,
@@ -212,8 +263,14 @@ def pull_variants(connection, key, fields, full):
                 ),
             )
             count += 1
+            if seen is not None:
+                seen.add(ref)
             if modify and (newest is None or modify > newest):
                 newest = modify
+        if seen is not None:
+            retired = retire_missing(cursor, "api_variant", "frmt_ref", seen)
+            if retired:
+                print(f"pull_pim: api_variant: retired {retired} record(s) absent from the full pull")
         set_watermark(cursor, "variants", newest, count, "incremental" if since else "full")
     connection.commit()
     return count
@@ -240,6 +297,7 @@ def pull_images(connection, key, full):
         raise
     count = 0
     newest = None
+    seen = set() if full else None
     with connection.cursor() as cursor:
         path = first
         data = probe
@@ -257,7 +315,8 @@ def pull_images(connection, key, full):
                         reference = EXCLUDED.reference,
                         modified_on = EXCLUDED.modified_on,
                         payload = EXCLUDED.payload,
-                        pulled_at = now()
+                        pulled_at = now(),
+                        retired_at = NULL
                     """,
                     (
                         int(image_id),
@@ -267,6 +326,8 @@ def pull_images(connection, key, full):
                     ),
                 )
                 count += 1
+                if seen is not None:
+                    seen.add(int(image_id))
                 if modified and (newest is None or modified > newest):
                     newest = modified
             next_link = data.get("@nextLink") or ""
@@ -274,6 +335,10 @@ def pull_images(connection, key, full):
             if not path:
                 break
             data = api_get(path, key)
+        if seen is not None:
+            retired = retire_missing(cursor, "api_image", "image_id", seen)
+            if retired:
+                print(f"pull_pim: api_image: retired {retired} record(s) absent from the full pull")
         set_watermark(cursor, "images", newest, count, "incremental" if since else "full")
     connection.commit()
     return count

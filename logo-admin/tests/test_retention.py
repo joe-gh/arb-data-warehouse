@@ -1,11 +1,16 @@
 """Retention cleans expired transient state without touching durable journals."""
 
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from db import database
+from domain import Conflict
 import maintenance
+from staging import apply_change_set
 
 
 def _expired_state(tmp_path):
@@ -126,3 +131,81 @@ def test_cleanup_source_never_deletes_append_only_journal():
 
     source = Path(maintenance.__file__).read_text().lower()
     assert "delete from logo.agent_action_journal" not in source
+
+
+def _incomplete_import(job_status: str = "mapping_processing"):
+    """One spreadsheet job past its hour, plus the two chunk change-sets it
+    linked. Only the first is the job's own change_set_id; the second lives in
+    the mapping, exactly as _ensure_chunk_links writes them."""
+    session_id = uuid4()
+    first, second = uuid4(), uuid4()
+    job_id, storage_key = uuid4(), uuid4()
+    with database.cursor(write=True, actor="retention-fixture") as cursor:
+        cursor.execute(
+            "INSERT INTO logo.agent_chat_session "
+            "(id,user_login,title,expires_at) VALUES (%s,%s,%s,now()+interval '1 day')",
+            (session_id, "admin-one", "import"),
+        )
+        for change_set_id in (first, second):
+            cursor.execute(
+                """
+                INSERT INTO logo.agent_change_set
+                    (id,session_id,user_login,origin,expires_at)
+                VALUES (%s,%s,%s,'spreadsheet',now()+interval '1 day')
+                """,
+                (change_set_id, session_id, "admin-one"),
+            )
+        cursor.execute(
+            """
+            INSERT INTO logo.agent_spreadsheet_job (
+                id,session_id,user_login,storage_key,change_set_id,original_name,
+                media_type,byte_size,sha256,format_name,status,mapping_hash,
+                mapping,expires_at
+            ) VALUES (%s,%s,%s,%s,%s,'import.csv','text/csv',1,%s,'csv',%s,%s,
+                      %s::jsonb,now()-interval '1 hour')
+            """,
+            (job_id, session_id, "admin-one", storage_key, first, "a" * 64,
+             job_status, "b" * 64,
+             json.dumps({"_change_set_ids": [str(first), str(second)],
+                         "_chunk_size": 50})),
+        )
+    return job_id, first, second
+
+
+def _statuses(*change_set_ids):
+    with database.cursor() as cursor:
+        cursor.execute(
+            "SELECT id,status FROM logo.agent_change_set WHERE id = ANY(%s)",
+            (list(change_set_ids),),
+        )
+        return {str(row["id"]): row["status"] for row in cursor.fetchall()}
+
+
+def test_expired_incomplete_import_retires_the_chunks_that_did_stage(tmp_path, monkeypatch):
+    job_id, first, second = _incomplete_import()
+    monkeypatch.setattr(maintenance, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(maintenance, "log_event", lambda *_args, **_kwargs: None)
+
+    dry = maintenance.cleanup(dry_run=True)
+    assert dry["incomplete_spreadsheet_change_sets"] == 2
+    assert set(_statuses(first, second).values()) == {"pending"}
+
+    counts = maintenance.cleanup(dry_run=False)
+    assert counts["incomplete_spreadsheet_change_sets"] == 2
+    assert set(_statuses(first, second).values()) == {"discarded"}
+    with database.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM logo.agent_spreadsheet_job WHERE id=%s", (job_id,))
+        assert cursor.fetchone() is None
+    for change_set_id in (first, second):
+        with pytest.raises(Conflict, match="no longer pending"):
+            apply_change_set(change_set_id, "admin-one", revision=0,
+                             confirmed_hash="0" * 64, acknowledge_hard_delete=False)
+
+
+def test_expired_completed_import_leaves_its_chunks_reviewable(tmp_path, monkeypatch):
+    _job_id, first, second = _incomplete_import(job_status="staged")
+    monkeypatch.setattr(maintenance, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(maintenance, "log_event", lambda *_args, **_kwargs: None)
+    counts = maintenance.cleanup(dry_run=False)
+    assert counts["incomplete_spreadsheet_change_sets"] == 0
+    assert set(_statuses(first, second).values()) == {"pending"}

@@ -1,7 +1,9 @@
 """Allowlisted full-row snapshots, semantic diffs, and exact restoration."""
 
 import json
+import re
 from collections import defaultdict
+from decimal import Decimal
 
 from psycopg2.extras import Json
 from numbers import Number
@@ -543,8 +545,19 @@ def _bounded_snapshot_rows(
     cursor,
     source_sql: str,
     params: tuple,
+    *,
+    byte_budget: Optional[int] = None,
 ) -> tuple[list[dict], int]:
-    """Keep oversized rowsets inside PostgreSQL and return only a sentinel."""
+    """Keep oversized rowsets inside PostgreSQL and return only a sentinel.
+
+    ``byte_budget`` is what is left of the change-set's total byte allowance.
+    It is pushed into the same SQL bound as the per-scope cap so PostgreSQL
+    never hands back rows the caller would have to refuse anyway.
+    """
+
+    scope_byte_cap = MAX_SNAPSHOT_SCOPE_BYTES
+    if byte_budget is not None:
+        scope_byte_cap = min(scope_byte_cap, max(int(byte_budget), 0))
 
     cursor.execute(
         f"""
@@ -578,10 +591,10 @@ def _bounded_snapshot_rows(
         params + (
             MAX_SNAPSHOT_ROWS_PER_SCOPE,
             MAX_SNAPSHOT_ROW_BYTES,
-            MAX_SNAPSHOT_SCOPE_BYTES,
+            scope_byte_cap,
             MAX_SNAPSHOT_ROWS_PER_SCOPE,
             MAX_SNAPSHOT_ROW_BYTES,
-            MAX_SNAPSHOT_SCOPE_BYTES,
+            scope_byte_cap,
         ),
     )
     result_rows = list(cursor.fetchall())
@@ -596,13 +609,23 @@ def _bounded_snapshot_rows(
         raise InvalidCommand("Affected row exceeds the exact-snapshot byte limit")
     if int(stats["scope_bytes"]) > MAX_SNAPSHOT_SCOPE_BYTES:
         raise InvalidCommand("Affected scope exceeds the exact-snapshot byte limit")
+    if int(stats["scope_bytes"]) > scope_byte_cap:
+        raise InvalidCommand(
+            "Change-set exceeds the total exact-snapshot byte limit"
+        )
     return (
         [dict(row["row"]) for row in result_rows if row.get("row") is not None],
         int(stats["scope_bytes"]),
     )
 
 
-def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
+def _snapshot_one(
+    cursor,
+    scope: MutationScope,
+    *,
+    for_update: bool,
+    byte_budget: Optional[int] = None,
+) -> dict:
     lock = " FOR UPDATE" if for_update else ""
     if scope.kind.startswith("assignment_"):
         where, params = _assignment_where(scope)
@@ -621,6 +644,7 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
               ) AS locked
             """,
             params + (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,),
+            byte_budget=byte_budget,
         )
         table = "logo.assignment"
     elif scope.kind == "store_settings_row":
@@ -634,6 +658,7 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
               ) AS locked
             """,
             (scope.key["fdm4_store"],),
+            byte_budget=byte_budget,
         )
         table = "logo.store_settings"
     elif scope.kind == "store_pricing_tier_row":
@@ -647,6 +672,7 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
               ) AS locked
             """,
             (scope.key["fdm4_store"],),
+            byte_budget=byte_budget,
         )
         table = "woo.store_pricing_tier"
     elif scope.kind in SIMPLE_ROW_SCOPES:
@@ -666,6 +692,7 @@ def _snapshot_one(cursor, scope: MutationScope, *, for_update: bool) -> dict:
               ) AS snapshot_row
             """,
             tuple(scope.key[column] for column in spec["key"]) + (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,),
+            byte_budget=byte_budget,
         )
         table = spec["table"]
     else:
@@ -687,7 +714,33 @@ def snapshot_scopes(
     snapshots: list[dict] = []
     total_rows = 0
     total_bytes = 0
-    pending = []
+    entry_count = 0
+
+    def admit(entry: dict) -> None:
+        """Charge one scope entry against the change-set budget as it arrives.
+
+        Checking after every entry (and pushing the remaining byte budget into
+        the next query) keeps an over-budget change-set from reading every
+        scope into memory first only to be refused at the end.
+        """
+
+        nonlocal total_rows, total_bytes, entry_count
+        entry_count += 1
+        if entry_count > MAX_SNAPSHOT_SCOPE_ENTRIES:
+            raise InvalidCommand("Change-set has too many exact-snapshot scope entries")
+        total_rows += len(entry["rows"])
+        total_bytes += int(entry.get("_bytes", 0))
+        if total_rows > MAX_SNAPSHOT_ROWS_TOTAL:
+            raise InvalidCommand(
+                "Change-set exceeds the total exact-snapshot row limit"
+            )
+        if total_bytes > MAX_SNAPSHOT_TOTAL_BYTES:
+            raise InvalidCommand(
+                "Change-set exceeds the total exact-snapshot byte limit"
+            )
+        entry.pop("_bytes", None)
+        snapshots.append(entry)
+
     for scope in compact_scopes(scopes):
         if scope.kind == "catmgr_draft":
             draft_rows = 0
@@ -699,7 +752,8 @@ def snapshot_scopes(
                     rows, size = _bounded_snapshot_rows(cursor,
                         f"SELECT row_number() OVER (ORDER BY {pk}) AS ordinal, to_jsonb(r) AS row "
                         f"FROM (SELECT * FROM {table} ORDER BY {pk} LIMIT %s{lock}) r",
-                        (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,))
+                        (MAX_SNAPSHOT_ROWS_PER_SCOPE + 1,),
+                        byte_budget=MAX_SNAPSHOT_TOTAL_BYTES - total_bytes)
                 except InvalidCommand as exc:
                     if "row limit" in str(exc):
                         raise InvalidCommand("Category draft exceeds the 2,000-row exact-undo limit; reduce the draft before staging") from exc
@@ -710,22 +764,14 @@ def snapshot_scopes(
                     raise InvalidCommand("Category draft exceeds the 2,000-row exact-undo limit; split or reduce the draft before staging")
                 if draft_bytes > MAX_SNAPSHOT_SCOPE_BYTES:
                     raise InvalidCommand("Category draft exceeds the exact-snapshot byte limit")
-                pending.append({"scope": scope_dict(scope), "table": table, "rows": rows, "_bytes": size})
+                admit({"scope": scope_dict(scope), "table": table, "rows": rows, "_bytes": size})
         else:
-            pending.append(_snapshot_one(cursor, scope, for_update=for_update))
-    for snapshot in pending:
-        total_rows += len(snapshot["rows"])
-        total_bytes += int(snapshot.get("_bytes", 0))
-        if total_rows > MAX_SNAPSHOT_ROWS_TOTAL:
-            raise InvalidCommand(
-                "Change-set exceeds the total exact-snapshot row limit"
-            )
-        if total_bytes > MAX_SNAPSHOT_TOTAL_BYTES:
-            raise InvalidCommand(
-                "Change-set exceeds the total exact-snapshot byte limit"
-            )
-        snapshot.pop("_bytes", None)
-        snapshots.append(snapshot)
+            admit(_snapshot_one(
+                cursor,
+                scope,
+                for_update=for_update,
+                byte_budget=MAX_SNAPSHOT_TOTAL_BYTES - total_bytes,
+            ))
     validate_snapshot_state(snapshots, expected_scopes=compact_scopes(scopes))
     return snapshots
 
@@ -791,26 +837,43 @@ def diff_states(
     return result
 
 
-def canonical_json(value: Any) -> str:
-    return json.dumps(
+# A Decimal read back from a json/jsonb column (db.py decodes numbers that
+# way) must serialise as the bare number it was, not as a quoted string:
+# json.dumps has no hook that emits an unquoted token, so the value goes out
+# through default= wrapped in NUL characters and the wrapper is stripped
+# afterwards. PostgreSQL text and jsonb cannot contain NUL, so no real value
+# can forge the marker.
+_DECIMAL_MARK = "\x00decimal:"
+_DECIMAL_TOKEN = re.compile(r'"\\u0000decimal:([^"\\]+)\\u0000"')
+
+
+def _exact_default(value: Any) -> str:
+    if isinstance(value, Decimal) and value.is_finite():
+        return f"{_DECIMAL_MARK}{value}\x00"
+    return str(value)
+
+
+def dumps_exact(value: Any, *, sort_keys: bool = False) -> str:
+    """json.dumps that keeps Decimal values as bare, unrounded JSON numbers."""
+
+    text = json.dumps(
         value,
-        sort_keys=True,
+        sort_keys=sort_keys,
         separators=(",", ":"),
         ensure_ascii=False,
-        default=str,
+        default=_exact_default,
     )
+    if "decimal:" in text:
+        text = _DECIMAL_TOKEN.sub(lambda match: match.group(1), text)
+    return text
+
+
+def canonical_json(value: Any) -> str:
+    return dumps_exact(value, sort_keys=True)
 
 
 def json_size_bytes(value: Any) -> int:
-    return sum(
-        len(chunk.encode("utf-8"))
-        for chunk in json.JSONEncoder(
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).iterencode(value)
-    )
+    return len(canonical_json(value).encode("utf-8"))
 
 
 def _validate_row_types(table: str, row: Mapping[str, Any]) -> None:
@@ -1071,7 +1134,9 @@ def _insert_simple(cursor, table: str, row: Mapping[str, Any], *, upsert: bool =
     for column in columns:
         value = row[column]
         if spec["types"].get(column) in {"json", "json?"} and value is not None:
-            value = Json(value)
+            # dumps_exact so a number inside the document goes back with the
+            # digits it was journaled with.
+            value = Json(value, dumps=dumps_exact)
         values.append(value)
     identity = "OVERRIDING SYSTEM VALUE" if table.startswith("catmgr.") else ""
     conflict = (" ON CONFLICT (" + ", ".join(spec["pk"]) + ") DO UPDATE SET " +

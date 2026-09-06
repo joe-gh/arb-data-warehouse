@@ -369,7 +369,11 @@ def test_refused_finalize_runs_again_on_retry(ready, monkeypatch):
             result = self.inner(env, path, payload)
             if path == "/finalize" and self.refuse_once:
                 self.refuse_once = False
-                return {**result, "ok": False, "delete_report": [{"term_id": 12, "status": "has_products", "count": 1}]}
+                refused = {**result, "ok": False,
+                           "delete_report": [{"term_id": 12, "status": "has_products", "count": 1}]}
+                # The broker files a body that reports ok=false as a FAILED job
+                # row; the durable row has to say what the engine was told.
+                return self.inner.record_job(path, payload, refused)
             return result
 
     sticky = Sticky(fake)
@@ -545,7 +549,9 @@ def test_export_is_repulled_when_pages_disagree_and_rejects_short_deliveries(mon
     monkeypatch.setattr(categories_service, "_broker", broker)
     monkeypatch.setattr(categories_service, "_EXPORT_PAGE_LIMIT", 3)
     export = categories_service.fetch_export("prod", 1)
-    assert len(export["products"]) == 6 and pages["calls"] == 4      # 2 (inconsistent) + 2
+    # 2 (inconsistent) + 2, then one re-read of page 1: this broker stamps no
+    # export_generation, so a multi-page walk is checked by re-reading page 1.
+    assert len(export["products"]) == 6 and pages["calls"] == 5
 
     def short(env, path, method="GET", payload=None):
         return {"terms": [], "products": [{"term_id": 1, "product_id": 1, "sku": "A"}],
@@ -734,3 +740,295 @@ def test_blank_install_mirror_supports_every_category_query():
         with admin.cursor() as cursor:
             cursor.execute(f"DROP DATABASE IF EXISTS {name}")
         admin.close()
+
+
+# ---------------------------------------------------------------- 23: restore completeness (2026-09-05)
+
+
+def test_restore_puts_a_rescued_product_back_to_no_category(ready):
+    """A product that had NO category before the run and was assigned one by
+    it must come back out: restore sends it as an explicit empty set."""
+    nodes, fake = ready
+    _write(categories_service.import_blog_snapshot, env="prod", blog_id=9, blog_path="/nelson/",
+           terms=[{"term_id": 90, "slug": "ppe", "name": "PPE", "parent": 0}],
+           products=[{"term_id": 90, "product_id": 900, "sku": "SAFE-1"}],
+           uncategorized=[{"product_id": 901, "sku": "LOST-1"}])
+    _write(categories_mapping.set_assignments, node_id=nodes["ppe"]["node_id"],
+           skus=["LOST-1"], mode="add")
+    fake.seed_from_snapshot("prod", 9)
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[9])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    assert done["status"] == "completed", done["jobs"][0]["result"]
+    assert fake.blogs[9]["products"][901]["term_ids"] == {90}
+
+    result = categories_runs.restore_blog(run["run_id"], done["jobs"][0]["job_id"],
+                                          actor="tester", background=False)
+    assert result["restore"]["status"] == "done", result["restore"]
+    assert result["restore"]["verified"] is True
+    assert fake.blogs[9]["products"][901]["term_ids"] == set()
+    assert 901 in {row["product_id"] for row in fake.export("prod", 9)["uncategorized"]}
+    pages = [p for _, path, p in fake.calls
+             if path == "/restore" and p.get("phase") == "memberships"]
+    carried = [p for p in pages if p["snapshot"].get("uncategorized")]
+    assert [row["product_id"] for row in carried[0]["snapshot"]["uncategorized"]] == [901]
+    assert carried[0]["snapshot"]["products"] == []
+
+
+def test_restore_is_refused_against_a_site_that_cannot_empty_a_product(ready):
+    nodes, fake = ready
+    _write(categories_service.import_blog_snapshot, env="prod", blog_id=9, blog_path="/nelson/",
+           terms=[{"term_id": 90, "slug": "ppe", "name": "PPE", "parent": 0}],
+           products=[{"term_id": 90, "product_id": 900, "sku": "SAFE-1"}],
+           uncategorized=[{"product_id": 901, "sku": "LOST-1"}])
+    _write(categories_mapping.set_assignments, node_id=nodes["ppe"]["node_id"],
+           skus=["LOST-1"], mode="add")
+    fake.seed_from_snapshot("prod", 9)
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[9])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    job = done["jobs"][0]
+    fake.calls.clear()
+    fake.status_overrides = {"broker_version": 2}
+    result = categories_runs.restore_blog(run["run_id"], job["job_id"],
+                                          actor="tester", background=False)
+    assert result["restore"]["status"] == "failed"
+    assert "out of date" in result["restore"]["error"]
+    assert [p for _, path, p in fake.calls if path == "/restore"] == []   # nothing was touched
+
+
+def test_a_missing_term_in_a_restore_page_leaves_the_product_alone(ready):
+    """The broker used to clear a product whose snapshot term did not come
+    back, stripping the categories the restore HAD put back."""
+    _, fake = ready
+    before = set(fake.blogs[1]["products"][100]["term_ids"])
+    assert len(before) > 1
+    outcome = fake("prod", "/restore", {
+        "blog_id": 1, "run_id": 0, "request_id": "probe", "phase": "memberships",
+        "expected_blog_path": "/",
+        "snapshot": {"terms": [{"term_id": 999, "slug": "vanished", "name": "Vanished"}],
+                     "products": [{"product_id": 100, "term_id": 999}],
+                     "blog_path": "/"},
+    })
+    assert outcome["ok"] is False
+    assert outcome["failures"][0]["step"] == "membership_term_missing"
+    assert fake.blogs[1]["products"][100]["term_ids"] == before
+
+
+# ---------------------------------------------------------------- 24: redirects come back
+
+
+def test_restore_puts_the_redirect_rules_back_exactly(ready):
+    from copy import deepcopy
+    _, fake = ready
+    # One planned path already has a rule pointing somewhere else; the others
+    # have none at all.
+    fake.redirects["/product-category/men-s/"] = {"id": 77, "new_path": "/clearance/",
+                                                  "code": 301, "enabled": True}
+    before = deepcopy(fake.redirects)
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    assert done["status"] == "completed", done["jobs"][0]["result"]
+    assert fake.redirects["/product-category/men-s/"]["new_path"] == "/product-category/mens/"
+    assert len(fake.redirects) > len(before)          # the run created the rest
+
+    with database.cursor() as cursor:
+        cursor.execute("SELECT payload FROM catmgr.job_snapshot WHERE job_id = %s",
+                       (done["jobs"][0]["job_id"],))
+        journal = cursor.fetchone()["payload"]["redirects_prior"]
+    assert len(journal) == 5 and all(r["group_id"] == 1 for r in journal)
+    present = [r for r in journal if r["present"]]
+    assert [r["old_path"] for r in present] == ["/product-category/men-s/"]
+    assert present[0]["action_data"] == "/clearance/" and present[0]["id"] == 77
+
+    result = categories_runs.restore_blog(run["run_id"], done["jobs"][0]["job_id"],
+                                          actor="tester", background=False)
+    assert result["restore"]["status"] == "done", result["restore"]
+    finalize_call = next(p for _, path, p in fake.calls
+                         if path == "/restore" and p.get("phase") == "finalize")
+    assert len(finalize_call["snapshot"]["redirects"]) == len(journal)
+    assert fake.redirects == before
+
+
+# ---------------------------------------------------------------- 25: a restored blog is not migrated
+
+
+def test_restore_is_refused_while_the_run_is_paused_and_makes_it_partial(ready):
+    _, fake = ready
+    run = _write(categories_runs.create_run, env="prod", blog_ids=None)
+    categories_runs.process_run(run["run_id"], actor="tester", max_jobs=1)
+    _write(categories_runs.request_pause, run["run_id"])
+    paused = categories_runs.process_run(run["run_id"], actor="tester")
+    assert paused["status"] == "paused"
+    job = next(j for j in paused["jobs"] if j["blog_id"] == 1)
+    with pytest.raises(DraftConflict) as excinfo:
+        categories_runs.restore_blog(run["run_id"], job["job_id"], actor="tester", background=False)
+    assert "paused" in str(excinfo.value)
+
+    _write(categories_runs.cancel, run["run_id"])
+    result = categories_runs.restore_blog(run["run_id"], job["job_id"],
+                                          actor="tester", background=False)
+    assert result["restore"]["status"] == "done", result["restore"]
+    detail = _read(categories_runs.get_run, run["run_id"])["jobs"]
+    assert next(j for j in detail if j["blog_id"] == 1)["result"]["restored"] is True
+    with database.cursor(write=True, actor="tester") as cursor:
+        assert categories_runs._finish_run(cursor, run["run_id"]) == "completed_with_skips"
+
+
+# ---------------------------------------------------------------- 26: a long restore stays alive
+
+
+def test_a_long_restore_keeps_its_liveness_fence_while_polling(ready, monkeypatch):
+    import time as clock
+    _, fake = ready
+    monkeypatch.setattr(categories_runs, "RESTORE_STALE_MINUTES", 0.002)     # 120 ms
+    run = _write(categories_runs.create_run, env="prod", blog_ids=[1])
+    done = categories_runs.process_run(run["run_id"], actor="tester")
+    job_id = done["jobs"][0]["job_id"]
+    observed = {"alive": [], "beats": [], "refused": 0}
+
+    class SlowJobs(FakeWordPress):
+        """Every restore phase is detached as a durable job whose polls take
+        longer than the stale window."""
+
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+            self.calls = inner.calls
+            self.pending = {}
+
+        def __call__(self, env, path, payload):
+            if path == "/job":
+                job = self.pending.get(payload["key"])
+                if job is None:
+                    raise categories_service.BrokerError("No job with that key.", 404)
+                job["polls"] += 1
+                with database.cursor() as cursor:
+                    observed["alive"].append(len(categories_runs._running_restores(cursor, "prod")))
+                    observed["beats"].append(categories_runs._job_restore_state(cursor, job_id)["heartbeat_at"])
+                if job["polls"] == 2:
+                    try:
+                        _write(categories_runs.create_run, env="prod", blog_ids=[7])
+                    except DraftConflict:
+                        observed["refused"] += 1
+                clock.sleep(0.15)               # longer than the stale window
+                if job["polls"] < 2:
+                    return {"ok": True, "job": {"key": payload["key"], "status": "running",
+                                                "heartbeat_age": 1, "stale": False}}
+                return {"ok": True, "job": {"key": payload["key"], "status": "done"},
+                        "result": job["result"], "error": None}
+            if path == "/restore":
+                result = self.inner(env, path, payload)
+                key = categories_runs.job_key(path, payload)
+                self.pending[key] = {"polls": 0, "result": result}
+                return {"ok": True, "async": True,
+                        "job": {"key": key, "status": "running", "heartbeat_age": 0}}
+            return self.inner(env, path, payload)
+
+    monkeypatch.setattr(categories_runs, "broker_call", SlowJobs(fake))
+    reserved = categories_runs.restore_blog(run["run_id"], job_id, actor="tester",
+                                            background=False)
+    assert reserved["restore"]["status"] == "done", reserved["restore"]
+    assert observed["alive"] and all(n == 1 for n in observed["alive"])
+    assert observed["beats"] == sorted(observed["beats"])
+    assert observed["beats"][0] < observed["beats"][-1]      # the fence was renewed
+    assert observed["refused"] >= 1
+
+    # A heartbeat from a worker that no longer owns the restore changes nothing,
+    # and a restore whose worker died does go stale.
+    with _admin() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE catmgr.run_job SET progress = progress || %s WHERE job_id = %s",
+            ('{"restore": {"status": "running", "phase": "terms", "request_id": "mine",'
+             ' "heartbeat_at": "2020-01-01T00:00:00+00:00"}}', job_id))
+    categories_runs._touch_restore_heartbeat(job_id, "someone-else")
+    with database.cursor() as cursor:
+        state = categories_runs._job_restore_state(cursor, job_id)
+        assert state["heartbeat_at"].startswith("2020-01-01")
+        assert categories_runs._running_restores(cursor, "prod") == []
+
+
+# ---------------------------------------------------------------- 27: one export, one live state
+
+
+def test_pages_of_one_export_must_come_from_one_live_state(ready, monkeypatch):
+    _, fake = ready
+    monkeypatch.setattr(categories_service, "_broker", fake.broker_export)
+    monkeypatch.setattr(categories_service, "_EXPORT_PAGE_LIMIT", 3)
+
+    def move_a_membership(page):
+        if page == 2:
+            # One membership moves between two terms: the row COUNT is the same.
+            fake.blogs[1]["products"][105]["term_ids"] = {14}
+
+    fake.on_export_page = move_a_membership
+    fake.export_pages = 0
+    with pytest.raises(categories_service.ExportInconsistent):
+        categories_service._fetch_export_once("prod", 1)
+
+    def rename_a_term(page):
+        if page == 2:
+            fake.blogs[1]["terms"][10]["name"] = "Renamed Mid-Export"
+
+    fake.on_export_page = rename_a_term
+    fake.export_pages = 0
+    with pytest.raises(categories_service.ExportInconsistent):
+        categories_service._fetch_export_once("prod", 1)
+
+    # A stable multi-page export costs no extra call: the generation is the check.
+    fake.on_export_page = None
+    fake.export_pages = 0
+    export = categories_service._fetch_export_once("prod", 1)
+    assert len(export["products"]) == export["products_total"] == 7
+    assert fake.export_pages == 3
+
+
+def test_a_broker_without_a_generation_is_checked_by_re_reading_page_one(monkeypatch):
+    rows = [{"term_id": 1, "product_id": p, "sku": f"P{p}"} for p in range(1, 5)]
+    calls = {"n": 0}
+
+    def paged(env, path, method="GET", payload=None):
+        calls["n"] += 1
+        if payload.get("after_product_id") is None:
+            return {"terms": [{"term_id": 1, "slug": "a", "name": "A"}], "products": rows[:2],
+                    "products_total": 4, "next_after": {"term_id": 1, "product_id": 2},
+                    "uncategorized": []}
+        return {"products": rows[2:], "products_total": 4, "next_after": None,
+                "uncategorized": []}
+
+    monkeypatch.setattr(categories_service, "_broker", paged)
+    monkeypatch.setattr(categories_service, "_EXPORT_PAGE_LIMIT", 2)
+    assert len(categories_service.fetch_export("prod", 1)["products"]) == 4
+    assert calls["n"] == 3          # two pages + one re-read of page 1
+
+    def single(env, path, method="GET", payload=None):
+        calls["n"] += 1
+        return {"terms": [{"term_id": 1, "slug": "a", "name": "A"}], "products": rows,
+                "products_total": 4, "next_after": None, "uncategorized": []}
+
+    calls["n"] = 0
+    monkeypatch.setattr(categories_service, "_broker", single)
+    monkeypatch.setattr(categories_service, "_EXPORT_PAGE_LIMIT", 10)
+    assert len(categories_service.fetch_export("prod", 1)["products"]) == 4
+    assert calls["n"] == 1          # nothing to stitch, nothing to re-read
+
+
+def test_products_without_a_category_are_paged_or_the_import_is_refused(ready, monkeypatch):
+    _, fake = ready
+    monkeypatch.setattr(categories_service, "_broker", fake.broker_export)
+    fake.seed(9, "/nelson/", terms=[{"term_id": 90, "slug": "ppe", "name": "PPE"}],
+              products=[], uncategorized=[{"product_id": 901, "sku": "A"},
+                                          {"product_id": 902, "sku": "B"},
+                                          {"product_id": 903, "sku": "C"}])
+    fake.uncategorized_page_size = 1
+    fake.export_pages = 0
+    export = categories_service._fetch_export_once("prod", 9)
+    assert [r["product_id"] for r in export["uncategorized"]] == [901, 902, 903]
+    assert fake.export_pages >= 3
+
+    # An older broker cuts the set off and offers no cursor: refuse rather than
+    # import a copy that would plan and restore only part of the store.
+    fake.uncategorized_pageable = False
+    with pytest.raises(categories_service.BrokerError) as excinfo:
+        categories_service._fetch_export_once("prod", 9)
+    message = str(excinfo.value)
+    assert "1 of 3" in message and "no category" in message
+    assert not isinstance(excinfo.value, categories_service.ExportInconsistent)

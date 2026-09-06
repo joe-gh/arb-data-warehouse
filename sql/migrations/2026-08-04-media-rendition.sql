@@ -2,8 +2,12 @@
 --
 -- canonical_key is always an existing pim.media_object.s3_key. It is not a
 -- foreign key because media_object intentionally maps many source_url rows to
--- the same non-unique s3_key. rendition_file is a sibling basename only; the
--- generator refuses any destination equal to canonical_key.
+-- the same non-unique s3_key. rendition_file is a sibling basename only, and
+-- renditions share the products/<sku>/ prefix with the canonical images, so a
+-- rendition filename can collide with a DIFFERENT source image. The generator
+-- therefore refuses any destination that is a canonical object: its own
+-- canonical_key, a sibling carrying the canonical basename, and any other
+-- s3_key recorded in pim.media_object.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS pim.media_rendition (

@@ -24,7 +24,10 @@ Stages:
 
 Safety: the apply engine re-reads every target first and skips rows whose
 precondition no longer holds; it never deletes products; variant deletes
-additionally require --allow-removals. Every row records its outcome.
+additionally require --allow-removals. A variant delete rechecks the premise
+it was staged on - the sku must still be absent from FDM4 and the live colour
+and size must still match the reviewed sheet - and a set carrying more than
+REMOVAL_CAP removals is refused whole. Every row records its outcome.
 
 Run on the warehouse box as postgres with the key in the environment:
   sudo -u postgres env $(sudo grep PIM_API_KEY /opt/fdm4-extractor/pim.env) \
@@ -118,7 +121,9 @@ def api_call(method, path, key, body=None):
 # the precondition checks read. The numeric *_id is required because item
 # routes are addressed OData-style by internal id: /catalog/variants({id}).
 GET_SELECT = {
-    "variants": "frmt_id,frmt_ref,frmt_colorcode,frmt_colorname",
+    # frmt_sizelabel and frmt_variantname are read so a removal can compare the
+    # live variant against the one the reviewer saw on the sheet.
+    "variants": "frmt_id,frmt_ref,frmt_colorcode,frmt_colorname,frmt_sizelabel,frmt_variantname",
     "products": "prod_id,prod_ref,prod_stat",
 }
 
@@ -143,6 +148,21 @@ def connect():
     connection = psycopg2.connect(dbname=DB_NAME, host=DB_SOCKET)
     connection.autocommit = False
     return connection
+
+
+def fdm4_has_ref(cursor, ref):
+    """True when FDM4 still carries this upc.
+
+    A removal is staged because FDM4 no longer has the item; between the diff
+    and the approved apply the item can come back, and then the premise of the
+    approval is gone. Uses the apply loop's own cursor - a removal batch is
+    capped at REMOVAL_CAP rows, so this is a handful of point lookups.
+    """
+    cursor.execute(
+        'SELECT 1 FROM fdm4.item WHERE upper(btrim("upc-code")) = %s LIMIT 1',
+        ((ref or "").strip().upper(),),
+    )
+    return cursor.fetchone() is not None
 
 
 # --------------------------------------------------------------------------
@@ -264,7 +284,10 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
           FROM wh w
           JOIN pim.api_product p ON upper(btrim(p.style_number)) = w.style_code
          WHERE w.is_active
-           AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant)
+           -- Retired mirror rows are records of what the PIM no longer has;
+           -- counting them here would suppress a legitimate re-create.
+           AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant
+                              WHERE retired_at IS NULL)
         """,
         {"set_id": set_id})
 
@@ -284,8 +307,10 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
               FROM wh w
              WHERE {mill_clause} w.is_active
                AND w.style_code NOT IN
-                   (SELECT upper(btrim(style_number)) FROM pim.api_product WHERE btrim(style_number) <> '')
-               AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant)
+                   (SELECT upper(btrim(style_number)) FROM pim.api_product
+                     WHERE btrim(style_number) <> '' AND retired_at IS NULL)
+               AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant
+                                  WHERE retired_at IS NULL)
              GROUP BY 1
         ), content AS (
             SELECT DISTINCT ON (upper(btrim(sku_parent)))
@@ -435,13 +460,20 @@ def apply_set(set_id, limit, allow_removals):
     if not rows:
         print("nothing approved to apply")
         return
+    # REMOVAL_CAP is the size of a removal batch a person can actually review.
+    # A set that carries more of them is refused whole rather than half-applied.
+    removals = sum(1 for row in rows if row["action"] == "variant_remove")
+    if allow_removals and removals > REMOVAL_CAP:
+        print(f"refusing set {set_id}: {removals} variant removals exceed REMOVAL_CAP"
+              f" ({REMOVAL_CAP}); apply it in smaller batches with --limit")
+        return
     if not enabled:
         print(f"DRY RUN (PIM_PUSH_ENABLED not set): would apply {len(rows)} rows")
     done = failed = skipped = 0
     for row in rows:
         # One bad row must not abort a multi-hour run.
         try:
-            outcome, detail = apply_row(row, key, enabled, allow_removals)
+            outcome, detail = apply_row(row, key, enabled, allow_removals, cursor)
         except Exception as exc:  # noqa: BLE001 - keep the batch moving
             outcome, detail = "failed", f"exception: {exc}"
         if enabled:
@@ -464,7 +496,7 @@ def apply_set(set_id, limit, allow_removals):
 _parent_id_cache = {}
 
 
-def apply_row(row, key, enabled, allow_removals):
+def apply_row(row, key, enabled, allow_removals, cursor):
     action = row["action"]
     after = row["after"] or {}
     if action in ("color_fill", "color_fix"):
@@ -492,6 +524,16 @@ def apply_row(row, key, enabled, allow_removals):
         current = api_get_one("variants", "frmt_ref", row["frmt_ref"], key)
         if current is None:
             return "skipped", "already gone"
+        # The staged premise was "FDM4 no longer has this sku"; recheck it,
+        # and recheck that the live variant is still the one on the sheet.
+        if fdm4_has_ref(cursor, row["frmt_ref"]):
+            return "skipped", "back in FDM4 since diff"
+        before = row["before"] or {}
+        for field in ("frmt_colorname", "frmt_sizelabel"):
+            staged = str(before.get(field) or "").strip()
+            live = str(current.get(field) or "").strip()
+            if staged != live:
+                return "skipped", f"{field} changed since diff ({live!r})"
         if not enabled:
             return "skipped", "dry run"
         status, payload = api_call("DELETE", f"/catalog/variants({current['frmt_id']})", key)

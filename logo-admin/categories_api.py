@@ -849,6 +849,15 @@ def create_run(
     except (DraftError, DraftConflict) as exc:
         raise _draft_errors(exc) from exc
     if body.start:
+        # start() is what records that a person asked for this run (started_at)
+        # - without it a restart would never wake the run, and a run created
+        # with start:false must stay asleep across restarts.
+        try:
+            with database.cursor(write=True, actor=user["user_login"]) as cursor:
+                run = categories_runs.start(cursor, run["run_id"],
+                                            actor=user["user_login"])
+        except (DraftError, DraftConflict) as exc:
+            raise _draft_errors(exc) from exc
         categories_runs.start_run(run["run_id"], actor=user["user_login"])
     return {"run": run}
 

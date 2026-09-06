@@ -29,6 +29,7 @@ from agent_prompt import (  # noqa: F401 - re-exported for callers/tests
     READ_ONLY_INSTRUCTIONS,
     WRITE_STAGING_INSTRUCTIONS,
     build_instructions,
+    screen_names_message,
 )
 
 
@@ -236,6 +237,12 @@ async def run_turn(
     """Stream one turn and return replay material only in the terminal event."""
 
     replay = list(replay_items)
+    # Display names for what is on screen are upstream FDM4 text. They lead the
+    # turn as ordinary untrusted input, so they are counted by the estimate
+    # below and never reach the instructions.
+    names_message = screen_names_message(screen)
+    if names_message is not None:
+        replay.insert(0, names_message)
     emitted_replay: list[dict] = []
     tool_call_count = 0
     total_input_tokens = 0
@@ -248,8 +255,8 @@ async def run_turn(
     ))
     client = None
     writes_enabled = bool(getattr(settings, "agent_writes_enabled", False))
-    # Static knowledge + mode rules, plus one trusted line naming the store the
-    # operator has selected in the UI (validated; never free text).
+    # Static knowledge + mode rules, plus the validated identifiers of the
+    # screen the operator has open. Never free text.
     instructions = build_instructions(
         writes_enabled=writes_enabled,
         screen=screen,

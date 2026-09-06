@@ -1,5 +1,7 @@
 """Operational reads, isolated failures, owner scope, and exact external-store undo."""
 import json
+from pathlib import Path
+import re
 import time
 from uuid import uuid4
 from types import SimpleNamespace
@@ -11,6 +13,8 @@ from fastapi.encoders import jsonable_encoder
 from psycopg2.extras import Json
 
 from authorization import AccessContext
+from categories_api import catmgr_visible
+from config import get_settings
 from db import database
 import queries
 import wp_bridge
@@ -294,7 +298,9 @@ def test_external_sql_policies_already_cover_each_required_list():
     from pathlib import Path
     root=Path(__file__).resolve().parents[2]
     sql=(root/'sql/diagnostics/agent-write-preflight.sql').read_text()
-    assert sql.count("('woo', 'virtual_catalog_store'")==7
+    # The restore policies are generated from database_contract.py, so the
+    # table appears once per pinned column plus its table/order/constraint rows.
+    assert sql.count("('woo', 'virtual_catalog_store'")>=7
     assert 'woo.virtual_catalog_store' in (root/'sql/logo_admin_role.sql').read_text()
 
 
@@ -403,3 +409,43 @@ def test_statement_timeout_bound_never_loosens_an_enclosing_section():
         cursor.execute("SELECT set_config('statement_timeout','0',true)")
         queries._bound_statement_timeout(cursor,20)
         cursor.execute("SELECT current_setting('statement_timeout') AS t"); assert cursor.fetchone()['t']=='20s'
+
+
+@pytest.mark.parametrize('login',[USER,'someone-else'])
+@pytest.mark.parametrize('enabled,listed',[(True,False),(True,True),(False,True)])
+def test_diagnostics_routes_use_the_editor_visibility_rule(client_as,mapped_store,monkeypatch,login,enabled,listed):
+    _admin("INSERT INTO catmgr.audit_log(actor,action,entity,entity_key,detail) VALUES ('categorizer','changed','term','3',%s)",(Json({'blog_id':mapped_store}),))
+    _admin("INSERT INTO catmgr.snapshot(env,blog_id,version) VALUES ('dev',%s,2)",(mapped_store,))
+    _admin("INSERT INTO catmgr.wp_uncategorized_product(env,blog_id,product_id,sku,snapshot_version) VALUES ('dev',%s,1,'SKU',2)",(mapped_store,))
+    for key,value in {'CATMGR_DEV_URL':'https://category.example.test','CATMGR_DEV_USER':'fixture',
+                      'CATMGR_DEV_APP_PASSWORD':'fixture-password'}.items():
+        monkeypatch.setenv(key,value)
+    monkeypatch.setenv('CATMGR_ENABLED','true' if enabled else 'false')
+    monkeypatch.setenv('CATMGR_VIEW_USERS',USER if listed else '')
+    get_settings.cache_clear()
+    expected = catmgr_visible(login)
+    assert expected is (enabled and (not listed or login==USER)), 'the canonical rule itself changed'
+    client = client_as(login)
+    history = client.get('/api/change-history',params={'store':'S_TEST'})
+    assert history.status_code==200,history.text
+    assert ('catmgr.audit_log' in {r['source'] for r in history.json()['rows']}) is expected
+    issues = client.get('/api/issues',params={'store':'S_TEST','checks':'uncategorized_products'})
+    assert issues.status_code==200,issues.text
+    assert issues.json()['checks'][0]['available'] is expected
+
+
+def test_only_the_editor_and_the_tool_registry_state_the_visibility_rule():
+    # One predicate, two places: categories_api.catmgr_visible and the
+    # settings-shaped copy the tool registry hands to read tools. config.py may
+    # name the setting because it parses it; nothing else may touch the list.
+    root = Path(queries.__file__).resolve().parent
+    membership = re.compile(r'in\s+\S*catmgr_view_users')
+    named, tested = [], []
+    for path in sorted(root.glob('*.py')):
+        source = path.read_text()
+        if membership.search(source):
+            tested.append(path.name)
+        if 'catmgr_view_users' in source:
+            named.append(path.name)
+    assert tested==['categories_api.py'],f'the rule is restated in {tested}'
+    assert named==['categories_api.py','config.py','tool_registry.py'],named

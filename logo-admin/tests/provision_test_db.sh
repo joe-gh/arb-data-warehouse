@@ -115,12 +115,27 @@ fi
 # (sql/pim_schema.sql, idempotent); later migrations assume it exists.
 psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 -f "$repo_root/sql/pim_schema.sql"
 
+# sql/migrations/APPLY_ORDER, not lexical order: two pairs of same-day
+# migrations depend on each other the other way round, and the second pair
+# decides the physical column order database_contract.py pins. The manifest
+# must name exactly what is on disk, or the harness would silently skip a
+# migration the tests then fail on.
+migrations_dir="$repo_root/sql/migrations"
+manifest="$migrations_dir/APPLY_ORDER"
+[[ -f "$manifest" ]] || {
+  echo "Missing migration manifest: $manifest" >&2
+  exit 2
+}
+listed_migrations="$(grep -v '^[[:space:]]*$' "$manifest" | LC_ALL=C sort)"
+present_migrations="$(cd "$migrations_dir" && ls -1 ./*.sql | sed 's#^\./##' | LC_ALL=C sort)"
+if [[ "$listed_migrations" != "$present_migrations" ]]; then
+  echo "APPLY_ORDER does not match sql/migrations/" >&2
+  exit 2
+fi
 while IFS= read -r migration; do
-  psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 -f "$migration"
-done < <(
-  find "$repo_root/sql/migrations" -maxdepth 1 -type f -name '*.sql' -print \
-    | LC_ALL=C sort
-)
+  [[ -n "$migration" ]] || continue
+  psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 -f "$migrations_dir/$migration"
+done < "$manifest"
 psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 \
   -v repull_function_sha256="$repull_function_sha256" \
   -f "$repo_root/sql/logo_admin_role.sql"

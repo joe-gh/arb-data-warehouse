@@ -14,6 +14,8 @@ the two ever disagree the integration script (tests/integration/) against a
 real WordPress is the tie-breaker.
 """
 
+import binascii
+import hashlib
 from typing import Any, Dict, List, Optional, Set
 
 import categories_service
@@ -21,6 +23,12 @@ from db import database
 
 
 TEMP_PREFIX = "catmgrtmp-"
+# The broker's own limits (arb-category-apply.php), mirrored so the engine
+# meets the same refusals here as on a real site.
+BROKER_VERSION = 3
+EXPORT_PRODUCTS_MAX = 20000
+RESTORE_ROWS_MAX = 6000
+RESTORE_REDIRECTS_MAX = 2000
 
 
 class FakeWordPress:
@@ -32,10 +40,21 @@ class FakeWordPress:
         self.redirection_available = True
         self.redirect_group_id = 1
         self.redirects: Dict[str, Dict[str, Any]] = {}     # old_path -> rule
+        self.next_redirect_id = 1
         self.site_options: Dict[str, Any] = {"unspsc_category_mapping": []}
         self.es_queue: List[Any] = []
         self.status_overrides: Dict[str, Any] = {}
         self.record_probes = False
+        # Durable job rows, keyed exactly like the broker's job table
+        # (request_id:phase[:page]); /job answers from here and a phase whose
+        # key already converged replays its stored body.
+        self.jobs: Dict[str, Dict[str, Any]] = {}
+        # Paging knobs for the /export stand-in.
+        self.export_pages = 0
+        self.on_export_page = None
+        self.uncategorized_page_size = EXPORT_PRODUCTS_MAX
+        # A pre-v3 broker cuts the uncategorized set off with no cursor.
+        self.uncategorized_pageable = True
 
     # ------------------------------------------------------------ seeding
 
@@ -86,28 +105,131 @@ class FakeWordPress:
 
     # ------------------------------------------------------------ reads
 
+    def export_generation(self, blog_id: int) -> str:
+        """The broker's state digest: md5 of the five integers
+        count|sum|xor of crc32(term_taxonomy_id-object_id) and
+        count|xor of crc32(term_id|slug|name|parent|description).
+
+        WordPress has a separate term_taxonomy_id per term; this fake has one
+        id per term, so it keys the membership half on term_id. Only equality
+        between two pages of one export matters."""
+
+        blog = self.blogs[blog_id]
+        rows = [(tid, pid) for pid, p in blog["products"].items()
+                for tid in p["term_ids"]]
+        checksum = 0
+        parity = 0
+        for tid, pid in rows:
+            value = binascii.crc32(f"{tid}-{pid}".encode("utf-8"))
+            checksum += value
+            parity ^= value
+        term_parity = 0
+        for tid, t in blog["terms"].items():
+            term_parity ^= binascii.crc32(
+                f"{tid}|{t['slug']}|{t['name']}|{t['parent']}|{t['description']}"
+                .encode("utf-8")
+            )
+        body = "|".join(str(n) for n in (len(rows), checksum, parity,
+                                         len(blog["terms"]), term_parity))
+        return hashlib.md5(body.encode("utf-8"), usedforsecurity=False).hexdigest()
+
     def export(self, env: str, blog_id: int) -> Dict[str, Any]:
         blog = self.blogs[blog_id]
         terms = [{"term_id": tid, **{k: v for k, v in t.items() if k != "created_by_run"}}
                  for tid, t in sorted(blog["terms"].items())]
-        products = [{"term_id": tid, "product_id": pid, "sku": p["sku"]}
-                    for pid, p in sorted(blog["products"].items())
-                    for tid in sorted(p["term_ids"])]
-        uncategorized = [{"product_id": pid, "sku": sku}
-                         for pid, sku in sorted(blog["uncategorized"].items())]
+        # Membership rows come back in (term_id, product_id) order, the order
+        # the broker's keyset paging walks.
+        products = sorted(
+            ({"term_id": tid, "product_id": pid, "sku": p["sku"]}
+             for pid, p in blog["products"].items() for tid in p["term_ids"]),
+            key=lambda r: (r["term_id"], r["product_id"]),
+        )
+        uncategorized = {pid: sku for pid, sku in blog["uncategorized"].items()}
         for pid, p in blog["products"].items():
-            if not p["term_ids"] and pid not in blog["uncategorized"]:
-                uncategorized.append({"product_id": pid, "sku": p["sku"]})
+            if not p["term_ids"] and pid not in uncategorized:
+                uncategorized[pid] = p["sku"]
+        uncategorized_rows = [{"product_id": pid, "sku": sku}
+                              for pid, sku in sorted(uncategorized.items())]
         return {
-            "broker_version": 2, "blog_id": blog_id, "blog_path": blog["path"],
+            "broker_version": BROKER_VERSION, "blog_id": blog_id,
+            "blog_path": blog["path"],
+            "export_generation": self.export_generation(blog_id),
             "terms": terms, "products": products, "products_total": len(products),
-            "next_after": None, "uncategorized": uncategorized,
+            "next_after": None, "uncategorized": uncategorized_rows,
+            "uncategorized_total": len(uncategorized_rows),
+            "uncategorized_truncated": False, "next_uncategorized_after": None,
             "site_options": dict(self.site_options) if blog_id == 1 else {},
+        }
+
+    def broker_export(self, env: str, path: str, method: str = "GET",
+                      payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """One /export PAGE, the way the broker answers one. Stands in for
+        categories_service._broker so the engine's paging, its generation
+        fence and the uncategorized cursor are all exercised."""
+
+        assert path == "/export", path
+        payload = dict(payload or {})
+        blog_id = int(payload.get("blog_id") or 0)
+        if blog_id not in self.blogs:
+            raise categories_service.BrokerError("Unknown or archived blog.", 404)
+        self.export_pages += 1
+        if self.on_export_page is not None:
+            self.on_export_page(self.export_pages)
+        full = self.export(env, blog_id)
+        generation = full["export_generation"]
+        expected = str(payload.get("expected_generation") or "")
+        if expected and expected != generation:
+            raise categories_service.BrokerError(
+                "arb_catmgr_export_moved: The live categories changed while the"
+                " export was being read; re-import", 409)
+        limit = int(payload.get("products_limit") or 0)
+        if limit < 1 or limit > EXPORT_PRODUCTS_MAX:
+            limit = EXPORT_PRODUCTS_MAX
+        rows = full["products"]
+        keyset = (payload.get("after_term_id") is not None
+                  or payload.get("after_product_id") is not None)
+        offset = max(0, int(payload.get("products_offset") or 0))
+        if keyset:
+            after = (int(payload.get("after_term_id") or 0),
+                     int(payload.get("after_product_id") or 0))
+            page = [r for r in rows
+                    if (r["term_id"], r["product_id"]) > after][:limit]
+        else:
+            page = rows[offset:offset + limit]
+        last = ({"term_id": page[-1]["term_id"], "product_id": page[-1]["product_id"]}
+                if page else None)
+
+        uncategorized: List[Dict[str, Any]] = []
+        uncat_total = None
+        uncat_truncated = False
+        next_uncat = None
+        uncat_paging = payload.get("after_uncategorized_id") is not None
+        if uncat_paging or (payload.get("include_uncategorized")
+                            and not keyset and offset == 0):
+            after_uncat = int(payload.get("after_uncategorized_id") or 0)
+            uncat_limit = self.uncategorized_page_size
+            all_uncat = full["uncategorized"]
+            uncat_total = len(all_uncat)
+            uncategorized = [r for r in all_uncat
+                             if r["product_id"] > after_uncat][:uncat_limit]
+            uncat_truncated = uncat_total > len(uncategorized)
+            if self.uncategorized_pageable and len(uncategorized) >= uncat_limit:
+                next_uncat = uncategorized[-1]["product_id"]
+        return {
+            **full,
+            "products": page,
+            "products_offset": offset,
+            "next_after": last if len(page) >= limit else None,
+            "uncategorized": uncategorized,
+            "uncategorized_total": uncat_total,
+            "uncategorized_truncated": uncat_truncated,
+            "next_uncategorized_after": next_uncat,
         }
 
     def status(self, env: str) -> Dict[str, Any]:
         base = {
-            "broker_version": 2, "freeze": True, "redirection_active": self.redirection_available,
+            "broker_version": BROKER_VERSION, "freeze": True,
+            "redirection_active": self.redirection_available,
             "redirect_group_id": self.redirect_group_id if self.redirection_available else 0,
             "rocket_present": False, "durable_jobs": True, "avne_available": True,
             "unspsc_available": True, "job_table": True, "wp_version": "6.9",
@@ -121,7 +243,14 @@ class FakeWordPress:
         if path == "/job":
             if self.record_probes:
                 self.calls.append((env, path, payload))
-            raise categories_service.BrokerError("No job with that key.", 404)
+            job = self.jobs.get(str(payload.get("key") or ""))
+            if job is None:
+                raise categories_service.BrokerError("No job with that key.", 404)
+            return {"ok": True,
+                    "job": {"key": job["key"], "phase": job["phase"],
+                            "blog_id": job["blog_id"], "status": job["status"],
+                            "heartbeat_age": 0, "stale": False, "progress": None},
+                    "result": job["result"], "error": job["error"]}
         self.calls.append((env, path, payload))
         if path in self.fail_on:
             raise categories_service.BrokerError(f"boom on {path}", 503)
@@ -140,7 +269,55 @@ class FakeWordPress:
         }.get(path)
         if handler is None:
             raise AssertionError(f"unexpected broker path {path}")
-        return handler(int(payload["blog_id"]), blog, payload)
+        key = self.job_key(path, payload)
+        stored = self.jobs.get(key) if key else None
+        if stored is not None and stored["status"] == "done":
+            # job_open replays a key that already converged instead of running
+            # the phase twice.
+            body = dict(stored["result"]) if isinstance(stored["result"], dict) else {"ok": True}
+            body["job"] = {"key": key, "phase": stored["phase"], "status": "done",
+                           "replayed": True}
+            return body
+        return self.record_job(path, payload,
+                               handler(int(payload["blog_id"]), blog, payload))
+
+    # ------------------------------------------------------------ durable jobs
+
+    @staticmethod
+    def job_phase(path: str, payload: Dict[str, Any]) -> str:
+        phase = path.strip("/")
+        if phase == "restore":
+            return "restore-" + (str(payload.get("phase") or "") or "all")
+        return phase
+
+    def job_key(self, path: str, payload: Dict[str, Any]) -> Optional[str]:
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            return None
+        key = f"{request_id[:64]}:{self.job_phase(path, payload)}"
+        page = payload.get("page")
+        if page is not None and page != "":
+            key += f":{int(page)}"
+        return key
+
+    def record_job(self, path: str, payload: Dict[str, Any], result: Any) -> Any:
+        """File the durable row the broker keeps for one phase call. A body
+        that reports ok=false is stored FAILED with its report, so a retry
+        re-runs the phase instead of replaying the refusal for ever."""
+
+        key = self.job_key(path, payload)
+        if not key:
+            return result
+        failed = isinstance(result, dict) and result.get("ok") is False
+        self.jobs[key] = {
+            "key": key, "phase": self.job_phase(path, payload),
+            "blog_id": int(payload.get("blog_id") or 0),
+            "status": "failed" if failed else "done",
+            "result": result,
+            "error": (str(result.get("message") or "reported refusals")
+                      if failed else None),
+        }
+        return result
 
     # ------------------------------------------------------------ helpers
 
@@ -158,6 +335,25 @@ class FakeWordPress:
         if not term["parked_from"]:
             term["parked_from"] = term["slug"]
         term["slug"] = f"{TEMP_PREFIX}{tid}"
+
+    def _next_redirect_id(self):
+        value = self.next_redirect_id
+        self.next_redirect_id += 1
+        return value
+
+    def _redirect_prior(self, old_path):
+        """One journal entry: what the rule at this URL was before finalize."""
+        entry = {"old_path": old_path, "present": False,
+                 "group_id": self.redirect_group_id}
+        existing = self.redirects.get(old_path)
+        if old_path and existing and self.redirection_available and self.redirect_group_id > 0:
+            entry.update({
+                "present": True, "id": int(existing.get("id") or 0),
+                "url": old_path, "action_data": existing["new_path"],
+                "action_code": int(existing["code"]), "action_type": "url",
+                "status": "enabled" if existing["enabled"] else "disabled",
+            })
+        return entry
 
     def _rewrite_unspsc(self, renames, merges):
         mapping = self.site_options.get("unspsc_category_mapping") or []
@@ -346,7 +542,12 @@ class FakeWordPress:
             deleted += 1
         created = []
         failed = []
+        prior: List[Dict[str, Any]] = []
         if blog_id == 1 and payload.get("redirects"):
+            # What every planned path looked like BEFORE the first write: the
+            # journal a restore puts back from.
+            for r in payload["redirects"]:
+                prior.append(self._redirect_prior(str(r.get("old_path") or "")))
             for r in payload["redirects"]:
                 if not self.redirection_available:
                     failed.append({"old_path": r["old_path"], "reason": "redirection_unavailable"})
@@ -359,10 +560,13 @@ class FakeWordPress:
                     created.append({"old_path": r["old_path"], "new_path": r["new_path"], "existing": True})
                     continue
                 if existing:
+                    existing.setdefault("id", self._next_redirect_id())
                     existing.update({"new_path": r["new_path"], "code": 301, "enabled": True})
                     created.append({"old_path": r["old_path"], "new_path": r["new_path"], "updated": True})
                     continue
-                self.redirects[r["old_path"]] = {"new_path": r["new_path"], "code": 301, "enabled": True}
+                self.redirects[r["old_path"]] = {"id": self._next_redirect_id(),
+                                                 "new_path": r["new_path"],
+                                                 "code": 301, "enabled": True}
                 created.append({"old_path": r["old_path"], "new_path": r["new_path"]})
         rewritten = 0
         if blog_id == 1:
@@ -371,19 +575,34 @@ class FakeWordPress:
         return {"ok": refused == 0 and not failed, "deleted": deleted, "delete_report": report,
                 "refused_deletes": refused, "recounted_terms": len(blog["terms"]),
                 "es_processed": None, "redirects_created": created, "redirects_failed": failed,
+                "redirects_prior": prior, "redirects_prior_count": len(prior),
                 "unspsc_rewritten": rewritten}
 
     def _restore(self, blog_id, blog, payload):
         snapshot = payload.get("snapshot") or {}
         terms = snapshot.get("terms") or []
         products = snapshot.get("products") or []
+        # Products that had NO category when the snapshot was taken, and the
+        # journal of what finalize did to the Redirection rules.
+        uncategorized = snapshot.get("uncategorized") or []
+        snapshot_redirects = snapshot.get("redirects") or []
         phase = payload.get("phase") or ""
+        do_terms = phase in ("", "terms")
+        do_memberships = phase in ("", "memberships")
+        do_finalize = phase in ("", "finalize")
+        if do_memberships and len(products) + len(uncategorized) > RESTORE_ROWS_MAX:
+            raise categories_service.BrokerError(
+                f"Too many membership rows in one restore page (max"
+                f" {RESTORE_ROWS_MAX}); page the snapshot.", 400)
+        if len(snapshot_redirects) > RESTORE_REDIRECTS_MAX:
+            raise categories_service.BrokerError(
+                f"Too many redirect rows in one restore (max {RESTORE_REDIRECTS_MAX}).", 400)
         failures: List[Dict[str, Any]] = []
         id_to_slug = {int(t["term_id"]): t["slug"] for t in terms}
         slug_to_id: Dict[str, int] = {}
         created = updated = 0
         options_restored = 0
-        if phase in ("", "terms"):
+        if do_terms:
             options = snapshot.get("site_options") or {}
             if blog_id == 1 and isinstance(options.get("unspsc_category_mapping"), list):
                 self.site_options["unspsc_category_mapping"] = [dict(e) for e in options["unspsc_category_mapping"]]
@@ -442,7 +661,7 @@ class FakeWordPress:
                     "created": created, "updated": updated, "options_restored": options_restored,
                     "failures": failures}
         removed = 0
-        if phase in ("", "finalize"):
+        if do_finalize:
             keep = set(slug_to_id)
             for tid in list(blog["terms"]):
                 if blog["terms"][tid]["slug"] not in keep and blog["terms"][tid]["slug"] != "uncategorized":
@@ -452,17 +671,33 @@ class FakeWordPress:
                             child["parent"] = parent
                     del blog["terms"][tid]
                     removed += 1
+        # Products the snapshot recorded as uncategorized are seeded with an
+        # empty set FIRST, so one the run assigned to a category is cleared
+        # again; a membership row for the same product overwrites that seed.
         by_product: Dict[int, List[int]] = {}
+        skip_product: Set[int] = set()
+        for u in uncategorized:
+            pid = int((u.get("product_id") if isinstance(u, dict) else u) or 0)
+            if pid >= 1:
+                by_product[pid] = []
         for p in products:
-            pid = int(p["product_id"])
-            slug = id_to_slug.get(int(p["term_id"]))
+            pid = int(p.get("product_id") or 0)
+            if pid < 1:
+                continue
+            slug = id_to_slug.get(int(p.get("term_id") or 0))
             if slug is None or slug not in slug_to_id:
-                failures.append({"product_id": pid, "term_id": p["term_id"], "step": "membership_term_missing"})
-                by_product.setdefault(pid, [])
+                # Writing a partial set here would strip the categories the
+                # snapshot DID bring back: report it and leave the product be.
+                failures.append({"product_id": pid, "term_id": p.get("term_id"),
+                                 "step": "membership_term_missing"})
+                by_product.pop(pid, None)
+                skip_product.add(pid)
+                continue
+            if pid in skip_product:
                 continue
             by_product.setdefault(pid, []).append(slug_to_id[slug])
         restored = 0
-        if phase in ("", "memberships"):
+        if do_memberships:
             for pid, tids in by_product.items():
                 product = blog["products"].get(pid)
                 if product is None:
@@ -477,6 +712,45 @@ class FakeWordPress:
             return {"ok": not failures, "phase": "memberships", "products_restored": restored,
                     "products_expected": len(by_product), "products_offset": payload.get("products_offset"),
                     "failures": failures}
-        return {"ok": not failures, "phase": phase or "all", "terms": len(slug_to_id), "terms_expected": len(terms),
-                "products_restored": restored, "products_expected": len(by_product), "terms_removed": removed,
-                "options_restored": options_restored, "failures": failures}
+        redirects_restored = 0
+        redirects_removed = 0
+        if do_finalize and blog_id == 1 and snapshot_redirects:
+            for r in snapshot_redirects:
+                if not isinstance(r, dict):
+                    continue
+                old_path = str(r.get("old_path") or "")
+                group_id = int(r.get("group_id") or 0)
+                if not self.redirection_available:
+                    failures.append({"old_path": old_path, "step": "redirection_unavailable"})
+                    continue
+                if not old_path or group_id < 1:
+                    continue          # finalize never wrote this row either
+                if not r.get("present"):
+                    # Nothing was here before the run: the rule now at this URL
+                    # is the run's own and must go.
+                    if self.redirects.pop(old_path, None) is not None:
+                        redirects_removed += 1
+                    if old_path in self.redirects:
+                        failures.append({"old_path": old_path, "step": "redirect_delete",
+                                         "error": "1 rule(s) still at this URL"})
+                    continue
+                action_data = str(r.get("action_data") or "")
+                action_code = int(r.get("action_code") or 301)
+                enabled = str(r.get("status") or "enabled") == "enabled"
+                self.redirects[old_path] = {
+                    "id": int(r.get("id") or 0) or self._next_redirect_id(),
+                    "new_path": action_data, "code": action_code, "enabled": enabled,
+                }
+                check = self.redirects[old_path]
+                if (check["new_path"] != action_data or check["code"] != action_code
+                        or check["enabled"] != enabled):
+                    failures.append({"old_path": old_path, "step": "redirect_restore",
+                                     "error": "rule did not go back to the journaled state"})
+                    continue
+                redirects_restored += 1
+        return {"ok": not failures, "phase": phase or "all", "terms": len(slug_to_id),
+                "terms_expected": len(terms), "products_restored": restored,
+                "products_expected": len(by_product), "terms_removed": removed,
+                "options_restored": options_restored,
+                "redirects_restored": redirects_restored,
+                "redirects_removed": redirects_removed, "failures": failures}

@@ -11,7 +11,9 @@ Scope: only variants recorded as applied variant_create rows in
 pim.push_change_row whose mirrored frmt_variantname is still empty, so the
 run is idempotent — re-running after the hourly pull_pim refresh picks up
 only what is still missing. Pre-existing blank-name variants from the
-original Woo import are deliberately NOT touched.
+original Woo import are deliberately NOT touched. Every PATCH is preceded by a
+live read of the variant, so a name someone typed after the worklist was taken
+is skipped rather than overwritten.
 
 Dry-run by default; --apply plus PIM_PUSH_ENABLED=1 writes.
 """
@@ -25,7 +27,7 @@ import psycopg2
 import psycopg2.extras
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from push_pim import DB_NAME, DB_SOCKET, api_call, api_key  # noqa: E402
+from push_pim import DB_NAME, DB_SOCKET, api_call, api_get_one, api_key  # noqa: E402
 
 WORKLIST_SQL = """
     WITH pushed AS (
@@ -47,8 +49,25 @@ WORKLIST_SQL = """
       LEFT JOIN pim.api_product p ON btrim(p.prod_ref) = btrim(v.prod_ref)
      WHERE COALESCE(btrim(v.payload ->> 'frmt_variantname'), '') = ''
        AND NULLIF(btrim(v.payload ->> 'frmt_id'), '') IS NOT NULL
+       AND v.retired_at IS NULL
      ORDER BY v.frmt_ref
 """
+
+
+def skip_reason(live, row):
+    """Why this variant must not be PATCHed, or None to go ahead.
+
+    The worklist comes from the mirror, which lags the PIM by up to an hour,
+    and a full run takes hours more. Someone can type a name in that window;
+    a blanket PATCH would wipe it. So the live object decides.
+    """
+    if live is None:
+        return "gone from the PIM since the worklist was read"
+    if str(live.get("frmt_variantname") or "").strip():
+        return "already named in the PIM"
+    if str(live.get("frmt_id") or "").strip() != str(row["frmt_id"] or "").strip():
+        return "frmt_id changed since the worklist was read"
+    return None
 
 
 def main(argv=None):
@@ -79,16 +98,25 @@ def main(argv=None):
         return 0
 
     key = api_key()
-    done = failed = 0
+    done = failed = skipped = 0
     started = time.time()
     for index, row in enumerate(rows, 1):
+        reason = None
+        status, payload = 0, ""
         try:
-            status, payload = api_call(
-                "PATCH", f"/catalog/variants({row['frmt_id']})", key,
-                {"frmt_variantname": row["new_name"]})
+            # Read the live variant first: the mirror the worklist came from
+            # can be an hour stale, and this run takes hours more.
+            reason = skip_reason(api_get_one("variants", "frmt_ref", row["frmt_ref"], key), row)
+            if reason is None:
+                status, payload = api_call(
+                    "PATCH", f"/catalog/variants({row['frmt_id']})", key,
+                    {"frmt_variantname": row["new_name"]})
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the run
-            status, payload = 0, f"exception: {exc}"
-        if 200 <= status < 300:
+            reason, status, payload = None, 0, f"exception: {exc}"
+        if reason is not None:
+            skipped += 1
+            print(f"SKIP {row['frmt_ref']} ({row['frmt_id']}): {reason}", flush=True)
+        elif 200 <= status < 300:
             done += 1
         else:
             failed += 1
@@ -96,9 +124,9 @@ def main(argv=None):
                   flush=True)
         if index % 250 == 0 or index == len(rows):
             elapsed = int(time.time() - started)
-            print(f"{index}/{len(rows)} ok={done} failed={failed} elapsed={elapsed}s",
+            print(f"{index}/{len(rows)} ok={done} skipped={skipped} failed={failed} elapsed={elapsed}s",
                   flush=True)
-    print(f"finished: ok={done} failed={failed}")
+    print(f"finished: ok={done} skipped={skipped} failed={failed}")
     return 0 if failed == 0 else 1
 
 

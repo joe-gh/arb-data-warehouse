@@ -18,6 +18,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg2.extras import Json, execute_values
 
+from snapshots import dumps_exact
+
+
+def _json(value):
+    """jsonb read back through the pool decodes numbers as Decimal; write them
+    back as numbers, never as quoted strings."""
+    return Json(value, dumps=dumps_exact)
+
 from auth import WordPressRequestError, wordpress_json_request
 from config import CATMGR_ENVS, CatmgrTarget, get_settings
 
@@ -35,7 +43,7 @@ def record_audit(cursor, *, actor: str, action: str, entity: str,
         INSERT INTO catmgr.audit_log (actor, action, entity, entity_key, detail)
         VALUES (%s, %s, %s, %s, %s)
         """,
-        (actor[:100], action, entity, entity_key, Json(detail)),
+        (actor[:100], action, entity, entity_key, _json(detail)),
     )
 
 
@@ -119,16 +127,52 @@ class ExportInconsistent(BrokerError):
     """Two pages of one export disagreed (the live data moved underneath)."""
 
 
+def _export_page(env: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """One /export call. The broker's 409 for a moved generation is the same
+    condition as a page that disagrees with page 1, so it is raised as
+    ExportInconsistent and the whole export is re-pulled."""
+
+    try:
+        page = _broker(env, "/export", method="POST", payload=payload)
+    except BrokerError as exc:
+        if getattr(exc, "status", 0) == 409 and "arb_catmgr_export_moved" in str(exc):
+            raise ExportInconsistent(
+                f"blog {payload.get('blog_id')}: the categories changed"
+                f" mid-export ({exc})"
+            ) from exc
+        raise
+    if not isinstance(page, dict):
+        raise BrokerError("WordPress returned an unexpected /export page")
+    return page
+
+
 def _fetch_export_once(env: str, blog_id: int) -> Dict[str, Any]:
-    first = _broker(env, "/export", method="POST", payload={
+    first_payload = {
         "blog_id": int(blog_id),
         "products_offset": 0,
         "products_limit": _EXPORT_PAGE_LIMIT,
         "include_uncategorized": True,
-    })
-    if not isinstance(first, dict) or not isinstance(first.get("terms"), list):
+    }
+    first = _export_page(env, first_payload)
+    if not isinstance(first.get("terms"), list):
         raise BrokerError("WordPress returned an unexpected /export response")
-    products = list(first.get("products") or [])
+    # Broker v3 stamps every page with a digest of the blog's whole category
+    # state. Sent back as expected_generation it makes WordPress refuse a page
+    # that no longer belongs with page 1 (counts alone cannot see an edit that
+    # keeps the row count).
+    generation = str(first.get("export_generation") or "")
+
+    def check_generation(page: Dict[str, Any]) -> None:
+        seen = str(page.get("export_generation") or "")
+        if generation and seen and seen != generation:
+            raise ExportInconsistent(
+                f"blog {blog_id}: the categories changed mid-export"
+                f" (generation {generation} -> {seen})"
+            )
+
+    first_products = list(first.get("products") or [])
+    first_uncategorized = list(first.get("uncategorized") or [])
+    products = list(first_products)
     total = int(first.get("products_total") or len(products))
     keyset = "next_after" in first          # broker v2: keyset pages + counts
     cursor = first.get("next_after")
@@ -155,9 +199,10 @@ def _fetch_export_once(env: str, blog_id: int) -> Dict[str, Any]:
                 "products_offset": len(products),
                 "products_limit": _EXPORT_PAGE_LIMIT,
             }
-        page = _broker(env, "/export", method="POST", payload=payload)
-        if not isinstance(page, dict):
-            raise BrokerError("WordPress returned an unexpected /export page")
+        if generation:
+            payload["expected_generation"] = generation
+        page = _export_page(env, payload)
+        check_generation(page)
         if keyset and int(page.get("products_total") or 0) != total:
             raise ExportInconsistent(
                 f"blog {blog_id}: membership count changed mid-export"
@@ -179,8 +224,71 @@ def _fetch_export_once(env: str, blog_id: int) -> Dict[str, Any]:
             f"blog {blog_id}: /export delivered {len(products)} rows"
             f" ({len(unique)} unique) but declared {total}"
         )
+
+    # Products with no category at all have their own cursor (they used to
+    # stop silently at the page cap, hiding them from planning AND restore).
+    uncategorized = list(first_uncategorized)
+    uncat_total = first.get("uncategorized_total")
+    uncat_after = first.get("next_uncategorized_after")
+    uncat_pages = 1
+    while uncat_after is not None:
+        if uncat_pages >= _EXPORT_MAX_PAGES:
+            raise BrokerError(
+                f"blog {blog_id}: /export uncategorized paging exceeded"
+                f" {_EXPORT_MAX_PAGES} pages"
+            )
+        payload = {
+            "blog_id": int(blog_id),
+            "include_uncategorized": True,
+            "after_uncategorized_id": int(uncat_after),
+            # The membership rows of a continuation page are not used; ask for
+            # the smallest one WordPress will build.
+            "products_limit": 1,
+        }
+        if generation:
+            payload["expected_generation"] = generation
+        page = _export_page(env, payload)
+        check_generation(page)
+        chunk = list(page.get("uncategorized") or [])
+        if not chunk:
+            # A page that happened to fill exactly still carries a cursor; the
+            # empty page after it is the end. The total check below is what
+            # decides whether the set really arrived.
+            break
+        uncategorized.extend(chunk)
+        uncat_after = page.get("next_uncategorized_after")
+        uncat_pages += 1
+    if uncat_total is not None and len(uncategorized) < int(uncat_total):
+        # An older broker cannot page this set: refuse rather than import a
+        # copy that would plan and restore only part of the store. Not an
+        # ExportInconsistent - retrying cannot make it complete.
+        raise BrokerError(
+            f"blog {blog_id}: WordPress listed only {len(uncategorized)} of"
+            f" {int(uncat_total)} products that have no category, so the copy"
+            " would be incomplete - ask a developer to update the WordPress"
+            " side before importing this store",
+            500,
+        )
+
+    if (pages > 1 or uncat_pages > 1) and not generation:
+        # An older broker has no generation to fence with: re-read page 1 and
+        # check that the terms, its own membership rows and its uncategorized
+        # rows are still the ones the walk started from.
+        before = export_fingerprint(
+            first.get("terms") or [], first_products, first_uncategorized,
+        )
+        again = _export_page(env, first_payload)
+        after = export_fingerprint(
+            again.get("terms") or [], again.get("products") or [],
+            again.get("uncategorized") or [],
+        )
+        if before != after:
+            raise ExportInconsistent(
+                f"blog {blog_id}: the categories changed between the first and"
+                " the last page of the export"
+            )
     first["products"] = products
-    first.setdefault("uncategorized", [])
+    first["uncategorized"] = uncategorized
     return first
 
 
@@ -188,7 +296,8 @@ def fetch_export(env: str, blog_id: int) -> Dict[str, Any]:
     """Pull one blog's terms + memberships (+ uncategorized products).
 
     Pages are keyset-ordered by (term_id, product_id) and every page repeats
-    the membership count: a change underneath the export is detected and the
+    the membership count AND (broker v3) the generation digest of the blog's
+    whole category state: a change underneath the export is detected and the
     whole export is re-pulled, so an imported snapshot is never a torn read.
     The final unique row count must equal the declared count."""
 

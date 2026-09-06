@@ -105,7 +105,7 @@ RESTORE_COLUMN_CONTRACTS = {
     },
     "woo.virtual_catalog_store": {
         "fdm4_store": ("text", False, None), "catalog_id": ("text", False, None),
-        "note": ("text", False, "''"), "created_at": ("timestamp with time zone", False, "now"),
+        "note": ("text", False, "''"), "created_at": ("timestamp with time zone", False, "now()"),
         "stock_override": ("numeric", True, None),
     },
     "logo.assignment": {
@@ -124,7 +124,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "image_url": ("text", False, "''"),
         "active": ("boolean", False, "true"),
         "updated_by": ("text", False, "'seed'"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         "option_row": ("integer", False, "1"),
         "name_override": ("text", True, None),
         "row_version": ("bigint", False, None),
@@ -135,7 +135,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "enabled": ("boolean", False, "true"),
         "allows_none": ("boolean", False, "false"),
         "updated_by": ("text", False, "''"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         # format_type() spells the column text[]; the catalog default is
         # '{}'::text[], which _normalized_sql_expression reduces to '{}'[]
         # (the ::text cast is stripped, the array brackets are kept).
@@ -145,7 +145,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "fdm4_store": ("text", False, None),
         "tier_name": ("text", False, None),
         "note": ("text", False, "''"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
     },
     # Single-row tables the assistant edits through the same exact undo path.
     "logo.display_name": {
@@ -156,7 +156,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "locked": ("boolean", False, "false"),
         "uses": ("integer", False, "0"),
         "fdm4_description": ("text", True, None),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         "updated_by": ("text", True, None),
         "fdm4_store": ("text", False, "''"),
     },
@@ -166,7 +166,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "light_dark": ("text", False, None),
         "source": ("text", False, "'ai'"),
         "confidence": ("numeric", True, None),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         "updated_by": ("text", False, "''"),
     },
     "woo.stock_override": {
@@ -175,7 +175,7 @@ RESTORE_COLUMN_CONTRACTS = {
         "note": ("text", False, "''"),
         "active": ("boolean", False, "true"),
         "updated_by": ("text", False, "''"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
     },
     "woo.brand_stock_rule": {
         "mill_code": ("text", False, None),
@@ -184,15 +184,15 @@ RESTORE_COLUMN_CONTRACTS = {
         "note": ("text", False, "''"),
         "active": ("boolean", False, "true"),
         "updated_by": ("text", False, "''"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
     },
     "woo.sync_exclusion": {
         "fdm4_store": ("text", False, None),
         "style_code": ("text", False, "''"),
         "note": ("text", False, "''"),
         "active": ("boolean", False, "true"),
-        "created_at": ("timestamp with time zone", False, "now"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         "updated_by": ("text", False, "''"),
         "scope": ("text", False, "'full'"),
     },
@@ -204,10 +204,10 @@ RESTORE_COLUMN_CONTRACTS = {
         "source": ('text', False, "'vn-reference'"),
         "locked": ('boolean', False, 'false'),
         "updated_by": ('text', False, "'vn-import-20260731'"),
-        "updated_at": ('timestamp with time zone', False, 'now'),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
     },
     "woo.price_rule": {
-        "rule_id": ('bigint', False, "nextval'price_rule_rule_id_seq'::regclass"),
+        "rule_id": ('bigint', False, "nextval('price_rule_rule_id_seq'::regclass)"),
         "name": ('text', False, None),
         "active": ('boolean', False, 'false'),
         "priority": ('integer', False, '100'),
@@ -224,8 +224,8 @@ RESTORE_COLUMN_CONTRACTS = {
         "effective_from": ('date', True, None),
         "effective_until": ('date', True, None),
         "note": ('text', False, "''"),
-        "created_at": ('timestamp with time zone', False, 'now'),
-        "updated_at": ('timestamp with time zone', False, 'now'),
+        "created_at": ('timestamp with time zone', False, 'now()'),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
         "updated_by": ('text', False, "''"),
         "last_previewed_at": ('timestamp with time zone', True, None),
         "excl_stores": ('text[]', True, None),
@@ -244,9 +244,9 @@ RESTORE_COLUMN_CONTRACTS = {
         "size_excludes": ('jsonb', True, None),
         "source": ('text', False, "'manual'"),
         "added_by": ('text', False, "''"),
-        "added_at": ('timestamp with time zone', False, 'now'),
+        "added_at": ('timestamp with time zone', False, 'now()'),
         "updated_by": ('text', False, "''"),
-        "updated_at": ('timestamp with time zone', False, 'now'),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
     },
     "woo.store_mix_store": {
         "fdm4_store": ('text', False, None),
@@ -254,9 +254,9 @@ RESTORE_COLUMN_CONTRACTS = {
         "active": ('boolean', False, 'true'),
         "note": ('text', False, "''"),
         "created_by": ('text', False, "''"),
-        "created_at": ('timestamp with time zone', False, 'now'),
+        "created_at": ('timestamp with time zone', False, 'now()'),
         "updated_by": ('text', False, "''"),
-        "updated_at": ('timestamp with time zone', False, 'now'),
+        "updated_at": ('timestamp with time zone', False, 'now()'),
         "imported_at": ('timestamp with time zone', True, None),
     },
 }
@@ -267,8 +267,8 @@ AGENT_COLUMN_CONTRACTS = {
         "title": ("text", False, "''"),
         "active_turn_id": ("uuid", True, None),
         "turn_lease_expires_at": ("timestamp with time zone", True, None),
-        "created_at": ("timestamp with time zone", False, "now"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         "expires_at": ("timestamp with time zone", False, None),
     },
     "logo.agent_chat_message": {
@@ -280,7 +280,7 @@ AGENT_COLUMN_CONTRACTS = {
         "status": ("text", False, None),
         "content": ("text", False, "''"),
         "replay_items": ("jsonb", False, "'[]'"),
-        "created_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
     },
     "logo.agent_usage_daily": {
         "user_login": ("text", False, None),
@@ -289,7 +289,7 @@ AGENT_COLUMN_CONTRACTS = {
         "reserved_tokens": ("bigint", False, "0"),
         "input_tokens": ("bigint", False, "0"),
         "output_tokens": ("bigint", False, "0"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
     },
     "logo.agent_usage_monthly": {
         "usage_month": ("date", False, None),
@@ -297,7 +297,7 @@ AGENT_COLUMN_CONTRACTS = {
         "reserved_tokens": ("bigint", False, "0"),
         "input_tokens": ("bigint", False, "0"),
         "output_tokens": ("bigint", False, "0"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
     },
     "logo.agent_rate_window": {
         "user_login": ("text", False, None),
@@ -314,12 +314,12 @@ AGENT_COLUMN_CONTRACTS = {
         "status": ("text", False, "'reserved'"),
         "input_tokens": ("bigint", False, "0"),
         "output_tokens": ("bigint", False, "0"),
-        "created_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
         "provider_started_at": ("timestamp with time zone", True, None),
         "expires_at": (
             "timestamp with time zone",
             False,
-            frozenset({"now+'15minutes'", "now+'00:15:00'"}),
+            frozenset({"now()+'15 minutes'", "now()+'00:15:00'"}),
         ),
         "finalized_at": ("timestamp with time zone", True, None),
     },
@@ -334,8 +334,8 @@ AGENT_COLUMN_CONTRACTS = {
         "preview_diff": ("jsonb", False, "'{}'"),
         "affected_scopes": ("jsonb", False, "'[]'"),
         "contains_hard_delete": ("boolean", False, "false"),
-        "created_at": ("timestamp with time zone", False, "now"),
-        "updated_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
         "expires_at": ("timestamp with time zone", False, None),
         "applied_at": ("timestamp with time zone", True, None),
         "undone_at": ("timestamp with time zone", True, None),
@@ -348,7 +348,7 @@ AGENT_COLUMN_CONTRACTS = {
         "tool_name": ("text", False, None),
         "arguments": ("jsonb", False, None),
         "sort_order": ("integer", False, None),
-        "created_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
     },
     "logo.agent_action_journal": {
         "id": ("uuid", False, None),
@@ -359,7 +359,7 @@ AGENT_COLUMN_CONTRACTS = {
         "preview_hash": ("text", False, None),
         "before_state": ("jsonb", False, None),
         "after_state": ("jsonb", False, None),
-        "created_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
     },
     "logo.agent_spreadsheet_job": {
         "id": ("uuid", False, None),
@@ -377,7 +377,7 @@ AGENT_COLUMN_CONTRACTS = {
         "mapping_hash": ("text", False, None),
         "mapping": ("jsonb", False, None),
         "rejected_rows": ("jsonb", False, "'[]'"),
-        "created_at": ("timestamp with time zone", False, "now"),
+        "created_at": ("timestamp with time zone", False, "now()"),
         "expires_at": ("timestamp with time zone", False, None),
     },
 }
@@ -406,6 +406,17 @@ EXPECTED_TRIGGERS = frozenset({
         "logo.display_name", "logo_display_name_audit", 29, "O",
         "logo", "audit_display_name_row",
     ),
+    # Feed-dependency bumps: editing a served name or cost re-stamps
+    # logo.assignment.row_version so caught-up feed consumers see the edit
+    # (migrations/2026-09-06-logo-feed-dependency-bumps.sql).
+    (
+        "logo.display_name", "display_name_feed_bump", 29, "O",
+        "logo", "display_name_feed_bump",
+    ),
+    (
+        "logo.default_cost", "default_cost_feed_bump", 29, "O",
+        "logo", "default_cost_feed_bump",
+    ),
     (
         "woo.price_rule", "price_rule_audit", 29, "O",
         "woo", "audit_price_rule_row",
@@ -418,6 +429,18 @@ EXPECTED_TRIGGERS = frozenset({
         "woo.store_mix_item", "store_mix_item_audit", 29, "O",
         "woo", "audit_store_mix_row",
     ),
+    # Deferred constraint trigger: an active list-mode store may not commit an
+    # empty item list (migrations/2026-09-06-mix-nonempty-guard.sql).
+    (
+        "woo.store_mix_item", "store_mix_item_nonempty", 9, "O",
+        "woo", "mix_items_nonempty",
+    ),
+})
+# Constraint triggers are otherwise malformed for this contract: they run
+# outside the statement that caused them and can raise at COMMIT. Exactly one
+# is reviewed and expected.
+EXPECTED_CONSTRAINT_TRIGGERS = frozenset({
+    ("woo.store_mix_item", "store_mix_item_nonempty"),
 })
 # Schemas where every unlisted relation is readable and nothing else:
 # warehouse facts (woo/fdm4) and the read-only pim/curated surfaces that
@@ -465,18 +488,18 @@ EXPECTED_PRIMARY_KEYS = {
 }
 EXPECTED_CHECKS = {
     ('catmgr.assignment_rule', 'assignment_rule_kind_check', ('kind',)): "kind='filter'",
-    ('catmgr.node', 'node_name_check', ('name',)): "btrimname<>''",
-    ('catmgr.node', 'node_slug_check', ('slug',)): "slug~'^[a-z0-9]+-[a-z0-9]+*$'",
-    ('catmgr.node_store_override', 'node_store_override_kind_check', ('kind',)): "kind=anyarray['extra_node','rename','exclude']",
-    ('catmgr.node_store_override', 'node_store_override_previous_slug_check', ('previous_slug',)): "previous_slugisnullorprevious_slug~'^[a-z0-9]+-[a-z0-9]+*$'",
-    ('catmgr.node_store_override', 'node_store_override_slug_check', ('slug',)): "slugisnullorslug~'^[a-z0-9]+-[a-z0-9]+*$'",
-    ('catmgr.node_store_override', 'override_shape', ('kind', 'node_id', 'name', 'slug', 'parent_node_id')): "kind='extra_node'andnode_idisnullandnameisnotnullandbtrimname<>''andslugisnotnullorkind='rename'andnode_idisnotnullandnameisnotnullandbtrimname<>''andslugisnullandparent_node_idisnullorkind='exclude'andnode_idisnotnullandnameisnullandslugisnullandparent_node_idisnull",
-    ('catmgr.product_assignment', 'product_assignment_mode_check', ('mode',)): "mode=anyarray['add','remove']",
-    ('catmgr.product_assignment', 'product_assignment_sku_check', ('sku',)): "btrimsku<>''",
-    ('catmgr.product_assignment', 'product_assignment_source_check', ('source',)): "source=anyarray['manual','csv','ai','rule']",
-    ('catmgr.slug_map', 'slug_map_action_check', ('action',)): "action=anyarray['map','delete','store_custom']",
+    ('catmgr.node', 'node_name_check', ('name',)): "btrim(name)<>''",
+    ('catmgr.node', 'node_slug_check', ('slug',)): "slug~'^[a-z0-9]+(-[a-z0-9]+)*$'",
+    ('catmgr.node_store_override', 'node_store_override_kind_check', ('kind',)): "kind=any(array['extra_node','rename','exclude'])",
+    ('catmgr.node_store_override', 'node_store_override_previous_slug_check', ('previous_slug',)): "previous_slugisnullorprevious_slug~'^[a-z0-9]+(-[a-z0-9]+)*$'",
+    ('catmgr.node_store_override', 'node_store_override_slug_check', ('slug',)): "slugisnullorslug~'^[a-z0-9]+(-[a-z0-9]+)*$'",
+    ('catmgr.node_store_override', 'override_shape', ('kind', 'node_id', 'name', 'slug', 'parent_node_id')): "kind='extra_node'andnode_idisnullandnameisnotnullandbtrim(name)<>''andslugisnotnullorkind='rename'andnode_idisnotnullandnameisnotnullandbtrim(name)<>''andslugisnullandparent_node_idisnullorkind='exclude'andnode_idisnotnullandnameisnullandslugisnullandparent_node_idisnull",
+    ('catmgr.product_assignment', 'product_assignment_mode_check', ('mode',)): "mode=any(array['add','remove'])",
+    ('catmgr.product_assignment', 'product_assignment_sku_check', ('sku',)): "btrim(sku)<>''",
+    ('catmgr.product_assignment', 'product_assignment_source_check', ('source',)): "source=any(array['manual','csv','ai','rule'])",
+    ('catmgr.slug_map', 'slug_map_action_check', ('action',)): "action=any(array['map','delete','store_custom'])",
     ('catmgr.slug_map', 'slug_map_shape', ('action', 'target_node_id', 'override_id', 'is_primary')): "action='map'andtarget_node_idisnotnullandoverride_idisnulloraction='delete'andtarget_node_idisnullandoverride_idisnullandnotis_primaryoraction='store_custom'andtarget_node_idisnullandnotis_primary",
-    ('catmgr.uncategorized_ack', 'uncategorized_ack_sku_check', ('sku',)): "btrimsku<>''",
+    ('catmgr.uncategorized_ack', 'uncategorized_ack_sku_check', ('sku',)): "btrim(sku)<>''",
 
     # woo.virtual_catalog_store has no CHECK constraints; any added check is rejected.
     (
@@ -498,33 +521,42 @@ EXPECTED_CHECKS = {
         "logo.color_class",
         "color_class_light_dark_check",
         ("light_dark",),
-    ): "light_dark=anyarray['light','dark','both']",
+    ): "light_dark=any(array['light','dark','both'])",
     (
         "logo.color_class",
         "color_class_source_check",
         ("source",),
-    ): "source=anyarray['ai','manual']",
+    ): "source=any(array['ai','manual'])",
     (
         "woo.stock_override",
         "stock_override_mode_check",
         ("mode",),
-    ): "mode=anyarray['fake','real']",
+    ): "mode=any(array['fake','real'])",
     (
         "woo.brand_stock_rule",
         "brand_stock_rule_mode_check",
         ("mode",),
-    ): "mode=anyarray['real','fake']",
+    ): "mode=any(array['real','fake'])",
     (
         "woo.sync_exclusion",
         "sync_exclusion_scope_check",
         ("scope",),
-    ): "scope=anyarray['full','pricing']",
-    ("woo.price_rule", "price_rule_basis_chk", ('basis',)): "basis=anyarray['current','msrp','corp1','corp2','corp3','wholesale','employee','base']",
-    ("woo.price_rule", "price_rule_effect_type_check", ('effect_type',)): "effect_type=anyarray['percent','flat','set_price','price_level','margin_over_cost']",
-    ("woo.price_rule", "price_rule_rounding_chk", ('rounding',)): "rounding=anyarray['none','99','95','00']",
-    ("woo.store_mix_item", "store_mix_item_source_check", ('source',)): "source=anyarray['import','manual']",
-    ("woo.store_mix_store", "store_mix_store_mode_check", ('mode',)): "mode=anyarray['all','list']",
+    ): "scope=any(array['full','pricing'])",
+    ("woo.price_rule", "price_rule_basis_chk", ('basis',)): "basis=any(array['current','msrp','corp1','corp2','corp3','wholesale','employee','base'])",
+    ("woo.price_rule", "price_rule_effect_type_check", ('effect_type',)): "effect_type=any(array['percent','flat','set_price','price_level','margin_over_cost'])",
+    ("woo.price_rule", "price_rule_rounding_chk", ('rounding',)): "rounding=any(array['none','99','95','00'])",
+    ("woo.store_mix_item", "store_mix_item_source_check", ('source',)): "source=any(array['import','manual'])",
+    ("woo.store_mix_store", "store_mix_store_mode_check", ('mode',)): "mode=any(array['all','list'])",
 }
+# Standalone (constraint-free) unique indexes the exact-undo tables may carry.
+# The preflight's generated block is built from this list too.
+EXPECTED_RESTORE_UNIQUE_INDEXES = {
+    ("catmgr.node_store_override", "override_rename_once"): "CREATE UNIQUE INDEX override_rename_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = 'rename'::text)",
+    ("catmgr.node_store_override", "override_exclude_once"): "CREATE UNIQUE INDEX override_exclude_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = 'exclude'::text)",
+    ("catmgr.node_store_override", "override_extra_slug_once"): "CREATE UNIQUE INDEX override_extra_slug_once ON catmgr.node_store_override USING btree (blog_id, slug) WHERE (kind = 'extra_node'::text)",
+    ("catmgr.slug_map", "slug_map_one_primary"): "CREATE UNIQUE INDEX slug_map_one_primary ON catmgr.slug_map USING btree (target_node_id) WHERE is_primary",
+}
+
 EXPECTED_RESTORE_UNIQUE_KEYS = {('catmgr.node', 'node_slug_key', ('slug',)),
  ('catmgr.product_assignment', 'product_assignment_node_id_sku_mode_key', ('node_id', 'sku', 'mode'))}
 
@@ -679,14 +711,14 @@ AGENT_FOREIGN_KEYS = frozenset({
 })
 AGENT_CHECKS = {
     ("logo.agent_chat_message", "agent_chat_message_role_check", ("role",)):
-        "role=anyarray['user','assistant']",
+        "role=any(array['user','assistant'])",
     ("logo.agent_chat_message", "agent_chat_message_status_check", ("status",)):
-        "status=anyarray['complete','failed','cancelled']",
+        "status=any(array['complete','failed','cancelled'])",
     (
         "logo.agent_chat_message",
         "agent_chat_message_replay_items_check",
         ("replay_items",),
-    ): "jsonb_typeofreplay_items='array'",
+    ): "jsonb_typeof(replay_items)='array'",
     ("logo.agent_usage_daily", "agent_usage_daily_requests_check", ("requests",)):
         "requests>=0",
     (
@@ -728,7 +760,7 @@ AGENT_CHECKS = {
         "logo.agent_usage_monthly",
         "agent_usage_monthly_usage_month_check",
         ("usage_month",),
-    ): "date_trunc'month',usage_month=usage_month",
+    ): "date_trunc('month',usage_month)=usage_month",
     ("logo.agent_rate_window", "agent_rate_window_requests_check", ("requests",)):
         "requests>=0",
     (
@@ -740,7 +772,7 @@ AGENT_CHECKS = {
         "logo.agent_quota_reservation",
         "agent_quota_reservation_status_check",
         ("status",),
-    ): "status=anyarray['reserved','reconciled','retained']",
+    ): "status=any(array['reserved','reconciled','retained'])",
     (
         "logo.agent_quota_reservation",
         "agent_quota_reservation_input_tokens_check",
@@ -752,9 +784,9 @@ AGENT_CHECKS = {
         ("output_tokens",),
     ): "output_tokens>=0",
     ("logo.agent_change_set", "agent_change_set_origin_check", ("origin",)):
-        "origin=anyarray['chat','spreadsheet']",
+        "origin=any(array['chat','spreadsheet'])",
     ("logo.agent_change_set", "agent_change_set_status_check", ("status",)):
-        "status=anyarray['pending','applied','discarded','undone']",
+        "status=any(array['pending','applied','discarded','undone'])",
     (
         "logo.agent_change_set",
         "agent_change_set_revision_check",
@@ -769,7 +801,7 @@ AGENT_CHECKS = {
         "logo.agent_change_set_item",
         "agent_change_set_item_arguments_check",
         ("arguments",),
-    ): "jsonb_typeofarguments='object'",
+    ): "jsonb_typeof(arguments)='object'",
     (
         "logo.agent_change_set_item",
         "agent_change_set_item_sort_order_check",
@@ -779,7 +811,7 @@ AGENT_CHECKS = {
         "logo.agent_action_journal",
         "agent_action_journal_event_type_check",
         ("event_type",),
-    ): "event_type=anyarray['apply','undo']",
+    ): "event_type=any(array['apply','undo'])",
     (
         "logo.agent_action_journal",
         "agent_action_journal_preview_hash_check",
@@ -799,14 +831,14 @@ AGENT_CHECKS = {
         "logo.agent_spreadsheet_job",
         "agent_spreadsheet_job_format_name_check",
         ("format_name",),
-    ): "format_name=anyarray['csv','xlsx']",
+    ): "format_name=any(array['csv','xlsx'])",
     (
         "logo.agent_spreadsheet_job",
         "agent_spreadsheet_job_status_check",
         ("status",),
     ): (
-        "status=anyarray['mapping_processing','mapping_pending',"
-        "'mapping_confirmed','staged','rejected','expired']"
+        "status=any(array['mapping_processing','mapping_pending',"
+        "'mapping_confirmed','staged','rejected','expired'])"
     ),
     (
         "logo.agent_spreadsheet_job",
@@ -942,6 +974,9 @@ REQUIRED_EXECUTABLE_SECURITY_DEFINERS = frozenset({
 ALLOWED_EXECUTABLE_ROUTINES = frozenset({
     ("logo", "prune_agent_history", "", "f"),
     ("logo", "repull_display_name", "text, boolean", "f"),
+    # Read-only artwork resolver for /feed/logos
+    # (migrations/2026-09-06-logo-art-pool.sql).
+    ("logo", "art_pool", "text, text, text", "f"),
     (
         "woo", "eval_price_rules",
         "text, text, text, text, numeric, jsonb, numeric, date, bigint[], bigint[]",
@@ -950,6 +985,7 @@ ALLOWED_EXECUTABLE_ROUTINES = frozenset({
 })
 REQUIRED_EXECUTABLE_ROUTINES = frozenset({
     ("logo", "prune_agent_history", "", "f"),
+    ("logo", "art_pool", "text, text, text", "f"),
     (
         "woo", "eval_price_rules",
         "text, text, text, text, numeric, jsonb, numeric, date, bigint[], bigint[]",
@@ -1647,24 +1683,57 @@ def _assert_restore_column_contract(
         )
 
 
-_SEQUENCE_DEFAULT = re.compile(r"nextval\('(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)'::regclass\)")
+_SEQUENCE_DEFAULT = re.compile(
+    r"nextval\('(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)'::regclass\)",
+    re.IGNORECASE,
+)
+# Either one whole single-quoted literal (a doubled quote escapes a quote
+# inside it) or a run of characters outside every literal.
+_SQL_LITERAL_OR_CODE = re.compile(r"'(?:[^']|'')*'|[^']+")
+_SQL_CAST = re.compile(
+    r"::(?:timestamp\s+(?:with|without)\s+time\s+zone|"
+    r"character\s+varying|smallint|integer|bigint|text|date|jsonb|"
+    r"interval|boolean|uuid|numeric)\b"
+)
+# pg_get_expr quotes a column whose name is a keyword ("position"); the quotes
+# are presentation, the name is not.
+_QUOTED_IDENTIFIER = re.compile(r'"([a-z_][a-z0-9_$]*)"')
+
+
+def _fold_sql_code(value: str) -> str:
+    """Normalise one run of SQL that contains no string literal."""
+
+    folded = _QUOTED_IDENTIFIER.sub(r"\1", value.lower())
+    folded = _SQL_CAST.sub("", folded)
+    # Whitespace is presentation; parentheses are NOT (they group operators),
+    # so they stay.
+    return re.sub(r"\s+", "", folded)
 
 
 def _normalized_sql_expression(value: Any) -> str:
+    """Compare SQL by meaning, not by how PostgreSQL printed it.
+
+    Case is folded and whitespace dropped OUTSIDE single-quoted literals only:
+    a literal's contents are data, so kind = 'filter' and kind = 'FILTER' are
+    different constraints. Parentheses are kept, so (a AND b) OR c never
+    compares equal to a AND (b OR c).
+
+    The SQL twin of this function lives in
+    sql/diagnostics/agent-write-preflight.sql; the two must stay in step or
+    the preflight and write-enabled startup will disagree.
+    """
+
     # A serial default renders its sequence with or without the schema
     # depending on the connection's search_path (prod: price_rule_rule_id_seq,
     # a clone: woo.price_rule_rule_id_seq); compare the bare sequence name.
-    value = _SEQUENCE_DEFAULT.sub(r"nextval('\1'::regclass)", str(value or "").lower())
-    normalized = re.sub(
-        r"::(?:timestamp\s+(?:with|without)\s+time\s+zone|"
-        r"character\s+varying|smallint|integer|bigint|text|date|jsonb|"
-        r"interval|boolean|uuid|numeric)\b",
-        "",
-        str(value or "").lower(),
+    text = _SEQUENCE_DEFAULT.sub(
+        lambda match: f"nextval('{match.group(1).lower()}'::regclass)",
+        str(value or ""),
     )
-    # Whitespace, parentheses, and identifier quotes are presentation only
-    # (pg_get_expr quotes keyword columns such as "position").
-    return re.sub(r'[\s()"]+', "", normalized)
+    return "".join(
+        part if part.startswith("'") else _fold_sql_code(part)
+        for part in _SQL_LITERAL_OR_CODE.findall(text)
+    )
 
 
 def _normalized_check_expression(value: Any) -> str:
@@ -2126,19 +2195,16 @@ def _validate_write_relation_shapes(cursor) -> None:
 
 def _assert_restore_unique_indexes(rows) -> None:
     """Standalone unique indexes are otherwise forbidden on exact-undo tables
-    because a row-by-row restore could trip one part-way through. These four
-    partial indexes are allowed only because snapshots.restore_state deletes
-    every row of every scope before it inserts any, so no transient duplicate
-    can exist. Adding a scope or changing that ordering must re-check this
-    list; the set is exact and fails closed on any drift."""
-    expected = {
-        ("catmgr.node_store_override", "override_rename_once"): "CREATE UNIQUE INDEX override_rename_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = 'rename'::text)",
-        ("catmgr.node_store_override", "override_exclude_once"): "CREATE UNIQUE INDEX override_exclude_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = 'exclude'::text)",
-        ("catmgr.node_store_override", "override_extra_slug_once"): "CREATE UNIQUE INDEX override_extra_slug_once ON catmgr.node_store_override USING btree (blog_id, slug) WHERE (kind = 'extra_node'::text)",
-        ("catmgr.slug_map", "slug_map_one_primary"): "CREATE UNIQUE INDEX slug_map_one_primary ON catmgr.slug_map USING btree (target_node_id) WHERE is_primary",
-    }
+    because a row-by-row restore could trip one part-way through. The indexes
+    in EXPECTED_RESTORE_UNIQUE_INDEXES are allowed only because
+    snapshots.restore_state deletes every row of every scope before it inserts
+    any, so no transient duplicate can exist. Adding a scope or changing that
+    ordering must re-check that list; the set is exact and fails closed on any
+    drift."""
     actual = {(r['table_name'], r['index_name']): r['definition'] for r in rows}
-    if actual != expected or any(not r['healthy'] for r in rows):
+    if actual != EXPECTED_RESTORE_UNIQUE_INDEXES or any(
+        not r['healthy'] for r in rows
+    ):
         raise RuntimeError("unsafe write-enabled database contract: exact-undo unique index drift")
 
 
@@ -2341,7 +2407,13 @@ def _assert_trigger_inventory(rows: Iterable[Mapping[str, Any]]) -> None:
         if row["argument_types"] != ""
         or int(row["argument_count"]) != 0
         or not bool(row["no_when_clause"])
-        or not bool(row["not_constraint_trigger"])
+        or (
+            not bool(row["not_constraint_trigger"])
+            # One reviewed constraint trigger is expected; any other one is
+            # unreviewed authority that can raise at COMMIT.
+            and (str(row["table_name"]), str(row["trigger_name"]))
+            not in EXPECTED_CONSTRAINT_TRIGGERS
+        )
     ]
     if actual_triggers != EXPECTED_TRIGGERS or malformed:
         raise RuntimeError(

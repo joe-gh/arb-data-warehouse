@@ -1,11 +1,19 @@
 """Small synchronous psycopg2 connection-pool wrapper."""
 
 from contextlib import contextmanager
+from decimal import Decimal
+import functools
+import json
 import threading
 from typing import Iterator
 import uuid
 
-from psycopg2.extras import RealDictCursor, register_uuid
+from psycopg2.extras import (
+    RealDictCursor,
+    register_default_json,
+    register_default_jsonb,
+    register_uuid,
+)
 from psycopg2.pool import ThreadedConnectionPool
 
 from config import get_settings
@@ -16,6 +24,18 @@ from config import get_settings
 # enables both directions process-wide (UUID params adapt to text; uuid columns
 # cast to uuid.UUID on read). JSON paths already serialize UUID via default=str.
 register_uuid()
+
+# The undo kernel journals rows as to_jsonb(row) and restores them column by
+# column, so a json/jsonb number MUST come back with the digits PostgreSQL
+# sent. psycopg2's stock caster is json.loads, which turns every number into a
+# float: an unrestricted numeric (woo.virtual_catalog_store.stock_override,
+# logo.color_class.confidence) or a number inside a jsonb document
+# (catmgr.assignment_rule.spec, woo.store_mix_item.size_excludes) would be
+# rounded on the way back in. Decoding to Decimal keeps the exact digits, and
+# snapshots.dumps_exact writes them back out as bare JSON numbers.
+_EXACT_JSON_LOADS = functools.partial(json.loads, parse_float=Decimal)
+register_default_json(loads=_EXACT_JSON_LOADS, globally=True)
+register_default_jsonb(loads=_EXACT_JSON_LOADS, globally=True)
 
 
 EXPECTED_DATABASE_ROLE = "logo_admin"
@@ -78,12 +98,18 @@ class Database:
         write: bool = False,
         actor: str = "",
         commit_on_success: bool = True,
+        snapshot: bool = False,
     ) -> Iterator[RealDictCursor]:
         """Yield a dictionary cursor inside a committed/rolled-back transaction.
 
         ``actor`` names the human operator for this transaction; the audit
         triggers on logo.* read it from the transaction-local ``logo.actor``
         setting so every row change is attributed in logo.audit_log.
+
+        ``snapshot`` runs the transaction at REPEATABLE READ, so every
+        statement in it reads one frozen generation. The default (READ
+        COMMITTED) takes a fresh snapshot per statement, which lets a request
+        read a version ceiling from one generation and rows from the next.
         """
 
         self.open()
@@ -97,6 +123,13 @@ class Database:
             connection.set_session(autocommit=False, readonly=not write)
             with connection.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("SET LOCAL statement_timeout = '30s'")
+                if snapshot:
+                    # Transaction-scoped, so it is safe under PgBouncer
+                    # transaction pooling, and it has to run before the first
+                    # statement that takes a snapshot (SET does not).
+                    cursor.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+                    )
                 if write and actor:
                     cursor.execute(
                         "SELECT set_config('logo.actor', %s, true)", (str(actor)[:100],)

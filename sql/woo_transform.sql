@@ -20,6 +20,10 @@
 -- structural_hash / stockprice_hash split it so the Woo engine can route
 -- stock/price-only changes to its fast path. content_hash changes IFF either
 -- component changes (the component fields together cover the full payload).
+-- feed_hash covers the feed-only columns that sit outside every payload; it
+-- advances row_version without touching the engine's structural/stock-price
+-- routing. A tombstoned row that comes back also advances its version, even
+-- when its content is byte-identical to the last active one.
 --
 -- Apply:  sudo -u postgres psql -d arb_warehouse -f woo_transform.sql
 -- Refresh: SELECT woo.refresh_product_state();   (returns active row count)
@@ -98,6 +102,18 @@ ALTER TABLE woo.store_product_state
     ADD COLUMN IF NOT EXISTS design_name     text,
     ADD COLUMN IF NOT EXISTS price_levels    jsonb;
 
+-- Feed hash (2026-09-06). These 14 columns - brand, mill_code, category,
+-- item_name, origin_country, harmonization, ean_code, def_cost, weight,
+-- design_id, design_name, color_code, size_code, price_levels - are
+-- deliberately outside payload / content_hash / structural_hash /
+-- stockprice_hash, but the product feed serves them, so an edit to any of them
+-- changed what consumers read while row_version stayed put and a caught-up
+-- consumer never came back for it. feed_hash covers exactly those columns and
+-- only advances row_version / changed_at; the Woo engine still routes on the
+-- other hashes, so a feed-only change costs a delta row and no Woo write.
+ALTER TABLE woo.store_product_state
+    ADD COLUMN IF NOT EXISTS feed_hash       text;
+
 CREATE INDEX IF NOT EXISTS sps_storecat     ON woo.store_product_state (fdm4_store, catalog_id);
 CREATE INDEX IF NOT EXISTS sps_style        ON woo.store_product_state (style_code);
 CREATE INDEX IF NOT EXISTS sps_sku          ON woo.store_product_state (sku);
@@ -126,11 +142,14 @@ CREATE TABLE IF NOT EXISTS woo.virtual_catalog_store (
     fdm4_store text NOT NULL PRIMARY KEY,
     catalog_id text NOT NULL,
     note       text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
     -- When set, every synthetic variation projects this stock instead of live
     -- item-balance availability (for stores whose Woo products exist only to
     -- feed a POS catalog and must always look purchasable). NULL = real stock.
-    stock_override numeric,
-    created_at timestamptz NOT NULL DEFAULT now()
+    -- LAST on purpose: live installs got it from the 2026-07-27 migration's
+    -- ADD COLUMN, and database_contract.py pins the physical column order, so
+    -- a fresh build from this file has to end up with the same layout.
+    stock_override numeric
 );
 GRANT SELECT ON woo.virtual_catalog_store TO woo_reader, insights_reader;
 
@@ -159,15 +178,41 @@ CREATE TABLE IF NOT EXISTS woo.store_pricing_tier (
 GRANT SELECT ON woo.pricing_tier, woo.store_pricing_tier TO woo_reader, insights_reader;
 GRANT SELECT, INSERT, UPDATE, DELETE ON woo.pricing_tier, woo.store_pricing_tier TO logo_admin;
 
+-- Catalog price precedence, in ONE place (the same expression used to appear
+-- three times below and each copy tested positivity only after COALESCE had
+-- already picked a candidate, so a colour price of 0 masked a real product
+-- price and a tier price of 0 masked a real retail price). Returns the FIRST
+-- strictly positive candidate in the documented order: colour customPrice,
+-- product customPrice, the store's pricing-tier price, item-master retail.
+-- Returns TEXT because payload / content_hash embed the raw string; keeping
+-- the string keeps existing hashes stable. IMMUTABLE + plain SQL so the
+-- planner inlines it (no per-row function call in the transform plan).
+CREATE OR REPLACE FUNCTION woo.catalog_price_text(
+    p_color text, p_prod text, p_tier text, p_retail text
+) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT CASE
+    WHEN p_color ~ '^[0-9]+(\.[0-9]+)?$' AND p_color::numeric > 0 THEN p_color
+    WHEN p_prod  ~ '^[0-9]+(\.[0-9]+)?$' AND p_prod::numeric  > 0 THEN p_prod
+    WHEN p_tier  ~ '^[0-9]+(\.[0-9]+)?$' AND p_tier::numeric  > 0 THEN p_tier
+    WHEN btrim(p_retail) ~ '^[0-9]+(\.[0-9]+)?$' AND btrim(p_retail)::numeric > 0
+        THEN btrim(p_retail)
+  END
+$$;
+-- Only the transform (running as the owner) calls it; PUBLIC EXECUTE would
+-- also put it in the app role's callable inventory, which is pinned.
+REVOKE EXECUTE ON FUNCTION woo.catalog_price_text(text, text, text, text)
+    FROM PUBLIC;
+
 -- ----------------------------------------------------------------------------
 -- Rebuild the desired-state from the raw tables. SECURITY DEFINER so the
 -- extractor role (etl_writer) can call it while it runs as the owner.
 --
 -- UPSERT semantics (not DELETE+INSERT): a row's row_version/changed_at advance
--- ONLY when its content_hash changes; unchanged rows keep their version so the
--- per-store delta stays small. Rows that disappear from the source are
--- tombstoned (is_active=false) with a fresh version so the delta carries the
--- removal to Woo. Atomic.
+-- only when its content_hash or feed_hash changes, or when it is reactivated
+-- from a tombstone; unchanged rows keep their version so the per-store delta
+-- stays small. Rows that disappear from the source are tombstoned
+-- (is_active=false) with a fresh version so the delta carries the removal to
+-- Woo. Atomic.
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION woo.refresh_product_state()
 RETURNS integer
@@ -412,25 +457,18 @@ BEGIN
                     WHEN btrim(i."sale-price") ~ '^[0-9]+(\.[0-9]+)?$'
                      AND i."sale-price"::numeric > 0
                      AND i."sale-price"::numeric < NULLIF(
-                             CASE
-                                 WHEN COALESCE(NULLIF(sd.color_price, ''), NULLIF(sd.prod_price, ''), '0')::numeric > 0
-                                     THEN COALESCE(NULLIF(sd.color_price, ''), sd.prod_price)
-                                 ELSE COALESCE(
-                                     pr.price_levels ->> st.price_key,
-                                     CASE WHEN btrim(i."retail-price") ~ '^[0-9]+(\.[0-9]+)?$'
-                                          THEN btrim(i."retail-price") END
-                                 )
-                             END, '')::numeric
+                             woo.catalog_price_text(
+                                 sd.color_price, sd.prod_price,
+                                 pr.price_levels ->> st.price_key,
+                                 i."retail-price"), '')::numeric
                         THEN i."sale-price"
-                    WHEN COALESCE(NULLIF(sd.color_price, ''), NULLIF(sd.prod_price, ''), '0')::numeric > 0
-                        THEN COALESCE(NULLIF(sd.color_price, ''), sd.prod_price)
-                    -- Blank catalog price: use the store's configured tier price
-                    -- (fallback fix for FDM4-unpublished stores), else retail.
-                    ELSE COALESCE(
-                        pr.price_levels ->> st.price_key,
-                        CASE WHEN btrim(i."retail-price") ~ '^[0-9]+(\.[0-9]+)?$'
-                             THEN btrim(i."retail-price") END
-                    )
+                    -- First strictly positive candidate: colour price, product
+                    -- price, the store's configured tier price (fallback fix
+                    -- for FDM4-unpublished stores), then item-master retail.
+                    ELSE woo.catalog_price_text(
+                             sd.color_price, sd.prod_price,
+                             pr.price_levels ->> st.price_key,
+                             i."retail-price")
                 END            AS price_text,
                 bal.stock      AS stock,
                 i.active       AS active,
@@ -537,15 +575,11 @@ BEGIN
             -- colour entries in storeData) so payload / content_hash / row_version is
             -- stable run-to-run for change-tracking.
             ORDER BY sd.fdm4_store, sd.catalog_id, i."upc-code",
-                     CASE
-                         WHEN COALESCE(NULLIF(sd.color_price, ''), NULLIF(sd.prod_price, ''), '0')::numeric > 0
-                             THEN COALESCE(NULLIF(sd.color_price, ''), sd.prod_price)
-                         ELSE COALESCE(
-                             pr.price_levels ->> st.price_key,
-                             CASE WHEN btrim(i."retail-price") ~ '^[0-9]+(\.[0-9]+)?$'
-                                  THEN btrim(i."retail-price") END
-                         )
-                     END, i."color-code", i."size-code"
+                     woo.catalog_price_text(
+                         sd.color_price, sd.prod_price,
+                         pr.price_levels ->> st.price_key,
+                         i."retail-price"),
+                     i."color-code", i."size-code"
         ) v
 
         UNION ALL
@@ -818,6 +852,10 @@ BEGIN
             vendor_number, vendor_name, design_id, design_name, price_levels,
             CASE WHEN rule_price IS NOT NULL
                  THEN jsonb_set(payload, '{price}', to_jsonb(rule_price)) ELSE payload END AS payload,
+            md5(row(brand, mill_code, category, item_name, origin_country,
+                    harmonization, ean_code, def_cost, weight, design_id,
+                    design_name, color_code, size_code,
+                    price_levels::text)::text) AS feed_hash,
             md5(structural_payload::text) AS structural_hash,
             md5((CASE WHEN rule_price IS NOT NULL
                       THEN jsonb_set(stockprice_payload, '{price}', to_jsonb(rule_price))
@@ -841,14 +879,19 @@ BEGIN
             ean_code, def_cost, weight, street_date, size_group,
             vendor_number, vendor_name, design_id, design_name, price_levels,
             payload,
+            md5(row(brand, mill_code, category, item_name, origin_country,
+                    harmonization, ean_code, def_cost, weight, design_id,
+                    design_name, color_code, size_code,
+                    price_levels::text)::text) AS feed_hash,
             md5(structural_payload::text) AS structural_hash,
             md5(stockprice_payload::text) AS stockprice_hash,
             md5(payload::text)            AS content_hash
         FROM _base;
     END IF;
 
-    -- Upsert present rows. Bump row_version + changed_at ONLY when content
-    -- actually differs (nextval in the unmatched CASE branch is not evaluated).
+    -- Upsert present rows. Bump row_version + changed_at only when something
+    -- a consumer can observe differs (nextval in the unmatched CASE branch is
+    -- not evaluated).
     INSERT INTO woo.store_product_state AS s (
         fdm4_store, catalog_id, sku, kind, style_code, parent_sku, name, status,
         color_code, color, size_code, size, price, base_price, stock, payload,
@@ -856,7 +899,7 @@ BEGIN
         category, item_name, origin_country, harmonization, item_status, web_active,
         ean_code, def_cost, weight, street_date, size_group,
         vendor_number, vendor_name, design_id, design_name, price_levels,
-        structural_hash, stockprice_hash, content_hash,
+        structural_hash, stockprice_hash, content_hash, feed_hash,
         is_active, row_version, changed_at, refreshed_at
     )
     SELECT
@@ -866,7 +909,7 @@ BEGIN
         n.category, n.item_name, n.origin_country, n.harmonization, n.item_status, n.web_active,
         n.ean_code, n.def_cost, n.weight, n.street_date, n.size_group,
         n.vendor_number, n.vendor_name, n.design_id, n.design_name, n.price_levels,
-        n.structural_hash, n.stockprice_hash, n.content_hash,
+        n.structural_hash, n.stockprice_hash, n.content_hash, n.feed_hash,
         true, nextval('woo.state_version_seq'), now(), now()
     FROM _next n
     ON CONFLICT (fdm4_store, catalog_id, sku) DO UPDATE SET
@@ -886,12 +929,21 @@ BEGIN
         design_id = EXCLUDED.design_id, design_name = EXCLUDED.design_name,
         price_levels = EXCLUDED.price_levels,
         structural_hash = EXCLUDED.structural_hash, stockprice_hash = EXCLUDED.stockprice_hash,
-        content_hash = EXCLUDED.content_hash,
+        content_hash = EXCLUDED.content_hash, feed_hash = EXCLUDED.feed_hash,
         is_active = true,
         refreshed_at = now(),
+        -- s.* is the PRE-update row. Three reasons to advance the delta
+        -- cursor: the Woo-facing content changed, a feed-only column changed
+        -- (feed_hash), or the row is coming back from a tombstone - an
+        -- unchanged reactivation is still a state transition consumers must
+        -- see, and its old version is already behind their watermark.
         row_version = CASE WHEN s.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                             OR s.feed_hash IS DISTINCT FROM EXCLUDED.feed_hash
+                             OR NOT s.is_active
                            THEN nextval('woo.state_version_seq') ELSE s.row_version END,
         changed_at  = CASE WHEN s.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                             OR s.feed_hash IS DISTINCT FROM EXCLUDED.feed_hash
+                             OR NOT s.is_active
                            THEN now() ELSE s.changed_at END;
 
     -- Tombstone rows that were present and are now gone (bump version so the

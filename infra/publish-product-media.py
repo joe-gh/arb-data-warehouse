@@ -22,6 +22,7 @@ import mimetypes
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -51,11 +52,13 @@ COPY (
 FLUSH_FAIL_FILE = "/home/ubuntu/media-publish-failed-rows.tsv"
 
 
-def flush_rows(batch: list[str]) -> None:
+def flush_rows(batch: list[str]) -> bool:
     """Upsert mapping rows; duplicate source_urls are ignored. Never raises -
-    a failed batch is appended to FLUSH_FAIL_FILE for manual replay."""
+    a failed batch is appended to FLUSH_FAIL_FILE for manual replay. Returns
+    False when a batch spilled, so the caller can report the run incomplete
+    instead of exiting 0 over uploads nothing can serve."""
     if not batch:
-        return
+        return True
     script = (
         "BEGIN;\n"
         "CREATE TEMP TABLE _mo (source_url text, s3_key text, cdn_url text, sku_parent text,"
@@ -75,6 +78,8 @@ def flush_rows(batch: list[str]) -> None:
         print(f"FLUSH FAILED ({len(batch)} rows spilled): {proc.stderr[:300]}")
         with open(FLUSH_FAIL_FILE, "a") as fh:
             fh.write("\n".join(batch) + "\n")
+        return False
+    return True
 
 
 def psql(sql: str, input_data: str | None = None) -> str:
@@ -91,6 +96,25 @@ def sanitize(name: str) -> str:
     name = name.split("?")[0].split("#")[0].rsplit("/", 1)[-1]
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     return name[:120] or "image"
+
+
+def object_key(url: str, sku: str) -> str:
+    """The bucket key for one source image.
+
+    sanitize() keeps only the basename, so two unrelated hosts serving
+    front.jpg for the same style used to land on one key and the second URL
+    silently adopted the first one's bytes. Fold a digest of the WHOLE source
+    URL into the name: different sources can no longer share a key, and the
+    same source always resolves to the same key so re-runs stay idempotent.
+    """
+    base = sanitize(url)
+    stem, dot, ext = base.rpartition(".")
+    if not dot:  # no extension: the whole basename is the stem
+        stem, ext = base, ""
+    digest = hashlib.sha256(url.encode("utf-8", "replace")).hexdigest()[:8]
+    # Keep the finished basename inside sanitize()'s 120-character budget.
+    stem = stem[: 120 - len(digest) - 1 - len(dot) - len(ext)] or "image"
+    return f"products/{sku or 'UNKNOWN'}/{stem}-{digest}{dot}{ext}"
 
 
 def fetch(url: str) -> tuple[bytes, str]:
@@ -148,10 +172,11 @@ def main() -> int:
     print(f"unique image urls to publish: {len(todo)} (already published: {len(done)})")
     if args.dry_run or not todo:
         for u, s in todo[:10]:
-            print(f"  would publish {u} -> products/{s}/{sanitize(u)}")
+            print(f"  would publish {u} -> {object_key(u, s)}")
         return 0
 
     s3 = boto3.client("s3", region_name="us-east-2")
+    flush_failed = False
 
     # Reconcile: objects already uploaded (e.g. by an interrupted run) get their
     # mapping from S3 metadata - single-part ETags are the content md5 - so we
@@ -162,26 +187,33 @@ def main() -> int:
         for obj in page.get("Contents", []):
             etag = obj["ETag"].strip('"')
             existing[obj["Key"]] = (etag if "-" not in etag else "", obj["Size"])
+    # Renditions live under the same products/<sku>/ prefix as the canonical
+    # images, so the listing alone cannot say what an object is. Only keys the
+    # mapping table already records as canonical may be adopted; a rendition,
+    # or anything else that happens to sit there, is never claimed as a source
+    # image's bytes.
+    canonical_keys = set(psql("COPY (SELECT DISTINCT s3_key FROM pim.media_object) TO STDOUT").splitlines())
     if existing:
         esc0 = lambda s0: s0.replace("\\", "\\\\").replace("\t", " ").replace("\n", " ").replace("\r", " ")
         reconciled, keep = [], []
         for url, sku in todo:
-            key = f"products/{sku or 'UNKNOWN'}/{sanitize(url)}"
-            hit = existing.get(key)
+            key = object_key(url, sku)
+            hit = existing.get(key) if key in canonical_keys else None
             if hit is not None:
                 ctype = mimetypes.guess_type(key)[0] or ""
                 reconciled.append("\t".join([esc0(url), esc0(key), esc0(CDN_BASE + key), esc0(sku), hit[0], str(hit[1]), esc0(ctype)]))
             else:
                 keep.append((url, sku))
         for i in range(0, len(reconciled), 500):
-            flush_rows(reconciled[i:i + 500])
+            if not flush_rows(reconciled[i:i + 500]):
+                flush_failed = True
         print(f"reconciled from S3 without fetching: {len(reconciled)}; still to fetch: {len(keep)}")
         todo = keep
 
     used_keys: dict[str, str] = {}
+    used_keys_lock = threading.Lock()
     rows: list[str] = []
     errors: list[str] = []
-    lock_pad = 0
 
     def publish(item: tuple[str, str]) -> str | None:
         url, sku = item
@@ -192,14 +224,18 @@ def main() -> int:
                 raise RuntimeError(f"not an image (content-type {ctype!r})")
             ctype = guess
         md5 = hashlib.md5(data).hexdigest()
-        base = sanitize(url)
-        key = f"products/{sku or 'UNKNOWN'}/{base}"
-        prior = used_keys.get(key)
-        if prior is not None and prior != md5:
-            stem, dot, ext = base.rpartition(".")
-            base = f"{stem or ext}-{md5[:8]}{dot}{ext if stem else ''}"
-            key = f"products/{sku or 'UNKNOWN'}/{base}"
-        used_keys[key] = md5
+        key = object_key(url, sku)
+        # Worker threads share this map, so claim the key under the lock.
+        # Two byte streams under one key now needs a digest collision; keep
+        # both objects rather than let the later one overwrite the earlier.
+        with used_keys_lock:
+            prior = used_keys.get(key)
+            if prior is not None and prior != md5:
+                base = key.rsplit("/", 1)[-1]
+                stem, dot, ext = base.rpartition(".")
+                base = f"{stem or ext}-{md5[:8]}{dot}{ext if stem else ''}"
+                key = f"products/{sku or 'UNKNOWN'}/{base}"
+            used_keys[key] = md5
         s3.put_object(
             Bucket=BUCKET, Key=key, Body=data, ContentType=ctype,
             CacheControl="public, max-age=31536000, immutable",
@@ -223,14 +259,20 @@ def main() -> int:
                 print(f"  {i}/{len(todo)} ({ok} ok, {len(errors)} err, {int(time.time()-started)}s)")
             if len(rows) >= 250:
                 batch, rows[:] = rows[:], []
-                flush_rows(batch)
-    flush_rows(rows)
+                if not flush_rows(batch):
+                    flush_failed = True
+    if not flush_rows(rows):
+        flush_failed = True
     print(f"published {ok}/{len(todo)} in {int(time.time()-started)}s; {len(errors)} errors")
     for e in errors[:20]:
         print("  ERR " + e)
     if len(errors) > 20:
         print(f"  ... and {len(errors) - 20} more")
-    return 0 if not errors else 2
+    if flush_failed:
+        # Objects are in the bucket but nothing maps to them; the run is not a
+        # success until the spilled rows are replayed.
+        print(f"INCOMPLETE: mapping rows spilled to {FLUSH_FAIL_FILE}; replay them")
+    return 0 if not errors and not flush_failed else 2
 
 
 if __name__ == "__main__":

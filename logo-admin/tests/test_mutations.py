@@ -379,3 +379,141 @@ def test_preview_rejects_handler_scope_drift_and_rolls_back_its_write(monkeypatc
             ),
         )
         assert cursor.fetchone()["location"] == row["location"]
+
+
+def test_create_only_refuses_an_occupied_slot_and_leaves_it_unchanged():
+    """Adding a row must never replace one.
+
+    The display order is not the identity order, so a client can propose an
+    option_row that already exists; insert-only mode refuses instead of
+    overwriting.
+    """
+
+    from domain import Conflict
+
+    with database.cursor(
+        write=True,
+        actor="kernel-test",
+        commit_on_success=False,
+    ) as cursor:
+        row = _first_assignment(cursor)
+        cursor.execute(
+            "SELECT to_jsonb(a) AS row FROM logo.assignment a "
+            "WHERE fdm4_store=%s AND product_style=%s AND garment_color_code=%s "
+            "AND option_row=%s AND position=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"],
+             row["option_row"], row["position"]),
+        )
+        before = cursor.fetchone()["row"]
+        with pytest.raises(Conflict, match="already occupies that slot"):
+            save_assignment(
+                cursor,
+                "kernel-test",
+                _save_command(row, create_only=True, location="SHOULD NOT LAND"),
+            )
+        cursor.execute(
+            "SELECT to_jsonb(a) AS row FROM logo.assignment a "
+            "WHERE fdm4_store=%s AND product_style=%s AND garment_color_code=%s "
+            "AND option_row=%s AND position=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"],
+             row["option_row"], row["position"]),
+        )
+        assert cursor.fetchone()["row"] == before
+
+
+def test_create_only_writes_an_empty_slot_and_edits_still_overwrite():
+    with database.cursor(
+        write=True,
+        actor="kernel-test",
+        commit_on_success=False,
+    ) as cursor:
+        row = _first_assignment(cursor)
+        cursor.execute(
+            "SELECT COALESCE(max(option_row), 0) + 1 AS next FROM logo.assignment "
+            "WHERE fdm4_store=%s AND product_style=%s AND garment_color_code=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"]),
+        )
+        free_row = int(cursor.fetchone()["next"])
+        created = save_assignment(
+            cursor,
+            "kernel-test",
+            _save_command(row, create_only=True, option_row=free_row,
+                          location="NEW ROW"),
+        )
+        assert created.value["assignment"]["location"] == "NEW ROW"
+        # An edit (no expected_updated_at, create_only off) still overwrites.
+        edited = save_assignment(
+            cursor,
+            "kernel-test",
+            _save_command(row, option_row=free_row, location="EDITED ROW"),
+        )
+        assert edited.value["assignment"]["location"] == "EDITED ROW"
+
+
+def test_create_only_stages_and_undoes_exactly():
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+
+    from snapshots import snapshot_scopes, states_equal
+
+    session_id = uuid4()
+    with database.cursor(write=True, actor="fixture") as cursor:
+        cursor.execute(
+            "INSERT INTO logo.agent_chat_session (id,user_login,title,expires_at) "
+            "VALUES (%s,%s,%s,%s)",
+            (session_id, "admin-one", "create-only fixture",
+             datetime.now(timezone.utc) + timedelta(hours=1)),
+        )
+    with database.cursor() as cursor:
+        row = dict(_first_assignment(cursor))
+        cursor.execute(
+            "SELECT COALESCE(max(option_row), 0) + 1 AS next FROM logo.assignment "
+            "WHERE fdm4_store=%s AND product_style=%s AND garment_color_code=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"]),
+        )
+        free_row = int(cursor.fetchone()["next"])
+    scope = MutationScope(
+        "assignment_option_row",
+        {
+            "fdm4_store": row["fdm4_store"],
+            "product_style": row["product_style"],
+            "garment_color_code": row["garment_color_code"],
+            "option_row": free_row,
+        },
+    )
+    with database.cursor() as cursor:
+        before = snapshot_scopes(cursor, (scope,))
+    change_set = staging.new_change_set(session_id, "admin-one")
+    arguments = {
+        key: row[key]
+        for key in (
+            "fdm4_store", "product_style", "garment_color_code", "position",
+            "design_id", "logo_code", "color_scheme_id", "location",
+            "optional", "background", "sort_order", "image_url", "active",
+        )
+    }
+    arguments["cost_override"] = (
+        str(row["cost_override"]) if row["cost_override"] is not None else None
+    )
+    arguments.update({"option_row": free_row, "create_only": True})
+    staged = staging.stage_write(
+        change_set["id"], "save_assignment", arguments,
+        "create-only", "admin-one", max_items=50,
+    )
+    with database.cursor() as cursor:
+        assert states_equal(snapshot_scopes(cursor, (scope,)), before), "preview leaked"
+    staging.apply_change_set(
+        change_set["id"], "admin-one", revision=staged["revision"],
+        confirmed_hash=staged["preview_hash"], acknowledge_hard_delete=False,
+    )
+    with database.cursor() as cursor:
+        cursor.execute(
+            "SELECT count(*) AS n FROM logo.assignment WHERE fdm4_store=%s "
+            "AND product_style=%s AND garment_color_code=%s AND option_row=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"],
+             free_row),
+        )
+        assert cursor.fetchone()["n"] == 1
+    assert staging.undo_change_set(change_set["id"], "admin-one")["status"] == "undone"
+    with database.cursor() as cursor:
+        assert states_equal(snapshot_scopes(cursor, (scope,)), before)

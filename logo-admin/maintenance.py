@@ -12,6 +12,28 @@ from db import database
 import quotas
 
 
+# A multi-chunk import is only reviewable as finished work once every chunk
+# has staged; the unfinished job row is what says so (staging checks it). Jobs
+# expire after an hour and their chunk change-sets last a day, so deleting an
+# unfinished job on its own would leave the chunks that did stage looking like
+# a complete import. Retire them with the job.
+INCOMPLETE_SPREADSHEET_CHANGE_SETS = """
+      FROM logo.agent_change_set AS cs
+     WHERE cs.status = 'pending'
+       AND cs.origin = 'spreadsheet'
+       AND EXISTS (
+           SELECT 1 FROM logo.agent_spreadsheet_job AS job
+            WHERE job.expires_at < now()
+              AND job.status IN ('mapping_processing', 'mapping_confirmed')
+              AND job.user_login = cs.user_login
+              AND (
+                  job.change_set_id = cs.id
+                  OR job.mapping -> '_change_set_ids' ? cs.id::text
+              )
+       )
+"""
+
+
 def _count(cursor, query: str, params: tuple = ()) -> int:
     cursor.execute(query, params)
     row = cursor.fetchone()
@@ -40,6 +62,11 @@ def cleanup(*, dry_run: bool = False) -> dict[str, int]:
         )
         storage_keys = [str(row["storage_key"]) for row in cursor.fetchall()]
         counts["spreadsheet_jobs"] = len(storage_keys)
+
+        counts["incomplete_spreadsheet_change_sets"] = _count(
+            cursor,
+            "SELECT count(*)" + INCOMPLETE_SPREADSHEET_CHANGE_SETS,
+        )
 
         counts["expired_pending_change_sets"] = _count(
             cursor,
@@ -165,6 +192,12 @@ def cleanup(*, dry_run: bool = False) -> dict[str, int]:
                    SET status = 'discarded', updated_at = now()
                  WHERE status = 'pending' AND expires_at < now()
                 """
+            )
+            cursor.execute(
+                "UPDATE logo.agent_change_set AS target"
+                "   SET status = 'discarded', updated_at = now()"
+                " WHERE target.id IN ("
+                "     SELECT cs.id" + INCOMPLETE_SPREADSHEET_CHANGE_SETS + ")"
             )
             cursor.execute(
                 """

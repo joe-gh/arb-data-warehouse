@@ -36,6 +36,7 @@ class SaveAssignmentCommand(AssignmentTarget):
     name_override: Optional[str] = Field(default=None, max_length=200, description="Exact name shown for this row; empty string clears it; null keeps the stored value.")
     expected_updated_at: Optional[datetime] = Field(default=None, description="Optimistic-concurrency check: the row's updated_at as last read, or null to skip.")
     active: bool = Field(default=True, description="False hides the row from the website after the next sync without deleting it.")
+    create_only: bool = Field(default=False, description="True adds a brand-new row: if that slot is already taken the save is refused instead of replacing it.")
 
 
 class DeactivateAssignmentCommand(AssignmentTarget):

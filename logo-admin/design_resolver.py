@@ -9,6 +9,15 @@ from dataclasses import dataclass, field as dataclass_field
 from typing import Dict, Optional, Set, Tuple
 
 
+# The whole design index is held in memory for one request, so it is capped
+# like any other read. Production carries a few thousand rows.
+MAX_DESIGN_INDEX_ROWS = 200_000
+
+
+class DesignIndexTooLarge(ValueError):
+    """The FDM4 art index is larger than the service will load."""
+
+
 DESIGN_INDEX_SQL = """
     WITH mapped AS (
         SELECT DISTINCT
@@ -149,11 +158,60 @@ def design_available_to_store(cursor, store: str, design_id: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def resolve_design(
+    candidates: Set[str],
+    wanted: str,
+    logo_code: str,
+    scheme: str,
+) -> Tuple[Optional[str], str]:
+    """Settle one logo code + color scheme on a single FDM4 design.
+
+    Returns ``(design_id, "")`` or ``(None, reason)``. An explicit id must be
+    one of the candidates - including when there are none, which means FDM4
+    has no artwork for that logo and scheme at all and no id can be right.
+    """
+
+    designs = set(candidates)
+    wanted = str(wanted or "").strip()
+    if wanted:
+        if wanted not in designs:
+            if not designs:
+                return None, (
+                    f"no design on file for that logo and scheme"
+                    f" ({logo_code}/{scheme})"
+                )
+            return None, (
+                f"design {wanted} does not carry {logo_code}/{scheme}"
+                f" (candidates: {', '.join(sorted(designs))})"
+            )
+        return wanted, ""
+    if not designs:
+        return None, f"no design for {logo_code}/{scheme}"
+    if len(designs) > 1:
+        return None, (
+            f"ambiguous design {logo_code}/{scheme}: {', '.join(sorted(designs))};"
+            " pass design_id"
+        )
+    return next(iter(designs)), ""
+
+
 def load_design_index(cursor) -> DesignIndex:
-    cursor.execute(DESIGN_INDEX_SQL)
+    # Bounded like every other read: the index is one row per
+    # (design, customer, scheme, art prefix) pair and PostgreSQL is asked for
+    # one row past the cap so an oversized FDM4 art table fails closed instead
+    # of being loaded into the process.
+    cursor.execute(
+        f"SELECT * FROM ({DESIGN_INDEX_SQL}) AS design_index LIMIT %s",
+        (MAX_DESIGN_INDEX_ROWS + 1,),
+    )
     by_key: Dict[Tuple[str, str, str], Set[str]] = {}
     usable_art: Set[Tuple[str, str]] = set()
-    for row in cursor.fetchall():
+    index_rows = cursor.fetchall()
+    if len(index_rows) > MAX_DESIGN_INDEX_ROWS:
+        raise DesignIndexTooLarge(
+            f"FDM4 design index exceeds the {MAX_DESIGN_INDEX_ROWS}-row limit"
+        )
+    for row in index_rows:
         prefix = str(row["logo_prefix"] or "").upper()
         scheme = str(row["color_scheme_id"] or "").upper()
         design_id = str(row["design_id"] or "").strip()

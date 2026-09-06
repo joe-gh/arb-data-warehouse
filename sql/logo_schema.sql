@@ -698,3 +698,176 @@ CREATE INDEX IF NOT EXISTS wp_uncategorized_product_sku
 
 GRANT SELECT ON catmgr.wp_uncategorized_product TO woo_reader, insights_reader;
 GRANT SELECT, INSERT, UPDATE, DELETE ON catmgr.wp_uncategorized_product TO logo_admin;
+
+
+-- ---------------------------------------------------------------------------
+-- Artwork resolution for logo assignments. Canonical copy of
+-- migrations/2026-09-06-logo-art-pool.sql; keep the two in step.
+--
+-- An FDM4 design can carry several decorations, each with its own artwork and
+-- placement, so "the design's artwork" is not a single value. This returns the
+-- candidates ranked the way the WordPress logo reconcile ranks them: the pool
+-- row at the assignment's placement (match_rank 0), else the row whose art
+-- files carry the assignment's logo code (1), else the whole pool unmatched
+-- (2). Callers publish an art id only on a match or a single-artwork design;
+-- a design id is never an artwork id, the two number spaces collide across
+-- customers.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION logo.art_pool(
+    p_design_id text,
+    p_location  text,
+    p_logo_code text
+) RETURNS TABLE (
+    art_id     text,
+    art_num    text,
+    matched    boolean,
+    match_rank smallint,
+    num_sort   numeric
+) AS $fn$
+#variable_conflict use_column
+DECLARE
+    v_design   text := btrim(COALESCE(p_design_id, ''));
+    v_location text := upper(btrim(COALESCE(p_location, '')));
+    v_code     text := upper(btrim(COALESCE(p_logo_code, '')));
+    v_arts     integer;
+BEGIN
+    IF v_design = '' THEN
+        RETURN;
+    END IF;
+
+    -- Tier 1: the artwork FDM4 puts at this placement.
+    IF v_location <> '' THEN
+        RETURN QUERY
+        WITH pool AS (
+            SELECT btrim(dp.art_id) AS art_num,
+                   btrim(dp.art_id)
+                   || CASE
+                          WHEN NULLIF(btrim(dp.art_version_id), '') IS NOT NULL
+                          THEN '.' || btrim(dp.art_version_id)
+                          ELSE ''
+                      END AS art_id,
+                   upper(btrim(dp.location_id)) AS lcode,
+                   CASE
+                       WHEN btrim(dp.design_pool_num) ~ '^[0-9]+$'
+                       THEN btrim(dp.design_pool_num)::numeric
+                   END AS num_sort
+              FROM fdm4.design_pool dp
+             WHERE btrim(dp.design_id) = v_design
+               AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
+        ), loc_map (lcode, name) AS (
+            VALUES
+                ('LC', 'LEFT CHEST'), ('LCS', 'LEFT CHEST SWITCH OK'),
+                ('LCAP', 'LEFT CHEST ABOVE POCKET'), ('RC', 'RIGHT CHEST'),
+                ('RCS', 'RIGHT CHEST SWITCH OK'),
+                ('RCAP', 'RIGHT CHEST ABOVE POCKET'),
+                ('BLS', 'BICEP LEFT SLEEVE'), ('BRS', 'BICEP RIGHT SLEEVE'),
+                ('FB', 'FULL BACK'), ('RSS', 'RIGHT SHORT SLEEVE'),
+                ('LSS', 'LEFT SHORT SLEEVE'), ('BHCF', 'BRIM HAT - CENTER FRONT'),
+                ('CC', 'CENTER CHEST'), ('CFB', 'CENTER FULL BACK'),
+                ('OP', 'ON THE POCKET'), ('NCCF', 'KNIT CAP - CENTER FRONT'),
+                ('KCCF', 'KNIT CAP - CENTER FRONT'),
+                ('BHFL', 'BRIM HAT - FRONT LEFT'), ('DBF', 'DUFFLE BAG FRONT'),
+                ('FF', 'FULL CENTER FRONT'), ('BPF', 'BACKPACK BAG FRONT'),
+                ('DBB', 'DUFFLE BAG BACK'), ('CBN', 'CENTER BACK NECK'),
+                ('PROOF', '*SEE PROOF*'), ('BHFR', 'BRIM HAT - FRONT RIGHT'),
+                ('RLS', 'RIGHT LONG SLEEVE'), ('LLS', 'LEFT LONG SLEEVE'),
+                ('BHCB', 'BRIM HAT - CENTER BACK'), ('TBF', 'TOTE BAG FRONT'),
+                ('FLT', 'FRONT LEFT THIGH'),
+                ('RT', 'RIGHT THIGH (OK SWITCH LEFT)'),
+                ('FFCB', 'BRIM FLEX FIT HAT - CENTER BACK'),
+                ('HTBHCF', 'HT BRIM HAT CENTER FRONT'),
+                ('LT', 'LEFT THIGH (OK SWITCH RIGHT)'),
+                ('BRC', 'BACK RIGHT CALF'),
+                ('HVSAFB', 'HIVIZ REFLECTIVE FULL BACK'),
+                ('BFC', 'BLANKET FRONT CORNER'), ('CBF', 'COOLER BAG FRONT')
+        )
+        SELECT p.art_id, p.art_num, true, 0::smallint, p.num_sort
+          FROM pool p
+          JOIN loc_map m ON m.lcode = p.lcode
+         WHERE m.name = v_location
+         ORDER BY p.num_sort NULLS LAST, p.art_id
+         LIMIT 200;
+        IF FOUND THEN
+            RETURN;
+        END IF;
+    END IF;
+
+    SELECT count(DISTINCT btrim(dp.art_id))
+      INTO v_arts
+      FROM fdm4.design_pool dp
+     WHERE btrim(dp.design_id) = v_design
+       AND NULLIF(btrim(dp.art_id), '') IS NOT NULL;
+
+    IF v_arts = 0 THEN
+        RETURN;
+    END IF;
+
+    -- One artwork, or no logo code to match on: hand back the pool unmatched
+    -- and let the caller decide. Reading fdm4.cust_art_file here would cost a
+    -- full scan and could not change the answer.
+    IF v_arts = 1 OR v_code = '' THEN
+        RETURN QUERY
+        WITH pool AS (
+            SELECT btrim(dp.art_id) AS art_num,
+                   btrim(dp.art_id)
+                   || CASE
+                          WHEN NULLIF(btrim(dp.art_version_id), '') IS NOT NULL
+                          THEN '.' || btrim(dp.art_version_id)
+                          ELSE ''
+                      END AS art_id,
+                   CASE
+                       WHEN btrim(dp.design_pool_num) ~ '^[0-9]+$'
+                       THEN btrim(dp.design_pool_num)::numeric
+                   END AS num_sort
+              FROM fdm4.design_pool dp
+             WHERE btrim(dp.design_id) = v_design
+               AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
+        )
+        SELECT p.art_id, p.art_num, false, 2::smallint, p.num_sort
+          FROM pool p
+         ORDER BY p.num_sort NULLS LAST, p.art_id
+         LIMIT 200;
+        RETURN;
+    END IF;
+
+    -- Tier 2: the artwork whose art files carry this logo code, else the whole
+    -- pool unmatched.
+    RETURN QUERY
+    WITH pool AS (
+        SELECT btrim(dp.art_id) AS art_num,
+               btrim(dp.art_id)
+               || CASE
+                      WHEN NULLIF(btrim(dp.art_version_id), '') IS NOT NULL
+                      THEN '.' || btrim(dp.art_version_id)
+                      ELSE ''
+                  END AS art_id,
+               CASE
+                   WHEN btrim(dp.design_pool_num) ~ '^[0-9]+$'
+                   THEN btrim(dp.design_pool_num)::numeric
+               END AS num_sort
+          FROM fdm4.design_pool dp
+         WHERE btrim(dp.design_id) = v_design
+           AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
+    ), art_code AS (
+        SELECT DISTINCT btrim(f.art_id) AS art_num
+          FROM fdm4.cust_art_file f
+         WHERE NULLIF(btrim(f.source_path), '') IS NOT NULL
+           AND upper(split_part(btrim(f.source_path), '_', 1)) = v_code
+    )
+    SELECT p.art_id, p.art_num,
+           (c.art_num IS NOT NULL),
+           CASE WHEN c.art_num IS NOT NULL THEN 1 ELSE 2 END::smallint,
+           p.num_sort
+      FROM pool p
+      LEFT JOIN art_code c ON c.art_num = p.art_num
+     ORDER BY (c.art_num IS NULL), p.num_sort NULLS LAST, p.art_id
+     LIMIT 200;
+END;
+$fn$ LANGUAGE plpgsql STABLE;
+
+COMMENT ON FUNCTION logo.art_pool(text, text, text) IS
+    'Candidate FDM4 artworks for one logo assignment, ranked by placement then logo code (match_rank 0/1) and finally unmatched (2). Callers publish an art id only on a match or a single-artwork design.';
+
+REVOKE EXECUTE ON FUNCTION logo.art_pool(text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION logo.art_pool(text, text, text)
+    TO logo_admin, woo_reader, insights_reader, etl_writer;

@@ -320,3 +320,114 @@ def test_end_to_end_two_pass(client_as):
             """SELECT count(*) n FROM logo.assignment
                 WHERE fdm4_store='S_BULK' AND garment_color_code='0001' AND active""")
         assert cur.fetchone()["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# An explicit design id is a tie-breaker among candidates, never a bypass.
+# ---------------------------------------------------------------------------
+
+_UNKNOWN_LOGO = {"logo_code": "ZZZ_NOPE", "color_scheme": "WH"}
+
+
+def test_preview_refuses_an_explicit_design_when_nothing_is_on_file():
+    with database.cursor() as cur:
+        res = queries.compute_bulk_preview(
+            cur,
+            fdm4_store="S_BULK",
+            target={"mode": "light_dark", "class": "dark"},
+            design_id="MADE-UP-DESIGN",
+            **_UNKNOWN_LOGO,
+        )
+    assert res["rows"] == []
+    assert "no design on file" in res["unresolved_reason"]
+
+
+def test_execute_refuses_an_explicit_design_when_nothing_is_on_file():
+    import pytest
+    import mutations
+
+    with database.cursor(write=True, actor="t") as cur:
+        _seed_store(cur)
+        with pytest.raises(ValueError, match="no design on file"):
+            mutations.bulk_apply_execute(
+                cur,
+                fdm4_store="S_BULK",
+                logo_code="ZZZ_NOPE",
+                color_scheme="WH",
+                placement="Left Chest",
+                rows=[{"style_code": "ST1", "color_code": "0001"}],
+                actor="t",
+                design_id="MADE-UP-DESIGN",
+            )
+
+
+def test_staging_refuses_an_explicit_design_when_nothing_is_on_file():
+    """The agent path must refuse before a person is ever shown a card."""
+
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+
+    import pytest
+
+    from domain import InvalidCommand
+    from staging import new_change_set, stage_write
+
+    session_id = uuid4()
+    with database.cursor(write=True, actor="fixture") as cursor:
+        cursor.execute(
+            "INSERT INTO logo.agent_chat_session (id,user_login,title,expires_at) "
+            "VALUES (%s,%s,%s,%s)",
+            (session_id, "admin-one", "design fixture",
+             datetime.now(timezone.utc) + timedelta(hours=1)),
+        )
+    change_set = new_change_set(session_id, "admin-one")
+    with pytest.raises(InvalidCommand, match="no design on file"):
+        stage_write(
+            change_set["id"],
+            "bulk_apply",
+            {
+                "store": "S_TEST", "logo_code": "ZZZ_NOPE",
+                "color_scheme_id": "NOPE", "design_id": "MADE-UP-DESIGN",
+                "location": "Left Chest", "target": "light_dark",
+                "color_class": "dark", "color_codes": [], "styles": [],
+                "option_row": 1, "cost_override": None, "overwrite": False,
+            },
+            "bulk-explicit-design",
+            "admin-one",
+            max_items=50,
+        )
+
+
+def test_execute_refuses_a_candidate_that_left_fdm4():
+    """The art index is built from the art files; a design retired between
+    the preview and the apply must not be written onto products."""
+
+    import pytest
+
+    import mutations
+    from design_resolver import DesignIndex
+
+    ghost = DesignIndex(
+        by_key={
+            ("*", "B9H", "WH"): {"GHOST-DESIGN"},
+            ("*", "B9H", "*"): {"GHOST-DESIGN"},
+        },
+        usable_art=set(),
+    )
+    original = mutations.load_design_index
+    mutations.load_design_index = lambda cursor: ghost
+    try:
+        with database.cursor(write=True, actor="t") as cur:
+            _seed_store(cur)
+            with pytest.raises(ValueError, match="not on file in FDM4"):
+                mutations.bulk_apply_execute(
+                    cur,
+                    fdm4_store="S_BULK",
+                    logo_code="B9H",
+                    color_scheme="WH",
+                    placement="Left Chest",
+                    rows=[{"style_code": "ST1", "color_code": "0001"}],
+                    actor="t",
+                )
+    finally:
+        mutations.load_design_index = original

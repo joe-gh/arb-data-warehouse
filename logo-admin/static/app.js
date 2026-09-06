@@ -591,6 +591,7 @@
       const bulkApplyBtn = $("#bulk-apply-btn");
       if (bulkApplyBtn) bulkApplyBtn.disabled = true;
     }
+    bulkState.previewKey = null;
     setOptionsOpen(els.styleSearch, els.styleOptions, false);
     updateUrl();
     if (document.body.dataset.view === "names") { namesState.offset = 0; loadNames(); }
@@ -754,6 +755,14 @@
     return text(typeof color === "string" ? color : color.name ?? color.color ?? color.description, colorCode(color)).trim();
   }
 
+  // An option row number is an identity, not a position. The grid lists rows
+  // in sort_order, so after a reorder the display can read [2, 1] and the last
+  // one on screen is not the highest number. Allocate above the highest
+  // identity so a new row can never land on an existing one.
+  function nextOptionRow(rowNumbers) {
+    return Math.max(...rowNumbers) + 1;
+  }
+
   function renderGrid(colors, assignments) {
     gridSortables.forEach((s) => { try { s.destroy(); } catch (e) {} });
     gridSortables.length = 0;
@@ -896,13 +905,19 @@
         const label = document.createElement("div");
         label.className = "grid-cell grid-cell--color";
         if (editable) {
-          const nextRow = rowNumbers[rowNumbers.length - 1] + 1;
+          const nextRow = nextOptionRow(rowNumbers);
           const button = document.createElement("button");
           button.type = "button";
           button.className = "add-option-row";
           button.innerHTML = '<span aria-hidden="true">+</span> Add row';
           button.title = `Add another selectable logo row for ${colorName(color)} - customers choose one row at checkout`;
           button.addEventListener("click", async () => {
+            // Last guard before the editor opens: never point Add row at a
+            // slot this grid already shows as filled.
+            if (byKey.has(`${code}:${nextRow}:1`)) {
+              toast(`Row ${nextRow} of ${colorName(color)} already exists - reload the style before adding another row.`, "error");
+              return;
+            }
             await openAssignment(color, 1, null, nextRow);
             els.sort.value = String(nextSort);
           });
@@ -1366,7 +1381,7 @@
 
   function assignmentPayload() {
     const { color, position, optionRow, assignment } = state.editing;
-    return {
+    const payload = {
       fdm4_store: state.store,
       product_style: state.style,
       garment_color_code: colorCode(color),
@@ -1385,6 +1400,11 @@
       name_override: els.nameOverride.value.trim(),
       expected_updated_at: assignment?.updated_at || null,
     };
+    // Adding, not editing: ask the server to insert only. If anything already
+    // occupies this store/style/color/row/position it answers 409 instead of
+    // upserting over a row this editor never showed.
+    if (!assignment) payload.create_only = true;
+    return payload;
   }
 
   async function saveAssignment(event) {
@@ -1404,6 +1424,15 @@
       await refreshStyle();
     } catch (error) {
       if (error.status === 409) {
+        if (!state.editing?.assignment) {
+          // create_only was refused: someone filled this row while the editor
+          // was open. The grid must be reloaded before a fresh row number can
+          // be allocated, so close and refresh rather than retry blindly.
+          toast("That logo row was taken while this editor was open. Reload the style and add the row again.", "error");
+          closeDialog(els.assignmentDialog);
+          await refreshStyle();
+          return;
+        }
         const reload = await confirmAction({
           title: "Assignment changed",
           message: "Another update was saved after this editor opened. Reload the latest assignment before making further changes.",
@@ -1655,6 +1684,9 @@
     } catch (error) {
       els.importResults.innerHTML = `<div class="notice notice--error" role="alert"><span class="notice__icon">!</span><div><strong>Import failed</strong><br>${escapeHtml(error.message)}</div></div>`;
     } finally {
+      // Clear the flag here or the first import of the page locks out every
+      // later import and the image mirror for as long as the tab is open.
+      importRunning = false;
       els.importFile.value = "";
     }
   }
@@ -3935,7 +3967,43 @@
 
   const bulkState = {
     requestSequence: 0,
+    // Fingerprint of the inputs the current preview rows were built from.
+    // Null means there is nothing safe to apply.
+    previewKey: null,
   };
+
+  // Everything the preview rows depend on. Preview-row ticks and the filter
+  // box are deliberately out: narrowing the shown rows does not change which
+  // logo goes where.
+  function bulkInputsFingerprint() {
+    const mode = document.querySelector('input[name="bulk-target"]:checked')?.value || "light_dark";
+    const target = mode === "colors"
+      ? bulkSelectedColors().sort().join(",")
+      : text($("#bulk-class")?.value);
+    const styles = [...batchState.selected].sort().join(",");
+    return JSON.stringify([
+      state.store || "",
+      text($("#bulk-logo-code")?.value),
+      text($("#bulk-logo-scheme")?.value),
+      mode,
+      target,
+      styles,
+    ]);
+  }
+
+  // A preview describes one set of inputs. As soon as any of them changes the
+  // rows on screen are about a different job, so they go and Apply locks.
+  function invalidateBulkPreview() {
+    bulkState.previewKey = null;
+    const tbody = document.querySelector("#bulk-preview-table tbody");
+    if (tbody) tbody.replaceChildren();
+    const wrap = $("#bulk-preview-table-wrap");
+    if (wrap) wrap.hidden = true;
+    const applyBtn = $("#bulk-apply-btn");
+    if (applyBtn) applyBtn.disabled = true;
+    const summary = $("#bulk-preview-summary");
+    if (summary) summary.textContent = "The logo or the targets changed - press Preview again to see what would be affected.";
+  }
 
   async function bulkSearchDesigns(query) {
     const sequence = ++bulkState.requestSequence;
@@ -3989,6 +4057,9 @@
                   $("#bulk-class").value = cls;
                   selectedLogo.textContent += ` · Target set to ${cls} garments (change it below if needed)`;
                 }
+                // Setting .value in code fires no change event, so the panel
+                // listener never sees this: drop any preview here.
+                invalidateBulkPreview();
               },
             });
           });
@@ -4004,6 +4075,8 @@
               const selectedLogo = $("#bulk-selected-logo");
               selectedLogo.textContent = `Logo code: ${code} - no color scheme selected yet`;
               selectedLogo.hidden = false;
+              // Same reason as above: a programmatic value change is silent.
+              invalidateBulkPreview();
             },
           });
         }
@@ -4076,6 +4149,9 @@
       // A batch-bar selection narrows the preview to those styles (JSON drops undefined).
       style_codes: batchState.selected.size ? [...batchState.selected] : undefined,
     };
+    // Fingerprint the inputs this preview is being built from, not whatever
+    // the panel holds when the response lands.
+    const fingerprint = bulkInputsFingerprint();
     const previewBtn = $("#bulk-preview-btn");
     setBusy(previewBtn, true, "Previewing...");
     try {
@@ -4085,6 +4161,7 @@
       const summary = $("#bulk-preview-summary");
       const tableWrap = $("#bulk-preview-table-wrap");
       if (res.unresolved_reason) {
+        bulkState.previewKey = null;
         summary.textContent = res.unresolved_reason;
         tableWrap.hidden = true;
         $("#bulk-apply-btn").disabled = true;
@@ -4103,9 +4180,11 @@
         (res.counts.unclassified ? ` - ${res.counts.unclassified} color${res.counts.unclassified === 1 ? "" : "s"} unclassified (add in Colors tab)` : "");
       tableWrap.hidden = res.rows.length === 0;
       $("#bulk-apply-btn").disabled = res.rows.length === 0;
+      bulkState.previewKey = fingerprint;
       $("#bulk-preview-filter").value = "";
       $("#bulk-preview-shown").textContent = "";
     } catch (error) {
+      bulkState.previewKey = null;
       toast(error.message, "error");
     } finally {
       setBusy(previewBtn, false);
@@ -4113,6 +4192,13 @@
   }
 
   async function bulkApply() {
+    // The rows below were computed for one logo and one target set. If any of
+    // that changed since, they are somebody else's targets now.
+    if (!bulkState.previewKey || bulkState.previewKey !== bulkInputsFingerprint()) {
+      toast("The logo or the targets changed after this preview - press Preview again before applying.", "error");
+      invalidateBulkPreview();
+      return;
+    }
     const rows = Array.from(document.querySelectorAll("#bulk-preview-table tbody tr"))
       .filter((tr) => !tr.hidden && tr.querySelector("input[type='checkbox']").checked)
       .map((tr) => ({ style_code: tr.dataset.style, color_code: tr.dataset.color }));
@@ -4223,6 +4309,7 @@
     $("#bulk-preview-summary").textContent = "";
     $("#bulk-result").textContent = "";
     $("#bulk-apply-btn").disabled = true;
+    bulkState.previewKey = null;
     openDialog(panel);
     await loadBulkHistory();
     // Placement is the same searchable combobox as the assignment dialog,
@@ -5104,6 +5191,12 @@
       });
     });
     $("#bulk-apply-btn").addEventListener("click", bulkApply);
+    // Anything in the panel that feeds the preview drops it when it changes.
+    // Ticking preview rows or typing in the row filter does not, so the
+    // fingerprint decides rather than the event's target.
+    $("#bulk-apply-panel")?.addEventListener("change", () => {
+      if (bulkState.previewKey && bulkState.previewKey !== bulkInputsFingerprint()) invalidateBulkPreview();
+    });
     $("#bulk-all").addEventListener("change", (event) => {
       // Only toggle rows the current filter leaves visible.
       document.querySelectorAll("#bulk-preview-table tbody tr:not([hidden]) input[type='checkbox']").forEach((cb) => { cb.checked = event.target.checked; });
@@ -5293,7 +5386,7 @@
     $("#fill-preview-line").textContent = entries.length
       ? `${entries.length} style${entries.length === 1 ? "" : "s"} · up to ${slots} logo slot${slots === 1 ? "" : "s"} filled · occupied slots are skipped`
       : "Check the styles to fill.";
-    $("#fill-apply").disabled = !entries.length;
+    $("#fill-apply").disabled = !entries.length || Boolean(bulkOpsState.fill?.truncated);
   }
 
   async function loadFillPlan() {
@@ -5311,7 +5404,11 @@
 
   function renderFillPlan() {
     const plan = bulkOpsState.fill || { copyable: [], no_source: [] };
-    $("#fill-summary").textContent = `${storeDisplayFor(state.store)}: ${plan.copyable.length} fixable style${plan.copyable.length === 1 ? "" : "s"}, ${plan.no_source.length} with no logos anywhere.`;
+    // A preview past the server's row cap is incomplete: a style whose rows
+    // were cut off would look like it has no source. Never fill from it.
+    const cutOff = Boolean(plan.truncated);
+    $("#fill-summary").textContent = `${storeDisplayFor(state.store)}: ${plan.copyable.length} fixable style${plan.copyable.length === 1 ? "" : "s"}, ${plan.no_source.length} with no logos anywhere.`
+      + (cutOff ? " The preview was cut off at the server limit - it is incomplete, so Fill is disabled. Preview fewer styles at a time." : "");
     const box = $("#fill-copyable");
     if (!plan.copyable.length) {
       box.innerHTML = '<div class="grid-empty">No fixable gaps - every style that has logos covers all of its colors.</div>';
@@ -6270,6 +6367,17 @@
     return cache;
   }
 
+  // The draft tree as <option> rows, full path first, for the pickers that use
+  // a plain select instead of the "Move into..." list.
+  function catNodeOptionsHtml() {
+    const paths = catNodePaths();
+    return catTreeState.nodes
+      .filter((n) => n.node_id !== null && n.node_id !== undefined)
+      .sort((a, b) => text(paths.get(a.node_id)).localeCompare(text(paths.get(b.node_id))))
+      .map((n) => `<option value="${escapeHtml(n.node_id)}">${escapeHtml(text(paths.get(n.node_id), n.name))}</option>`)
+      .join("");
+  }
+
   function openCatMoveDialog() {
     const table = catMapState.table;
     if (!table) return;
@@ -6832,7 +6940,9 @@
     Object.entries(panels).forEach(([name, el]) => { if (el) el.hidden = name !== tab; });
     if (tab === "tree") loadCatTree();
     if (tab === "mapping") loadCatMapping();
-    if (tab === "products") loadCatProducts();
+    // Unawaited on purpose (the dispatcher is synchronous), so a rejection has
+    // to be surfaced here or it disappears into an unhandled promise.
+    if (tab === "products") loadCatProducts().catch((error) => toast(errorMessage(error, "The products workbench could not be opened."), "error"));
     if (tab === "preview") loadCatPreviewTab();
     if (tab === "runs") loadCatRuns();
   }
@@ -7659,7 +7769,10 @@
   }
 
   // ----- Logo names -----
-  const namesState = { q: "", filter: "", limit: 50, offset: 0, total: 0 };
+  // `generation` fences slow responses: the store picker stays live while a
+  // request is in flight, and rows must never be rendered (or saved) under a
+  // store other than the one they were fetched for.
+  const namesState = { q: "", filter: "", limit: 50, offset: 0, total: 0, generation: 0 };
   let namesSearchTimer = null;
 
   function syncNamesStoreSelect() {
@@ -7694,29 +7807,36 @@
     }
     $("#names-prev").disabled = true;
     $("#names-next").disabled = true;
+    const generation = ++namesState.generation;
+    const requestedStore = state.store || "";
     try {
-      const params = new URLSearchParams({ q: namesState.q, store: state.store || "", filter: namesState.filter, limit: namesState.limit, offset: namesState.offset });
+      const params = new URLSearchParams({ q: namesState.q, store: requestedStore, filter: namesState.filter, limit: namesState.limit, offset: namesState.offset });
       const resp = await api(`/api/logo-names?${params}`);
+      if (generation !== namesState.generation) return;
       namesState.total = resp.total || 0;
-      renderNames(envelope(resp, "names"));
-    } catch (e) { renderErrorState(box, friendlyLoadError("the logo names", e), loadNames); $("#names-pager").hidden = true; }
+      renderNames(envelope(resp, "names"), requestedStore);
+    } catch (e) {
+      if (generation !== namesState.generation) return;
+      renderErrorState(box, friendlyLoadError("the logo names", e), loadNames);
+      $("#names-pager").hidden = true;
+    }
   }
 
-  function renderNames(rows) {
+  function renderNames(rows, forStore = "") {
     const box = $("#names-list");
     if (!rows.length) {
       const msg = namesState.q
         ? "No logos match that search."
-        : (namesState.filter ? "No logos match this filter." : (state.store ? "This store has no logos yet." : "No logo names yet."));
+        : (namesState.filter ? "No logos match this filter." : (forStore ? "This store has no logos yet." : "No logo names yet."));
       box.innerHTML = `<div class="grid-empty">${msg}</div>`;
       $("#names-pager").hidden = true;
       return;
     }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(state.store ? state.store : text(r.fdm4_store))}" data-fdm4desc="${escapeHtml(text(r.fdm4_description))}" data-override="${r.store_specific && state.store ? "1" : ""}">
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Logo</th><th>Color</th><th>Name (shown to customers)</th><th>Source</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr data-design="${escapeHtml(r.design_id)}" data-scheme="${escapeHtml(r.color_scheme_id)}" data-rowstore="${escapeHtml(forStore ? forStore : text(r.fdm4_store))}" data-fdm4desc="${escapeHtml(text(r.fdm4_description))}" data-override="${r.store_specific && forStore ? "1" : ""}">
         <td><strong>${escapeHtml(text(r.logo_code, "-"))}</strong><br><code title="FDM4 design number">D${escapeHtml(r.design_id)}</code>${r.art_id ? `<br><small class="muted" title="FDM4 artwork number">art ${escapeHtml(r.art_id)}</small>` : ""}</td>
         <td><code>${escapeHtml(r.color_scheme_id)}</code></td>
         <td><input class="name-input" type="text" value="${escapeHtml(r.name)}" data-original="${escapeHtml(r.name)}" maxlength="200" aria-label="Logo name" placeholder="No name yet - type one or refresh from FDM4"></td>
-        <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(nameSourceLabel(r.source))}</span>${r.store_specific ? `<br><span class="badge-override">${state.store ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (state.store ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
+        <td><span class="name-source${r.locked ? " name-source--edited" : ""}">${r.locked ? "edited" : escapeHtml(nameSourceLabel(r.source))}</span>${r.store_specific ? `<br><span class="badge-override">${forStore ? "This store only" : `Only for ${escapeHtml(storeDisplayFor(text(r.fdm4_store)))}`}</span>` : (forStore ? '<br><small class="muted">shared name (all stores)</small>' : "")}</td>
         <td class="name-actions">
           <button class="button button--primary button--small name-save" type="button" disabled title="Type a new name to enable saving">Save</button>
           <button class="button button--ghost button--small name-repull" type="button" title="Refresh this design's name from FDM4's current description">Refresh from FDM4</button>
@@ -8306,8 +8426,19 @@
     $$(".mix-enable", box).forEach((b) => b.addEventListener("click", () => mixEnable(b.dataset.mode, b)));
   }
 
+  // The store picker and the store chips stay live while a confirmation dialog
+  // is open, so every mix action pins the store it was started for and refuses
+  // if the page has moved on. Without this the confirmed sentence names one
+  // store and the request changes another.
+  function mixStoreStillSelected(store) {
+    if (mixState.store === store) return true;
+    toast(`The selected store changed while you were confirming, so nothing was changed on ${storeDisplayFor(store)}. Select it again and retry.`, "error");
+    return false;
+  }
+
   async function mixEnable(mode, btn) {
-    const name = storeDisplayFor(mixState.store);
+    const store = mixState.store;
+    const name = storeDisplayFor(store);
     if (mode === "external") {
       const ok = await confirmAction({
         title: "Make this an external all-products store?",
@@ -8315,10 +8446,10 @@
         actionLabel: "Make external",
         danger: false,
       });
-      if (!ok) return;
+      if (!ok || !mixStoreStillSelected(store)) return;
       setBusy(btn, true, "Enrolling...");
       try {
-        const resp = await api("/api/product-mix/external", { method: "PUT", body: { fdm4_store: mixState.store } });
+        const resp = await api("/api/product-mix/external", { method: "PUT", body: { fdm4_store: store } });
         toast(resp.note || "External all-products supply enrolled.");
         await mixRefreshStores();
         renderMixBody();
@@ -8333,10 +8464,10 @@
       actionLabel: mode === "all" ? "Follow FDM4" : "Import and start",
       danger: false,
     });
-    if (!ok) return;
+    if (!ok || !mixStoreStillSelected(store)) return;
     setBusy(btn, true, "Enabling...");
     try {
-      const resp = await api("/api/product-mix/stores", { method: "PUT", body: { fdm4_store: mixState.store, mode } });
+      const resp = await api("/api/product-mix/stores", { method: "PUT", body: { fdm4_store: store, mode } });
       toast(mode === "all" ? "Done - this store now follows FDM4 automatically (all products)." : `Curated list started - imported ${Number(resp.imported) || 0} styles from FDM4.`);
       await mixRefreshStores();
       renderMixBody();
@@ -8367,7 +8498,8 @@
   }
 
   async function mixExternalToggle(btn, info) {
-    const name = storeDisplayFor(mixState.store);
+    const store = mixState.store;
+    const name = storeDisplayFor(store);
     if (info.external) {
       const ok = await confirmAction({
         title: "Stop the external all-products supply?",
@@ -8375,10 +8507,10 @@
         actionLabel: "Stop external supply",
         danger: true,
       });
-      if (!ok) return;
+      if (!ok || !mixStoreStillSelected(store)) return;
       setBusy(btn, true, "Working...");
       try {
-        const resp = await api(`/api/product-mix/external?${new URLSearchParams({ store: mixState.store })}`, { method: "DELETE" });
+        const resp = await api(`/api/product-mix/external?${new URLSearchParams({ store })}`, { method: "DELETE" });
         toast(resp.note || "External supply stopped.");
         await mixRefreshStores();
         renderMixBody();
@@ -8389,7 +8521,8 @@
   }
 
   async function mixSwitchMode(mode, btn) {
-    const name = storeDisplayFor(mixState.store);
+    const store = mixState.store;
+    const name = storeDisplayFor(store);
     if (mode === "list") {
       const ok = await confirmAction({ title: "Switch to a curated list?", message: `Snapshots ${name}'s current mix as your editable list. New FDM4 products stop flowing in automatically until you add or import them.`, actionLabel: "Switch", danger: false });
       if (!ok) return;
@@ -8397,16 +8530,17 @@
       let detail = "";
       setBusy(btn, true, "Checking impact...");
       try {
-        const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "mode", mode: "all" } });
+        const p = await api("/api/product-mix/preview", { method: "POST", body: { store, action: "mode", mode: "all" } });
         if (Number(p.products_restored) > 0) detail = ` About ${Number(p.products_restored)} products you removed come back on the next sync.`;
       } catch { /* preview optional - generic copy below */ }
       setBusy(btn, false);
       const ok = await confirmAction({ title: "Follow FDM4 again?", message: `${name} goes back to carrying everything FDM4 offers, including new products, automatically.${detail}`, actionLabel: "Follow FDM4" });
       if (!ok) return;
     }
+    if (!mixStoreStillSelected(store)) return;
     setBusy(btn, true, "Switching...");
     try {
-      await api("/api/product-mix/stores/mode", { method: "PUT", body: { fdm4_store: mixState.store, mode } });
+      await api("/api/product-mix/stores/mode", { method: "PUT", body: { fdm4_store: store, mode } });
       toast(mode === "list" ? "Curated list ready - the current mix is snapshotted." : "Following FDM4 - all products, automatically.");
       await mixRefreshStores();
       renderMixBody();
@@ -8414,20 +8548,21 @@
   }
 
   async function mixDisable(btn) {
-    const name = storeDisplayFor(mixState.store);
+    const store = mixState.store;
+    const name = storeDisplayFor(store);
     let detail = "";
     setBusy(btn, true, "Checking impact...");
     try {
-      const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "disable" } });
+      const p = await api("/api/product-mix/preview", { method: "POST", body: { store, action: "disable" } });
       if (Number(p.products_restored) > 0) detail = ` About ${Number(p.products_restored)} removed products come back on the next sync.`;
     } catch { /* fall back to generic copy */ }
     setBusy(btn, false);
     const ok = await confirmAction({ title: "Stop customizing this store?", message: `${name} goes back to carrying exactly what FDM4 offers it, and your custom product list is deleted.${detail}`, actionLabel: "Hand back to FDM4" });
-    if (!ok) return;
+    if (!ok || !mixStoreStillSelected(store)) return;
     setBusy(btn, true, "Working...");
     try {
       // The endpoint takes the store as a query parameter, not a JSON body.
-      await api(`/api/product-mix/stores?${new URLSearchParams({ store: mixState.store })}`, { method: "DELETE" });
+      await api(`/api/product-mix/stores?${new URLSearchParams({ store })}`, { method: "DELETE" });
       toast("Done - FDM4 is back in control of this store.");
       await mixRefreshStores();
       renderMixBody();
@@ -8617,20 +8752,21 @@
   async function mixRemoveStyles(styles, btn = null) {
     styles = (styles || []).filter(Boolean);
     if (!styles.length) return;
-    const name = storeDisplayFor(mixState.store);
+    const store = mixState.store;
+    const name = storeDisplayFor(store);
     const plural = styles.length === 1 ? "" : "s";
     let impact = `Removing ${styles.length} style${plural} retires their products on ${name} at the next sync. Products are hidden and set out of stock - never deleted - and come back if you re-add the style.`;
     if (btn) setBusy(btn, true, "Checking impact...");
     try {
-      const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "remove", styles } });
+      const p = await api("/api/product-mix/preview", { method: "POST", body: { store, action: "remove", styles } });
       impact = `Removing ${Number(p.styles_affected) || styles.length} style${plural} retires ${Number(p.products_retired) || 0} products on ${name} at the next sync. Products are hidden and set out of stock - never deleted - and come back if you re-add the style.`;
     } catch { /* fall back to generic copy */ }
     if (btn) setBusy(btn, false);
     const ok = await confirmAction({ title: `Remove ${styles.length} style${plural} from the mix?`, message: `${impact} Styles: ${styleSample(styles)}.`, actionLabel: "Remove" });
-    if (!ok) return;
+    if (!ok || !mixStoreStillSelected(store)) return;
     setBusy(btn, true, "Removing...");
     try {
-      await api("/api/product-mix", { method: "DELETE", body: { store: mixState.store, styles } });
+      await api("/api/product-mix", { method: "DELETE", body: { store, styles } });
       toast(`${styles.length} style${plural} removed from the mix.`);
       mixState.selected = new Set();
       await mixRefreshStores();
@@ -8659,12 +8795,13 @@
   }
 
   async function mixImport(mode, btn) {
-    const name = storeDisplayFor(mixState.store);
+    const store = mixState.store;
+    const name = storeDisplayFor(store);
     if (mode === "reset") {
       let detail = "";
       setBusy(btn, true, "Checking impact...");
       try {
-        const p = await api("/api/product-mix/preview", { method: "POST", body: { store: mixState.store, action: "reset" } });
+        const p = await api("/api/product-mix/preview", { method: "POST", body: { store, action: "reset" } });
         const back = Number(p.products_restored) || 0;
         const gone = Number(p.products_retired) || 0;
         if (back || gone) detail = ` ${back} removed products come back${gone ? ` and ${gone} are retired` : ""} on the next sync.`;
@@ -8684,9 +8821,10 @@
       });
       if (!ok) return;
     }
+    if (!mixStoreStillSelected(store)) return;
     setBusy(btn, true, mode === "reset" ? "Resetting..." : "Importing...");
     try {
-      const resp = await api("/api/product-mix/import", { method: "POST", body: { store: mixState.store, mode } });
+      const resp = await api("/api/product-mix/import", { method: "POST", body: { store, mode } });
       const added = Number(resp.added) || 0;
       toast(mode === "reset"
         ? `Reset complete - the mix now matches FDM4 (${added} style${added === 1 ? "" : "s"} restored).`

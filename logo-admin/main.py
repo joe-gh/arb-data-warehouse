@@ -117,18 +117,9 @@ def startup() -> None:
             raise RuntimeError("AGENT_UPLOAD_DIR must not be a symbolic link")
         settings.agent_upload_dir.chmod(0o700)
     database.open()
-    if settings.catmgr_enabled:
-        # Wake runs the previous process left queued/running (a restart
-        # mid-job otherwise wedges the run: stale running jobs are reclaimed
-        # by the worker and resume from their progress cursors).
-        try:
-            import categories_runs
-            recovered = categories_runs.recover_runs()
-            if recovered:
-                logging.getLogger("catmgr").warning(
-                    "category runs recovered at startup: %s", recovered)
-        except Exception:  # noqa: BLE001 - recovery must never block startup
-            logging.getLogger("catmgr").exception("category run recovery failed")
+    # The write contract is checked BEFORE anything can write or call
+    # WordPress: a drifted database must refuse startup without a recovered
+    # run having already changed job rows or a store.
     if settings.agent_writes_enabled:
         try:
             with database.cursor() as cursor:
@@ -141,6 +132,19 @@ def startup() -> None:
         except Exception:
             database.close()
             raise
+    if settings.catmgr_enabled:
+        # Wake runs the previous process left running, or queued after someone
+        # started them (a restart mid-job otherwise wedges the run: stale
+        # running jobs are reclaimed by the worker and resume from their
+        # progress cursors).
+        try:
+            import categories_runs
+            recovered = categories_runs.recover_runs()
+            if recovered:
+                logging.getLogger("catmgr").warning(
+                    "category runs recovered at startup: %s", recovered)
+        except Exception:  # noqa: BLE001 - recovery must never block startup
+            logging.getLogger("catmgr").exception("category run recovery failed")
 
 
 @app.on_event("shutdown")

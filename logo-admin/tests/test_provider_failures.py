@@ -254,3 +254,60 @@ async def test_failed_provider_started_marker_aborts_before_provider_io(monkeypa
     assert client.closed is True
     assert len(activity["reconciled"]) == 1
     assert activity["retained"] == []
+
+
+@pytest.mark.asyncio
+async def test_mapping_accounting_failure_still_closes_client_and_capacity(monkeypatch):
+    """A quota write that raises must not keep the owned provider client or the
+    mapping capacity permit."""
+    import spreadsheet_mapping
+
+    clients = []
+
+    class MappingClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.responses = self
+            clients.append(self)
+
+        async def create(self, **_kwargs):
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                output_text='{"command":"set_store_pricing_tier","columns":[],"constants":[]}',
+            )
+
+        async def close(self):
+            self.closed = True
+
+    async def reserve(**_kwargs):
+        return SimpleNamespace(token="reservation")
+
+    def accounting_is_down(*_args, **_kwargs):
+        raise RuntimeError("quota accounting is down")
+
+    monkeypatch.setattr(spreadsheet_mapping, "AsyncOpenAI", MappingClient)
+    monkeypatch.setattr(spreadsheet_mapping.quotas, "reserve_async", reserve)
+    monkeypatch.setattr(
+        spreadsheet_mapping.quotas, "mark_provider_started", lambda _reservation: True
+    )
+    monkeypatch.setattr(spreadsheet_mapping.quotas, "reconcile", accounting_is_down)
+    monkeypatch.setattr(spreadsheet_mapping.quotas, "retain", accounting_is_down)
+
+    semaphore = asyncio.Semaphore(1)
+    settings = SimpleNamespace(
+        openai_api_key="test-key",
+        openai_model="test-model",
+        agent_daily_token_cap=100_000,
+        session_secret="mapping-cleanup-test-secret-0123456789",
+    )
+    with pytest.raises(RuntimeError, match="quota accounting is down"):
+        await spreadsheet_mapping.propose_mapping(
+            ["fdm4_store", "tier_name"],
+            [{"fdm4_store": "S_TEST", "tier_name": "MSRP"}],
+            "map these",
+            settings,
+            user_login="admin-one",
+            semaphore=semaphore,
+        )
+    assert clients and clients[0].closed is True
+    assert not semaphore.locked()

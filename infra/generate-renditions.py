@@ -103,6 +103,18 @@ def load_pending(limit: int) -> list[Rendition]:
     return rows
 
 
+def load_canonical_keys() -> frozenset:
+    """Every object the media mapping calls canonical.
+
+    Renditions are written beside their source under the same
+    products/<sku>/ prefix, so a rendition filename can collide with a
+    DIFFERENT source image that already lives there. Nothing in this set may
+    ever be a rendition destination.
+    """
+    raw = psql_copy("COPY (SELECT DISTINCT s3_key FROM pim.media_object) TO STDOUT")
+    return frozenset(line for line in raw.splitlines() if line)
+
+
 def tsv_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("\t", " ").replace("\n", " ").replace("\r", " ")
 
@@ -230,13 +242,19 @@ def render(base_image, row: Rendition, jpeg_quality: int, webp_quality: int) -> 
     return output.getvalue(), output_type
 
 
-def process_source(s3, canonical_key: str, rows: list[Rendition], jpeg_quality: int, webp_quality: int) -> tuple[list[str], list[str]]:
+def process_source(s3, canonical_key: str, rows: list[Rendition], jpeg_quality: int, webp_quality: int,
+                   protected: frozenset = frozenset()) -> tuple[list[str], list[str]]:
     from PIL import Image, ImageOps
 
     successes: list[str] = []
     errors: list[str] = []
     canonical_basename = canonical_key.rsplit("/", 1)[-1]
-    unsafe = [row for row in rows if row.destination_key == canonical_key or row.rendition_file == canonical_basename]
+    unsafe = [
+        row for row in rows
+        if row.destination_key == canonical_key
+        or row.rendition_file == canonical_basename
+        or row.destination_key in protected
+    ]
     if unsafe:
         return [], [f"{row.destination_key}\trefused group containing a canonical overwrite" for row in rows]
 
@@ -326,6 +344,12 @@ def main() -> int:
         print(f"missing runtime dependency ({exc}); install Ubuntu package python3-pil", file=sys.stderr)
         return 1
 
+    try:
+        protected = load_canonical_keys()
+    except Exception as exc:  # noqa: BLE001 - fail closed: no list, no writes
+        print(f"cannot read the canonical key list: {exc}", file=sys.stderr)
+        return 1
+
     s3 = boto3.client("s3", region_name="us-east-2")
     update_rows: list[str] = []
     errors: list[str] = []
@@ -334,7 +358,7 @@ def main() -> int:
     started = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(process_source, s3, key, rows, args.jpeg_quality, args.webp_quality): (key, len(rows))
+            pool.submit(process_source, s3, key, rows, args.jpeg_quality, args.webp_quality, protected): (key, len(rows))
             for key, rows in grouped.items()
         }
         for future in as_completed(futures):

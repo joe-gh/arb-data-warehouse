@@ -60,3 +60,75 @@ def classify_color(name):
         if _has(first, LIGHT) or _has(first, BRIGHT): return "light", 0.55
         return "dark", 0.45
     return "dark", 0.4
+
+
+# ---------------------------------------------------------------------------
+# Store-aware classification (one definition for preview, paste and copy).
+# ---------------------------------------------------------------------------
+
+# One store's distinct garment color codes. Larger than any real store's
+# palette; a store past it is a data problem, not a query to answer.
+MAX_STORE_COLOR_ROWS = 5_000
+
+
+def classify_store_colors(cursor, *, store, catalog=None, codes=None, limit=MAX_STORE_COLOR_ROWS):
+    """Light/dark class of a store's own garment colors, keyed by color code.
+
+    FDM4 color codes are NOT globally unique: code 0002 is "Black" at one
+    store and "White" in the shared logo.color_class table, so a bare code
+    join can flip a color's class. Resolve by the store's actual color NAME
+    first and fall back to the code, which is what the Bulk Apply preview has
+    always done - paste and copy-to-many now read the same way.
+
+    Colors with no class at all are absent from the result.
+    """
+
+    store = str(store).strip()
+    wanted = None
+    if codes is not None:
+        wanted = sorted({str(code).strip() for code in codes if str(code).strip()})
+        if not wanted:
+            return {}
+    catalog_sql = "" if catalog is None else " AND s.catalog_id = %(catalog)s"
+    cursor.execute(
+        f"""
+        WITH store_colors AS (
+            SELECT s.color_code, max(s.color) AS color
+              FROM woo.store_product_state s
+             WHERE s.fdm4_store = %(store)s{catalog_sql}
+               AND s.is_active
+               AND s.kind = 'variation'
+               AND NULLIF(btrim(s.color_code), '') IS NOT NULL
+               AND (%(codes)s::text[] IS NULL OR s.color_code = ANY(%(codes)s))
+             GROUP BY s.color_code
+             LIMIT %(limit)s
+        )
+        SELECT c.color_code, cc.light_dark
+          FROM store_colors c
+          LEFT JOIN LATERAL (
+              SELECT c2.light_dark
+                FROM logo.color_class c2
+               WHERE lower(btrim(c2.color_name)) = lower(btrim(c.color))
+                  OR c2.color_code = c.color_code
+               ORDER BY (lower(btrim(c2.color_name)) = lower(btrim(c.color))) DESC,
+                        (c2.source = 'manual') DESC
+               LIMIT 1
+          ) cc ON true
+        """,
+        {
+            "store": store,
+            "catalog": catalog,
+            "codes": wanted,
+            "limit": int(limit) + 1,
+        },
+    )
+    rows = list(cursor.fetchall())
+    if len(rows) > int(limit):
+        raise ValueError(
+            f"Store exceeds the {int(limit)}-color classification limit"
+        )
+    return {
+        str(row["color_code"]): str(row["light_dark"])
+        for row in rows
+        if row["light_dark"] is not None
+    }

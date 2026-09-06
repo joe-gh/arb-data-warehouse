@@ -286,38 +286,42 @@ async def propose_mapping(
 
         response = await request_mapping()
     finally:
-        if reservation is not None:
-            usage = getattr(response, "usage", None) if response is not None else None
-            if usage is not None:
-                await _joinable_to_thread(
-                    quotas.reconcile,
-                    reservation,
-                    input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-                    output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-                )
-            elif not request_started:
-                await _joinable_to_thread(
-                    quotas.reconcile,
-                    reservation,
-                    input_tokens=0,
-                    output_tokens=0,
-                )
-            else:
-                await _joinable_to_thread(
-                    quotas.retain,
-                    reservation,
-                )
+        # Quota accounting can fail on its own; the client and the capacity
+        # permit are ours to give back either way, so they sit in its finally.
         try:
-            if owns_client and client is not None:
-                close_task = asyncio.create_task(client.close())
-                try:
-                    await asyncio.shield(close_task)
-                except asyncio.CancelledError:
-                    await asyncio.shield(close_task)
-                    raise
+            if reservation is not None:
+                usage = getattr(response, "usage", None) if response is not None else None
+                if usage is not None:
+                    await _joinable_to_thread(
+                        quotas.reconcile,
+                        reservation,
+                        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                    )
+                elif not request_started:
+                    await _joinable_to_thread(
+                        quotas.reconcile,
+                        reservation,
+                        input_tokens=0,
+                        output_tokens=0,
+                    )
+                else:
+                    await _joinable_to_thread(
+                        quotas.retain,
+                        reservation,
+                    )
         finally:
-            if capacity_acquired:
-                semaphore.release()
+            try:
+                if owns_client and client is not None:
+                    close_task = asyncio.create_task(client.close())
+                    try:
+                        await asyncio.shield(close_task)
+                    except asyncio.CancelledError:
+                        await asyncio.shield(close_task)
+                        raise
+            finally:
+                if capacity_acquired:
+                    semaphore.release()
 
     if response is None:
         raise RuntimeError("mapping provider returned no response")

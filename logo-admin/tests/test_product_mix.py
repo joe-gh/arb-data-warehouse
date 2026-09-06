@@ -7,6 +7,13 @@ candidate-only drift); S_ALLMODE follows FDM4 in mode 'all'; S_EMPTY has a
 catalog row but no products.
 """
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+import psycopg2
+import pytest
+
 
 def _enable(client, store, mode="list", expect=200):
     response = client.put(
@@ -290,3 +297,113 @@ def test_external_enroll_and_unenroll(client_as):
     assert client.delete(
         "/api/product-mix/external",
         params={"store": "S_TEST"}).status_code == 404
+
+
+def _remove(client, store, styles, barrier=None):
+    if barrier is not None:
+        barrier.wait(timeout=15)
+    return client.request(
+        "DELETE", "/api/product-mix",
+        json={"store": store, "styles": styles}).status_code
+
+
+def test_removal_waits_for_the_store_row_lock(client_as):
+    """The DELETE handler takes the per-store lock before it touches items.
+
+    Two removals of two different last styles each delete their own row and
+    then count what is left. Under READ COMMITTED neither sees the other's
+    uncommitted delete, so both used to count one survivor and commit, leaving
+    an empty list - which makes the transform skip the mix filter and project
+    the whole FDM4 assortment back onto the store. Holding the store's
+    registry row from outside the app proves the handler now queues on it.
+    """
+
+    client = client_as()
+    assert client.put(
+        "/api/product-mix",
+        json={"store": "S_MIXED", "styles": ["MIX-2"]}).status_code == 200
+
+    holder = psycopg2.connect(os.environ["TEST_DATABASE_ADMIN_DSN"])
+    holder.autocommit = False
+    outcome = {}
+    worker_client = client_as()
+
+    def remove_mix_one():
+        outcome["status"] = _remove(worker_client, "S_MIXED", ["MIX-1"])
+
+    try:
+        with holder.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM woo.store_mix_store "
+                "WHERE fdm4_store = 'S_MIXED' FOR UPDATE")
+        worker = threading.Thread(target=remove_mix_one)
+        worker.start()
+        worker.join(timeout=2)
+        assert worker.is_alive(), "removal did not wait for the store row lock"
+        holder.rollback()
+        worker.join(timeout=20)
+        assert not worker.is_alive()
+        assert outcome["status"] == 200
+    finally:
+        holder.rollback()
+        holder.close()
+    listing = client.get("/api/product-mix", params={"store": "S_MIXED"}).json()
+    assert listing["summary"]["in_mix"] == 1
+
+
+def test_concurrent_removal_of_the_last_two_styles_leaves_one(client_as):
+    """Racing removals of the last two styles: exactly one commits."""
+
+    client = client_as()
+    assert client.put(
+        "/api/product-mix",
+        json={"store": "S_MIXED", "styles": ["MIX-2"]}).status_code == 200
+    listing = client.get("/api/product-mix", params={"store": "S_MIXED"}).json()
+    assert listing["summary"]["in_mix"] == 2
+
+    barrier = threading.Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_remove, client_as(), "S_MIXED", [style], barrier)
+            for style in ("MIX-1", "MIX-2")
+        ]
+        statuses = sorted(future.result(timeout=30) for future in futures)
+
+    assert statuses == [200, 400]
+    listing = client.get("/api/product-mix", params={"store": "S_MIXED"}).json()
+    assert listing["summary"]["in_mix"] == 1
+
+
+def test_deferred_trigger_refuses_an_emptying_commit(client_as):
+    """The data-layer guard holds even for a writer that skips the app lock."""
+
+    del client_as
+    connection = psycopg2.connect(os.environ["TEST_DATABASE_ADMIN_DSN"])
+    connection.autocommit = False
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM woo.store_mix_item WHERE fdm4_store = 'S_MIXED'")
+        with pytest.raises(psycopg2.Error) as raised:
+            connection.commit()
+        assert "empty" in str(raised.value)
+        connection.rollback()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM woo.store_mix_item "
+                "WHERE fdm4_store = 'S_MIXED'")
+            assert cursor.fetchone()[0] == 1
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_import_reset_may_empty_and_refill_within_one_transaction(client_as):
+    """The guard is DEFERRED, so the seed-after-wipe flow still works."""
+
+    client = client_as()
+    payload = client.post(
+        "/api/product-mix/import",
+        json={"store": "S_MIXED", "mode": "reset"}).json()
+    assert payload["removed"] == 1
+    assert payload["added"] >= 1

@@ -48,6 +48,7 @@ from database_contract import (
     _expected_table_privileges,
     _expected_agent_indexes,
     _expected_unlisted_privilege,
+    _normalized_sql_expression,
     _validate_callable_inventory,
     _validate_table_authority,
     validate_write_database_contract,
@@ -1069,3 +1070,71 @@ def test_category_column_and_constraint_drift_fail_closed(table):
     constraints = [r for r in _safe_constraint_rows() if not (r["table_name"] == table and r["constraint_type"] == "p")]
     with pytest.raises(RuntimeError, match="constraint"):
         _assert_restore_constraint_contract(constraints)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "equal"),
+    (
+        # A string literal is data: two CHECKs that allow different values
+        # are different constraints.
+        ("kind = 'filter'::text", "kind = 'FILTER'::text", False),
+        # Parentheses group operators; dropping them made two different
+        # boolean rules compare equal.
+        ("(a AND b) OR c", "a AND (b OR c)", False),
+        # Whitespace and the quotes PostgreSQL puts around a keyword column
+        # really are presentation.
+        ('("position" >= 1)', "( position>=1 )", True),
+    ),
+)
+def test_sql_normalisation_keeps_literals_and_grouping(left, right, equal):
+    same = _normalized_sql_expression(left) == _normalized_sql_expression(right)
+    assert same is equal
+
+
+def test_write_contract_rejects_a_check_whose_literal_case_changed():
+    """A CHECK that allows different values must stop a write-enabled start.
+
+    catmgr.product_assignment is empty in the fixtures, so the rewritten
+    constraint validates and the only difference the contract sees is the
+    literal's case.
+    """
+
+    admin_dsn = os.environ["TEST_DATABASE_ADMIN_DSN"]
+    connection = psycopg2.connect(admin_dsn)
+    connection.autocommit = True
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM catmgr.product_assignment")
+            assert cursor.fetchone()[0] == 0, (
+                "this drift rewrites a CHECK; the table must be empty"
+            )
+            cursor.execute(
+                "ALTER TABLE catmgr.product_assignment "
+                "DROP CONSTRAINT product_assignment_source_check"
+            )
+            cursor.execute(
+                "ALTER TABLE catmgr.product_assignment "
+                "ADD CONSTRAINT product_assignment_source_check CHECK ("
+                "source = ANY (ARRAY['MANUAL'::text, 'csv'::text,"
+                " 'ai'::text, 'rule'::text]))"
+            )
+        with harness_grants_suspended():
+            with database.cursor() as cursor:
+                with pytest.raises(RuntimeError, match="exact-undo constraint"):
+                    validate_write_database_contract(
+                        cursor,
+                        expected_repull_sha256=repull_function_sha256(),
+                    )
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE catmgr.product_assignment "
+                "DROP CONSTRAINT IF EXISTS product_assignment_source_check"
+            )
+            cursor.execute(
+                "ALTER TABLE catmgr.product_assignment "
+                "ADD CONSTRAINT product_assignment_source_check CHECK ("
+                "source = ANY (ARRAY['manual'::text, 'csv'::text,"
+                " 'ai'::text, 'rule'::text]))"
+            )
+        connection.close()

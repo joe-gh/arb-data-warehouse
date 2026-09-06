@@ -34,6 +34,10 @@ CREATE INDEX IF NOT EXISTS assignment_tombstone_version
 
 CREATE OR REPLACE FUNCTION logo.assignment_feed_stamp() RETURNS trigger AS $fn$
 BEGIN
+    -- Allocation order must equal commit order: without this lock two
+    -- concurrent writes can allocate 101 and 102 and commit 102 first, so a
+    -- consumer advances past 102 and never sees 101 (2026-09-06 migration).
+    PERFORM pg_advisory_xact_lock(hashtext('logo.assignment_version_seq'));
     NEW.row_version := nextval('logo.assignment_version_seq');
     IF TG_OP = 'INSERT' THEN
         DELETE FROM logo.assignment_tombstone t
@@ -49,6 +53,8 @@ $fn$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION logo.assignment_feed_tombstone() RETURNS trigger AS $fn$
 BEGIN
+    -- Same commit-order rule as the stamp trigger above (2026-09-06 migration).
+    PERFORM pg_advisory_xact_lock(hashtext('logo.assignment_version_seq'));
     INSERT INTO logo.assignment_tombstone
         (fdm4_store, product_style, garment_color_code, option_row, position,
          row_version, deleted_at, deleted_by)

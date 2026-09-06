@@ -415,3 +415,158 @@ def test_design_swap_is_bounded_before_writing(client_as, monkeypatch):
 def test_dashboard_has_design_swap_dialog(client_as):
     html = client_as().get("/").text
     assert 'id="design-swap-dialog"' in html and 'id="design-swap-open"' in html
+
+
+# ---- Journal completeness: cascades in, skipped slots out ----
+
+def _seed_third_position(color):
+    """Give one option row a third companion position."""
+
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO logo.assignment
+                    (fdm4_store, product_style, garment_color_code, option_row, position,
+                     design_id, logo_code, color_scheme_id, location, updated_by)
+                VALUES ('S_TEST', 'STYLE-1', %s, 1, 3, 'DESIGN-2', 'C2', 'SCHEME-2',
+                        'Sleeve', 'fixture')
+                ON CONFLICT DO NOTHING
+                """,
+                (color,),
+            )
+
+
+def _active(color):
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT position, active FROM logo.assignment "
+                "WHERE fdm4_store='S_TEST' AND product_style='STYLE-1' "
+                "AND garment_color_code=%s AND option_row=1 ORDER BY position",
+                (color,),
+            )
+            return dict(cursor.fetchall())
+
+
+def _option_row_state(color):
+    """Full rows minus the trigger-managed feed version."""
+
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT to_jsonb(a) - 'row_version' AS row FROM logo.assignment a "
+                "WHERE fdm4_store='S_TEST' AND product_style='STYLE-1' "
+                "AND garment_color_code=%s AND option_row=1 ORDER BY position",
+                (color,),
+            )
+            return [r[0] for r in cursor.fetchall()]
+
+
+def test_undo_reactivates_companions_a_paste_cascaded_off(client_as):
+    """Writing an inactive position-1 anchor deactivates positions 2-3.
+
+    Those rows are part of what the paste changed, so undo has to put them
+    back even though the clipboard never named them.
+    """
+
+    _seed_third_position("RED")
+    client = client_as()
+    assert _active("RED") == {1: True, 2: True, 3: True}
+    body = client.post("/api/assignments/paste", json={
+        "store": "S_TEST", "style": "STYLE-1", "colors": ["RED"],
+        "rows": [{**ROW_P1, "active": False}], "overwrite": True,
+    }).json()
+    assert body["updated"] == 1
+    assert _active("RED") == {1: False, 2: False, 3: False}
+    undo = client.post("/api/bulk-apply/undo", json={"batch_id": body["batch_id"]})
+    assert undo.status_code == 200, undo.text
+    assert _active("RED") == {1: True, 2: True, 3: True}
+
+
+def test_undo_restores_a_companion_the_anchor_cascade_reached_first(client_as):
+    """The clipboard is applied anchor first.
+
+    Position 2 is refused here (a companion needs an active anchor), but the
+    anchor's cascade had already deactivated the row on disk, so its
+    before-image has to come from before the anchor was written - not from
+    the state the cascade left behind.
+    """
+
+    client = client_as()
+    before = _option_row_state("RED")
+    assert len(before) == 2
+    body = client.post("/api/assignments/paste", json={
+        "store": "S_TEST", "style": "STYLE-1", "colors": ["RED"],
+        "rows": [{**ROW_P1, "active": False}, ROW_P2], "overwrite": True,
+    }).json()
+    assert body["updated"] == 1 and body["skipped_invalid"] == 1
+    assert _active("RED") == {1: False, 2: False}
+    undo = client.post("/api/bulk-apply/undo", json={"batch_id": body["batch_id"]})
+    assert undo.status_code == 200, undo.text
+    assert _option_row_state("RED") == before
+
+
+def test_undo_leaves_a_skipped_slot_someone_else_deleted_deleted(client_as):
+    """A slot the paste skipped as occupied was never changed by the batch,
+    so undo must not resurrect it after someone deletes it."""
+
+    client = client_as()
+    body = client.post("/api/assignments/paste", json={
+        "store": "S_TEST", "style": "STYLE-1", "colors": ["RED"],
+        "rows": [ROW_P1], "overwrite": False,
+    }).json()
+    assert body["skipped_occupied"] == 1 and body["created"] == 0
+    with psycopg2.connect(TEST_ADMIN_DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM logo.assignment WHERE fdm4_store='S_TEST' "
+                "AND product_style='STYLE-1' AND garment_color_code='RED' "
+                "AND option_row=1 AND position=1"
+            )
+    undo = client.post("/api/bulk-apply/undo", json={"batch_id": body["batch_id"]})
+    assert undo.status_code == 200, undo.text
+    assert [r[1] for r in _rows("RED")] == [2]
+
+
+# ---- Color classification is by the store's own color name, not the code ----
+
+def test_light_dark_scopes_read_the_store_name_before_the_code(client_as):
+    """FDM4 color codes are not globally unique.
+
+    Code 0002 is "Black" at this store while logo.color_class holds 0002 as
+    the light color "White". Paste and copy have to class it the way the
+    preview does - by the name the store actually uses.
+    """
+
+    _seed_variation("STYLE-2", "0002", "Black")
+    _seed_class("0002", "White", "light")
+    _seed_class("BLACKCODE", "Black", "dark")
+    _seed_class("RED", "Red", "dark")
+    client = client_as()
+
+    dark = client.post("/api/assignments/paste-batch", json={
+        "store": "S_TEST", "styles": ["STYLE-2"], "color_scope": "dark",
+        "rows": [ROW_P1],
+    })
+    assert dark.status_code == 200, dark.text
+    assert "0002" in dark.json()["results"][0]["colors"]
+    undo = client.post("/api/bulk-apply/undo",
+                       json={"batch_id": dark.json()["batch_id"]})
+    assert undo.status_code == 200, undo.text
+
+    light = client.post("/api/assignments/paste-batch", json={
+        "store": "S_TEST", "styles": ["STYLE-2"], "color_scope": "light",
+        "rows": [ROW_P1],
+    })
+    assert light.status_code == 200, light.text
+    assert "0002" not in (light.json()["results"][0].get("colors") or [])
+
+    plan = client.post("/api/copy-style-batch/preview", json={
+        "store": "S_TEST", "source_style": "STYLE-1",
+        "target_styles": ["STYLE-2"], "color_match": "like",
+    })
+    assert plan.status_code == 200, plan.text
+    mappings = {m["target_color"]: m for m in plan.json()["targets"][0]["mappings"]}
+    assert mappings["0002"]["via"] == "dark"
+    assert mappings["0002"]["source_color"] == "RED"

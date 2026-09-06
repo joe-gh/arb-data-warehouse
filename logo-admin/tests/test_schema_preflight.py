@@ -12,6 +12,12 @@ import psycopg2
 from psycopg2.extensions import parse_dsn
 import pytest
 
+from psycopg2.extras import RealDictCursor
+
+from database_contract import (
+    RESTORE_COLUMN_CONTRACTS,
+    validate_write_database_contract,
+)
 from tests.conftest import harness_grants_suspended, repull_function_sha256
 
 
@@ -143,13 +149,21 @@ def test_runtime_and_harness_reject_set_role_sessions():
 
 
 def test_preflight_inventories_every_agent_write_business_table():
+    """The preflight covers every exact-undo table, not a hand-kept subset.
+
+    The list is generated from RESTORE_COLUMN_CONTRACTS, so this derives the
+    expectation the same way instead of naming three tables that were once
+    the whole kernel.
+    """
+
     source = PREFLIGHT.read_text()
-    for qualified_name in (
-        "('logo', 'assignment')",
-        "('logo', 'store_settings')",
-        "('woo', 'store_pricing_tier')",
-    ):
-        assert qualified_name in source
+    for table_name in RESTORE_COLUMN_CONTRACTS:
+        schema, _, name = table_name.partition(".")
+        assert f"('{schema}', '{name}')" in source, table_name
+        for column_name in RESTORE_COLUMN_CONTRACTS[table_name]:
+            assert f"'{schema}', '{name}', '{column_name}'" in source, (
+                table_name, column_name,
+            )
 
 
 def test_preflight_covers_triggers_rules_constraints_functions_and_acls():
@@ -544,6 +558,51 @@ def test_sql_preflight_rejects_each_committed_contract_drift(
     del drift_name
     with _committed_schema_drift(apply_sql, restore_sql):
         assert _run_sql_preflight().returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("apply_sql", "restore_sql"),
+    (
+        (
+            "ALTER TABLE woo.virtual_catalog_store "
+            "ADD COLUMN drift_probe_note text",
+            "ALTER TABLE woo.virtual_catalog_store "
+            "DROP COLUMN drift_probe_note",
+        ),
+        (
+            "ALTER TABLE catmgr.assignment_rule "
+            "ALTER COLUMN priority SET DEFAULT 1",
+            "ALTER TABLE catmgr.assignment_rule "
+            "ALTER COLUMN priority SET DEFAULT 0",
+        ),
+    ),
+)
+def test_kernel_drift_stops_both_the_preflight_and_startup(
+    apply_sql,
+    restore_sql,
+):
+    """A change to any exact-undo table refuses in BOTH places.
+
+    The operator preflight used to inventory three of the nineteen kernel
+    tables, so a column added to woo.virtual_catalog_store read as ready while
+    the write-enabled startup refused it.
+    """
+
+    with _committed_schema_drift(apply_sql, restore_sql):
+        with harness_grants_suspended():
+            assert _run_sql_preflight().returncode != 0
+        connection = psycopg2.connect(os.environ["TEST_DATABASE_DSN"])
+        try:
+            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                with pytest.raises(RuntimeError, match="exact-undo"):
+                    with harness_grants_suspended():
+                        validate_write_database_contract(
+                            cursor,
+                            expected_repull_sha256=repull_function_sha256(),
+                        )
+            connection.rollback()
+        finally:
+            connection.close()
 
 
 def test_sql_preflight_rejects_a_function_body_change():

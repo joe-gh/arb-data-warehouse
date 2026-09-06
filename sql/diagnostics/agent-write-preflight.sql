@@ -1320,58 +1320,305 @@ WITH execution_contract AS (
                   AND privilege.is_grantable
            ) AS passes
       FROM column_inventory
+),
+-- BEGIN GENERATED (logo-admin/infra/dump_contract_pins.py)
+-- Every kernel table the exact-undo restore path writes, and the
+-- column, order and constraint policy for each, taken from
+-- logo-admin/database_contract.py. Regenerate with:
+--   python logo-admin/infra/dump_contract_pins.py --emit-generated
+restore_table_policy(schema_name, table_name) AS (
+    VALUES
+        ('catmgr', 'assignment_rule'),
+        ('catmgr', 'node'),
+        ('catmgr', 'node_store_override'),
+        ('catmgr', 'product_assignment'),
+        ('catmgr', 'slug_map'),
+        ('catmgr', 'uncategorized_ack'),
+        ('logo', 'assignment'),
+        ('logo', 'color_class'),
+        ('logo', 'default_cost'),
+        ('logo', 'display_name'),
+        ('logo', 'store_settings'),
+        ('woo', 'brand_stock_rule'),
+        ('woo', 'price_rule'),
+        ('woo', 'stock_override'),
+        ('woo', 'store_mix_item'),
+        ('woo', 'store_mix_store'),
+        ('woo', 'store_pricing_tier'),
+        ('woo', 'sync_exclusion'),
+        ('woo', 'virtual_catalog_store')
 ), restore_column_policy(
     schema_name, table_name, column_name, formatted_type, nullable,
-    default_signature
+    identity_kind, default_signature
 ) AS (
     VALUES
-        ('logo', 'assignment', 'fdm4_store', 'text', false, NULL),
-        ('logo', 'assignment', 'product_style', 'text', false, NULL),
-        ('logo', 'assignment', 'garment_color_code', 'text', false, NULL),
-        ('logo', 'assignment', 'position', 'smallint', false, '1'),
-        ('logo', 'assignment', 'option_row', 'integer', false, '1'),
-        ('logo', 'assignment', 'design_id', 'text', false, NULL),
-        ('logo', 'assignment', 'logo_code', 'text', false, ''''''),
-        ('logo', 'assignment', 'color_scheme_id', 'text', false, ''''''),
-        ('logo', 'assignment', 'location', 'text', false, ''''''),
-        ('logo', 'assignment', 'optional', 'boolean', false, 'false'),
-        ('logo', 'assignment', 'background', 'text', false, ''''''),
-        ('logo', 'assignment', 'cost_override', 'numeric(12,2)', true, NULL),
-        ('logo', 'assignment', 'sort_order', 'integer', false, '0'),
-        ('logo', 'assignment', 'image_url', 'text', false, ''''''),
-        ('logo', 'assignment', 'active', 'boolean', false, 'true'),
-        ('logo', 'assignment', 'updated_by', 'text', false, '''seed'''),
-        ('logo', 'assignment', 'updated_at', 'timestamp with time zone', false, 'now'),
-        ('logo', 'assignment', 'name_override', 'text', true, NULL),
-        ('logo', 'assignment', 'row_version', 'bigint', false, NULL),
-        ('logo', 'assignment', 'catalog_id', 'text', true, NULL),
-        ('logo', 'store_settings', 'fdm4_store', 'text', false, NULL),
-        ('logo', 'store_settings', 'enabled', 'boolean', false, 'true'),
-        ('logo', 'store_settings', 'allows_none', 'boolean', false, 'false'),
-        ('logo', 'store_settings', 'updated_by', 'text', false, ''''''),
-        ('logo', 'store_settings', 'updated_at', 'timestamp with time zone', false, 'now'),
-        ('logo', 'store_settings', 'extra_customers', 'text[]', false, '''{}''[]'),
-        ('woo', 'store_pricing_tier', 'fdm4_store', 'text', false, NULL),
-        ('woo', 'store_pricing_tier', 'tier_name', 'text', false, NULL),
-        ('woo', 'store_pricing_tier', 'note', 'text', false, ''''''),
-        ('woo', 'store_pricing_tier', 'updated_at', 'timestamp with time zone', false, 'now')
+        ('catmgr', 'assignment_rule', 'rule_id', 'bigint', false, 'a', NULL),
+        ('catmgr', 'assignment_rule', 'node_id', 'bigint', false, '', NULL),
+        ('catmgr', 'assignment_rule', 'kind', 'text', false, '', '''filter'''),
+        ('catmgr', 'assignment_rule', 'spec', 'jsonb', false, '', NULL),
+        ('catmgr', 'assignment_rule', 'priority', 'integer', false, '', '0'),
+        ('catmgr', 'assignment_rule', 'note', 'text', false, '', ''''''),
+        ('catmgr', 'assignment_rule', 'updated_by', 'text', false, '', ''''''),
+        ('catmgr', 'assignment_rule', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('catmgr', 'node', 'node_id', 'bigint', false, 'a', NULL),
+        ('catmgr', 'node', 'parent_id', 'bigint', true, '', NULL),
+        ('catmgr', 'node', 'name', 'text', false, '', NULL),
+        ('catmgr', 'node', 'slug', 'text', false, '', NULL),
+        ('catmgr', 'node', 'sort_order', 'integer', false, '', '0'),
+        ('catmgr', 'node', 'description', 'text', false, '', ''''''),
+        ('catmgr', 'node', 'updated_by', 'text', false, '', ''''''),
+        ('catmgr', 'node', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('catmgr', 'node_store_override', 'override_id', 'bigint', false, 'a', NULL),
+        ('catmgr', 'node_store_override', 'blog_id', 'integer', false, '', NULL),
+        ('catmgr', 'node_store_override', 'blog_path', 'text', false, '', ''''''),
+        ('catmgr', 'node_store_override', 'kind', 'text', false, '', NULL),
+        ('catmgr', 'node_store_override', 'node_id', 'bigint', true, '', NULL),
+        ('catmgr', 'node_store_override', 'name', 'text', true, '', NULL),
+        ('catmgr', 'node_store_override', 'slug', 'text', true, '', NULL),
+        ('catmgr', 'node_store_override', 'parent_node_id', 'bigint', true, '', NULL),
+        ('catmgr', 'node_store_override', 'include_descendants', 'boolean', false, '', 'true'),
+        ('catmgr', 'node_store_override', 'sort_order', 'integer', false, '', '0'),
+        ('catmgr', 'node_store_override', 'updated_by', 'text', false, '', ''''''),
+        ('catmgr', 'node_store_override', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('catmgr', 'node_store_override', 'previous_slug', 'text', true, '', NULL),
+        ('catmgr', 'product_assignment', 'id', 'bigint', false, 'a', NULL),
+        ('catmgr', 'product_assignment', 'node_id', 'bigint', false, '', NULL),
+        ('catmgr', 'product_assignment', 'sku', 'text', false, '', NULL),
+        ('catmgr', 'product_assignment', 'mode', 'text', false, '', NULL),
+        ('catmgr', 'product_assignment', 'source', 'text', false, '', NULL),
+        ('catmgr', 'product_assignment', 'note', 'text', false, '', ''''''),
+        ('catmgr', 'product_assignment', 'added_by', 'text', false, '', ''''''),
+        ('catmgr', 'product_assignment', 'added_at', 'timestamp with time zone', false, '', 'now()'),
+        ('catmgr', 'slug_map', 'old_slug', 'text', false, '', NULL),
+        ('catmgr', 'slug_map', 'action', 'text', false, '', NULL),
+        ('catmgr', 'slug_map', 'target_node_id', 'bigint', true, '', NULL),
+        ('catmgr', 'slug_map', 'is_primary', 'boolean', false, '', 'false'),
+        ('catmgr', 'slug_map', 'override_id', 'bigint', true, '', NULL),
+        ('catmgr', 'slug_map', 'note', 'text', false, '', ''''''),
+        ('catmgr', 'slug_map', 'updated_by', 'text', false, '', ''''''),
+        ('catmgr', 'slug_map', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('catmgr', 'uncategorized_ack', 'sku', 'text', false, '', NULL),
+        ('catmgr', 'uncategorized_ack', 'note', 'text', false, '', ''''''),
+        ('catmgr', 'uncategorized_ack', 'added_by', 'text', false, '', ''''''),
+        ('catmgr', 'uncategorized_ack', 'added_at', 'timestamp with time zone', false, '', 'now()'),
+        ('logo', 'assignment', 'fdm4_store', 'text', false, '', NULL),
+        ('logo', 'assignment', 'product_style', 'text', false, '', NULL),
+        ('logo', 'assignment', 'garment_color_code', 'text', false, '', NULL),
+        ('logo', 'assignment', 'position', 'smallint', false, '', '1'),
+        ('logo', 'assignment', 'design_id', 'text', false, '', NULL),
+        ('logo', 'assignment', 'logo_code', 'text', false, '', ''''''),
+        ('logo', 'assignment', 'color_scheme_id', 'text', false, '', ''''''),
+        ('logo', 'assignment', 'location', 'text', false, '', ''''''),
+        ('logo', 'assignment', 'optional', 'boolean', false, '', 'false'),
+        ('logo', 'assignment', 'background', 'text', false, '', ''''''),
+        ('logo', 'assignment', 'cost_override', 'numeric(12,2)', true, '', NULL),
+        ('logo', 'assignment', 'sort_order', 'integer', false, '', '0'),
+        ('logo', 'assignment', 'image_url', 'text', false, '', ''''''),
+        ('logo', 'assignment', 'active', 'boolean', false, '', 'true'),
+        ('logo', 'assignment', 'updated_by', 'text', false, '', '''seed'''),
+        ('logo', 'assignment', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('logo', 'assignment', 'option_row', 'integer', false, '', '1'),
+        ('logo', 'assignment', 'name_override', 'text', true, '', NULL),
+        ('logo', 'assignment', 'row_version', 'bigint', false, '', NULL),
+        ('logo', 'assignment', 'catalog_id', 'text', true, '', NULL),
+        ('logo', 'color_class', 'color_code', 'text', false, '', NULL),
+        ('logo', 'color_class', 'color_name', 'text', false, '', NULL),
+        ('logo', 'color_class', 'light_dark', 'text', false, '', NULL),
+        ('logo', 'color_class', 'source', 'text', false, '', '''ai'''),
+        ('logo', 'color_class', 'confidence', 'numeric', true, '', NULL),
+        ('logo', 'color_class', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('logo', 'color_class', 'updated_by', 'text', false, '', ''''''),
+        ('logo', 'default_cost', 'logo_code', 'text', false, '', NULL),
+        ('logo', 'default_cost', 'color_scheme_id', 'text', false, '', NULL),
+        ('logo', 'default_cost', 'cost', 'numeric(12,2)', false, '', NULL),
+        ('logo', 'default_cost', 'source', 'text', false, '', '''vn-reference'''),
+        ('logo', 'default_cost', 'locked', 'boolean', false, '', 'false'),
+        ('logo', 'default_cost', 'updated_by', 'text', false, '', '''vn-import-20260731'''),
+        ('logo', 'default_cost', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('logo', 'display_name', 'design_id', 'text', false, '', NULL),
+        ('logo', 'display_name', 'color_scheme_id', 'text', false, '', NULL),
+        ('logo', 'display_name', 'name', 'text', false, '', NULL),
+        ('logo', 'display_name', 'source', 'text', false, '', '''manual'''),
+        ('logo', 'display_name', 'locked', 'boolean', false, '', 'false'),
+        ('logo', 'display_name', 'uses', 'integer', false, '', '0'),
+        ('logo', 'display_name', 'fdm4_description', 'text', true, '', NULL),
+        ('logo', 'display_name', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('logo', 'display_name', 'updated_by', 'text', true, '', NULL),
+        ('logo', 'display_name', 'fdm4_store', 'text', false, '', ''''''),
+        ('logo', 'store_settings', 'fdm4_store', 'text', false, '', NULL),
+        ('logo', 'store_settings', 'enabled', 'boolean', false, '', 'true'),
+        ('logo', 'store_settings', 'allows_none', 'boolean', false, '', 'false'),
+        ('logo', 'store_settings', 'updated_by', 'text', false, '', ''''''),
+        ('logo', 'store_settings', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('logo', 'store_settings', 'extra_customers', 'text[]', false, '', '''{}''[]'),
+        ('woo', 'brand_stock_rule', 'mill_code', 'text', false, '', NULL),
+        ('woo', 'brand_stock_rule', 'brand_name', 'text', false, '', ''''''),
+        ('woo', 'brand_stock_rule', 'mode', 'text', false, '', NULL),
+        ('woo', 'brand_stock_rule', 'note', 'text', false, '', ''''''),
+        ('woo', 'brand_stock_rule', 'active', 'boolean', false, '', 'true'),
+        ('woo', 'brand_stock_rule', 'updated_by', 'text', false, '', ''''''),
+        ('woo', 'brand_stock_rule', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'price_rule', 'rule_id', 'bigint', false, '', 'nextval(''price_rule_rule_id_seq''::regclass)'),
+        ('woo', 'price_rule', 'name', 'text', false, '', NULL),
+        ('woo', 'price_rule', 'active', 'boolean', false, '', 'false'),
+        ('woo', 'price_rule', 'priority', 'integer', false, '', '100'),
+        ('woo', 'price_rule', 'stackable', 'boolean', false, '', 'false'),
+        ('woo', 'price_rule', 'stores', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'store_tiers', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'styles', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'brands', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'categories', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'effect_type', 'text', false, '', NULL),
+        ('woo', 'price_rule', 'effect_value', 'numeric(12,4)', true, '', NULL),
+        ('woo', 'price_rule', 'price_level_key', 'text', true, '', NULL),
+        ('woo', 'price_rule', 'floor_price', 'numeric(12,4)', true, '', NULL),
+        ('woo', 'price_rule', 'effective_from', 'date', true, '', NULL),
+        ('woo', 'price_rule', 'effective_until', 'date', true, '', NULL),
+        ('woo', 'price_rule', 'note', 'text', false, '', ''''''),
+        ('woo', 'price_rule', 'created_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'price_rule', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'price_rule', 'updated_by', 'text', false, '', ''''''),
+        ('woo', 'price_rule', 'last_previewed_at', 'timestamp with time zone', true, '', NULL),
+        ('woo', 'price_rule', 'excl_stores', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'excl_styles', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'excl_brands', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'excl_categories', 'text[]', true, '', NULL),
+        ('woo', 'price_rule', 'basis', 'text', false, '', '''current'''),
+        ('woo', 'price_rule', 'rounding', 'text', false, '', '''none'''),
+        ('woo', 'price_rule', 'ceiling_price', 'numeric(12,4)', true, '', NULL),
+        ('woo', 'price_rule', 'cap_at_msrp', 'boolean', false, '', 'false'),
+        ('woo', 'stock_override', 'style_code', 'text', false, '', NULL),
+        ('woo', 'stock_override', 'mode', 'text', false, '', NULL),
+        ('woo', 'stock_override', 'note', 'text', false, '', ''''''),
+        ('woo', 'stock_override', 'active', 'boolean', false, '', 'true'),
+        ('woo', 'stock_override', 'updated_by', 'text', false, '', ''''''),
+        ('woo', 'stock_override', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'store_mix_item', 'fdm4_store', 'text', false, '', NULL),
+        ('woo', 'store_mix_item', 'style_code', 'text', false, '', NULL),
+        ('woo', 'store_mix_item', 'colors', 'text[]', true, '', NULL),
+        ('woo', 'store_mix_item', 'size_excludes', 'jsonb', true, '', NULL),
+        ('woo', 'store_mix_item', 'source', 'text', false, '', '''manual'''),
+        ('woo', 'store_mix_item', 'added_by', 'text', false, '', ''''''),
+        ('woo', 'store_mix_item', 'added_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'store_mix_item', 'updated_by', 'text', false, '', ''''''),
+        ('woo', 'store_mix_item', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'store_mix_store', 'fdm4_store', 'text', false, '', NULL),
+        ('woo', 'store_mix_store', 'mode', 'text', false, '', '''list'''),
+        ('woo', 'store_mix_store', 'active', 'boolean', false, '', 'true'),
+        ('woo', 'store_mix_store', 'note', 'text', false, '', ''''''),
+        ('woo', 'store_mix_store', 'created_by', 'text', false, '', ''''''),
+        ('woo', 'store_mix_store', 'created_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'store_mix_store', 'updated_by', 'text', false, '', ''''''),
+        ('woo', 'store_mix_store', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'store_mix_store', 'imported_at', 'timestamp with time zone', true, '', NULL),
+        ('woo', 'store_pricing_tier', 'fdm4_store', 'text', false, '', NULL),
+        ('woo', 'store_pricing_tier', 'tier_name', 'text', false, '', NULL),
+        ('woo', 'store_pricing_tier', 'note', 'text', false, '', ''''''),
+        ('woo', 'store_pricing_tier', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'sync_exclusion', 'fdm4_store', 'text', false, '', NULL),
+        ('woo', 'sync_exclusion', 'style_code', 'text', false, '', ''''''),
+        ('woo', 'sync_exclusion', 'note', 'text', false, '', ''''''),
+        ('woo', 'sync_exclusion', 'active', 'boolean', false, '', 'true'),
+        ('woo', 'sync_exclusion', 'created_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'sync_exclusion', 'updated_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'sync_exclusion', 'updated_by', 'text', false, '', ''''''),
+        ('woo', 'sync_exclusion', 'scope', 'text', false, '', '''full'''),
+        ('woo', 'virtual_catalog_store', 'fdm4_store', 'text', false, '', NULL),
+        ('woo', 'virtual_catalog_store', 'catalog_id', 'text', false, '', NULL),
+        ('woo', 'virtual_catalog_store', 'note', 'text', false, '', ''''''),
+        ('woo', 'virtual_catalog_store', 'created_at', 'timestamp with time zone', false, '', 'now()'),
+        ('woo', 'virtual_catalog_store', 'stock_override', 'numeric', true, '', NULL)
 ), restore_column_order_policy(schema_name, table_name, column_names) AS (
     VALUES
-        ('logo', 'assignment', ARRAY[
-            'fdm4_store', 'product_style', 'garment_color_code', 'position',
-            'design_id', 'logo_code', 'color_scheme_id',
-            'location', 'optional', 'background', 'cost_override',
-            'sort_order', 'image_url', 'active', 'updated_by', 'updated_at',
-            'option_row', 'name_override', 'row_version', 'catalog_id'
-        ]::text[]),
-        ('logo', 'store_settings', ARRAY[
-            'fdm4_store', 'enabled', 'allows_none', 'updated_by', 'updated_at',
-            'extra_customers'
-        ]::text[]),
-        ('woo', 'store_pricing_tier', ARRAY[
-            'fdm4_store', 'tier_name', 'note', 'updated_at'
-        ]::text[])
-), restore_column_inventory AS (
+        ('catmgr', 'assignment_rule', ARRAY['rule_id', 'node_id', 'kind', 'spec', 'priority', 'note', 'updated_by', 'updated_at']::text[]),
+        ('catmgr', 'node', ARRAY['node_id', 'parent_id', 'name', 'slug', 'sort_order', 'description', 'updated_by', 'updated_at']::text[]),
+        ('catmgr', 'node_store_override', ARRAY['override_id', 'blog_id', 'blog_path', 'kind', 'node_id', 'name', 'slug', 'parent_node_id', 'include_descendants', 'sort_order', 'updated_by', 'updated_at', 'previous_slug']::text[]),
+        ('catmgr', 'product_assignment', ARRAY['id', 'node_id', 'sku', 'mode', 'source', 'note', 'added_by', 'added_at']::text[]),
+        ('catmgr', 'slug_map', ARRAY['old_slug', 'action', 'target_node_id', 'is_primary', 'override_id', 'note', 'updated_by', 'updated_at']::text[]),
+        ('catmgr', 'uncategorized_ack', ARRAY['sku', 'note', 'added_by', 'added_at']::text[]),
+        ('logo', 'assignment', ARRAY['fdm4_store', 'product_style', 'garment_color_code', 'position', 'design_id', 'logo_code', 'color_scheme_id', 'location', 'optional', 'background', 'cost_override', 'sort_order', 'image_url', 'active', 'updated_by', 'updated_at', 'option_row', 'name_override', 'row_version', 'catalog_id']::text[]),
+        ('logo', 'color_class', ARRAY['color_code', 'color_name', 'light_dark', 'source', 'confidence', 'updated_at', 'updated_by']::text[]),
+        ('logo', 'default_cost', ARRAY['logo_code', 'color_scheme_id', 'cost', 'source', 'locked', 'updated_by', 'updated_at']::text[]),
+        ('logo', 'display_name', ARRAY['design_id', 'color_scheme_id', 'name', 'source', 'locked', 'uses', 'fdm4_description', 'updated_at', 'updated_by', 'fdm4_store']::text[]),
+        ('logo', 'store_settings', ARRAY['fdm4_store', 'enabled', 'allows_none', 'updated_by', 'updated_at', 'extra_customers']::text[]),
+        ('woo', 'brand_stock_rule', ARRAY['mill_code', 'brand_name', 'mode', 'note', 'active', 'updated_by', 'updated_at']::text[]),
+        ('woo', 'price_rule', ARRAY['rule_id', 'name', 'active', 'priority', 'stackable', 'stores', 'store_tiers', 'styles', 'brands', 'categories', 'effect_type', 'effect_value', 'price_level_key', 'floor_price', 'effective_from', 'effective_until', 'note', 'created_at', 'updated_at', 'updated_by', 'last_previewed_at', 'excl_stores', 'excl_styles', 'excl_brands', 'excl_categories', 'basis', 'rounding', 'ceiling_price', 'cap_at_msrp']::text[]),
+        ('woo', 'stock_override', ARRAY['style_code', 'mode', 'note', 'active', 'updated_by', 'updated_at']::text[]),
+        ('woo', 'store_mix_item', ARRAY['fdm4_store', 'style_code', 'colors', 'size_excludes', 'source', 'added_by', 'added_at', 'updated_by', 'updated_at']::text[]),
+        ('woo', 'store_mix_store', ARRAY['fdm4_store', 'mode', 'active', 'note', 'created_by', 'created_at', 'updated_by', 'updated_at', 'imported_at']::text[]),
+        ('woo', 'store_pricing_tier', ARRAY['fdm4_store', 'tier_name', 'note', 'updated_at']::text[]),
+        ('woo', 'sync_exclusion', ARRAY['fdm4_store', 'style_code', 'note', 'active', 'created_at', 'updated_at', 'updated_by', 'scope']::text[]),
+        ('woo', 'virtual_catalog_store', ARRAY['fdm4_store', 'catalog_id', 'note', 'created_at', 'stock_override']::text[])
+), restore_constraint_policy(signature) AS (
+    VALUES
+        ('catmgr.assignment_rule|assignment_rule_kind_check|c|kind||||||kind=''filter'''),
+        ('catmgr.assignment_rule|assignment_rule_node_id_fkey|f|node_id|catmgr.node|node_id|a|c|s|'),
+        ('catmgr.assignment_rule|assignment_rule_pkey|p|rule_id||||||'),
+        ('catmgr.node_store_override|node_store_override_kind_check|c|kind||||||kind=any(array[''extra_node'',''rename'',''exclude''])'),
+        ('catmgr.node_store_override|node_store_override_node_id_fkey|f|node_id|catmgr.node|node_id|a|c|s|'),
+        ('catmgr.node_store_override|node_store_override_parent_node_id_fkey|f|parent_node_id|catmgr.node|node_id|a|n|s|'),
+        ('catmgr.node_store_override|node_store_override_pkey|p|override_id||||||'),
+        ('catmgr.node_store_override|node_store_override_previous_slug_check|c|previous_slug||||||previous_slugisnullorprevious_slug~''^[a-z0-9]+(-[a-z0-9]+)*$'''),
+        ('catmgr.node_store_override|node_store_override_slug_check|c|slug||||||slugisnullorslug~''^[a-z0-9]+(-[a-z0-9]+)*$'''),
+        ('catmgr.node_store_override|override_shape|c|kind,node_id,name,slug,parent_node_id||||||kind=''extra_node''andnode_idisnullandnameisnotnullandbtrim(name)<>''''andslugisnotnullorkind=''rename''andnode_idisnotnullandnameisnotnullandbtrim(name)<>''''andslugisnullandparent_node_idisnullorkind=''exclude''andnode_idisnotnullandnameisnullandslugisnullandparent_node_idisnull'),
+        ('catmgr.node|node_name_check|c|name||||||btrim(name)<>'''''),
+        ('catmgr.node|node_parent_id_fkey|f|parent_id|catmgr.node|node_id|a|r|s|'),
+        ('catmgr.node|node_pkey|p|node_id||||||'),
+        ('catmgr.node|node_slug_check|c|slug||||||slug~''^[a-z0-9]+(-[a-z0-9]+)*$'''),
+        ('catmgr.node|node_slug_key|u|slug||||||'),
+        ('catmgr.product_assignment|product_assignment_mode_check|c|mode||||||mode=any(array[''add'',''remove''])'),
+        ('catmgr.product_assignment|product_assignment_node_id_fkey|f|node_id|catmgr.node|node_id|a|c|s|'),
+        ('catmgr.product_assignment|product_assignment_node_id_sku_mode_key|u|node_id,sku,mode||||||'),
+        ('catmgr.product_assignment|product_assignment_pkey|p|id||||||'),
+        ('catmgr.product_assignment|product_assignment_sku_check|c|sku||||||btrim(sku)<>'''''),
+        ('catmgr.product_assignment|product_assignment_source_check|c|source||||||source=any(array[''manual'',''csv'',''ai'',''rule''])'),
+        ('catmgr.slug_map|slug_map_action_check|c|action||||||action=any(array[''map'',''delete'',''store_custom''])'),
+        ('catmgr.slug_map|slug_map_override_id_fkey|f|override_id|catmgr.node_store_override|override_id|a|c|s|'),
+        ('catmgr.slug_map|slug_map_pkey|p|old_slug||||||'),
+        ('catmgr.slug_map|slug_map_shape|c|action,target_node_id,override_id,is_primary||||||action=''map''andtarget_node_idisnotnullandoverride_idisnulloraction=''delete''andtarget_node_idisnullandoverride_idisnullandnotis_primaryoraction=''store_custom''andtarget_node_idisnullandnotis_primary'),
+        ('catmgr.slug_map|slug_map_target_node_id_fkey|f|target_node_id|catmgr.node|node_id|a|c|s|'),
+        ('catmgr.uncategorized_ack|uncategorized_ack_pkey|p|sku||||||'),
+        ('catmgr.uncategorized_ack|uncategorized_ack_sku_check|c|sku||||||btrim(sku)<>'''''),
+        ('logo.assignment|assignment_option_row_check|c|option_row||||||option_row>=1'),
+        ('logo.assignment|assignment_pkey|p|fdm4_store,product_style,garment_color_code,option_row,position||||||'),
+        ('logo.assignment|logo_assignment_option_row_check|c|option_row||||||option_row>=1andoption_row<=999'),
+        ('logo.assignment|logo_assignment_position_check|c|position||||||position>=1andposition<=3'),
+        ('logo.color_class|color_class_light_dark_check|c|light_dark||||||light_dark=any(array[''light'',''dark'',''both''])'),
+        ('logo.color_class|color_class_pkey|p|color_code||||||'),
+        ('logo.color_class|color_class_source_check|c|source||||||source=any(array[''ai'',''manual''])'),
+        ('logo.default_cost|default_cost_pkey|p|logo_code,color_scheme_id||||||'),
+        ('logo.display_name|display_name_pkey|p|design_id,color_scheme_id,fdm4_store||||||'),
+        ('logo.store_settings|store_settings_pkey|p|fdm4_store||||||'),
+        ('woo.brand_stock_rule|brand_stock_rule_mode_check|c|mode||||||mode=any(array[''real'',''fake''])'),
+        ('woo.brand_stock_rule|brand_stock_rule_pkey|p|mill_code||||||'),
+        ('woo.price_rule|price_rule_basis_chk|c|basis||||||basis=any(array[''current'',''msrp'',''corp1'',''corp2'',''corp3'',''wholesale'',''employee'',''base''])'),
+        ('woo.price_rule|price_rule_effect_type_check|c|effect_type||||||effect_type=any(array[''percent'',''flat'',''set_price'',''price_level'',''margin_over_cost''])'),
+        ('woo.price_rule|price_rule_pkey|p|rule_id||||||'),
+        ('woo.price_rule|price_rule_rounding_chk|c|rounding||||||rounding=any(array[''none'',''99'',''95'',''00''])'),
+        ('woo.stock_override|stock_override_mode_check|c|mode||||||mode=any(array[''fake'',''real''])'),
+        ('woo.stock_override|stock_override_pkey|p|style_code||||||'),
+        ('woo.store_mix_item|store_mix_item_pkey|p|fdm4_store,style_code||||||'),
+        ('woo.store_mix_item|store_mix_item_source_check|c|source||||||source=any(array[''import'',''manual''])'),
+        ('woo.store_mix_store|store_mix_store_mode_check|c|mode||||||mode=any(array[''all'',''list''])'),
+        ('woo.store_mix_store|store_mix_store_pkey|p|fdm4_store||||||'),
+        ('woo.store_pricing_tier|store_pricing_tier_pkey|p|fdm4_store||||||'),
+        ('woo.store_pricing_tier|store_pricing_tier_tier_name_fkey|f|tier_name|woo.pricing_tier|tier_name|a|a|s|'),
+        ('woo.sync_exclusion|sync_exclusion_pkey|p|fdm4_store,style_code||||||'),
+        ('woo.sync_exclusion|sync_exclusion_scope_check|c|scope||||||scope=any(array[''full'',''pricing''])'),
+        ('woo.virtual_catalog_store|virtual_catalog_store_pkey|p|fdm4_store||||||')
+), restore_unique_index_policy(table_name, index_name, definition) AS (
+    VALUES
+        ('catmgr.node_store_override', 'override_exclude_once',
+         'CREATE UNIQUE INDEX override_exclude_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = ''exclude''::text)'),
+        ('catmgr.node_store_override', 'override_extra_slug_once',
+         'CREATE UNIQUE INDEX override_extra_slug_once ON catmgr.node_store_override USING btree (blog_id, slug) WHERE (kind = ''extra_node''::text)'),
+        ('catmgr.node_store_override', 'override_rename_once',
+         'CREATE UNIQUE INDEX override_rename_once ON catmgr.node_store_override USING btree (blog_id, node_id) WHERE (kind = ''rename''::text)'),
+        ('catmgr.slug_map', 'slug_map_one_primary',
+         'CREATE UNIQUE INDEX slug_map_one_primary ON catmgr.slug_map USING btree (target_node_id) WHERE is_primary')
+),
+-- END GENERATED
+restore_column_inventory AS (
     SELECT namespace.nspname AS schema_name,
            relation.relname AS table_name,
            attribute.attname AS column_name,
@@ -1383,19 +1630,36 @@ WITH execution_contract AS (
            attribute.attgenerated AS generated_kind,
            attribute.attidentity AS identity_kind,
            pg_collation.collname AS collation_name,
-           CASE WHEN default_row.oid IS NULL THEN NULL ELSE regexp_replace(
-               regexp_replace(
-                   lower(pg_get_expr(
-                       default_row.adbin, default_row.adrelid, true
-                   )),
-                   '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
-                   '', 'g'
-               ),
-               '[[:space:]()"]', '', 'g'
-           ) END AS default_signature
-      FROM pg_class AS relation
+           CASE WHEN default_row.oid IS NULL THEN NULL ELSE
+           (SELECT string_agg(
+               CASE WHEN piece LIKE '''%' THEN piece
+                    ELSE regexp_replace(
+                             regexp_replace(
+                                 regexp_replace(
+                                     lower(piece), '"([a-z_][a-z0-9_$]*)"', '\1', 'g'
+                                 ),
+                                 '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
+                                 '', 'g'
+                             ),
+                             '[[:space:]]', '', 'g'
+                         )
+               END, '' ORDER BY ord)
+              FROM regexp_matches(
+                       regexp_replace(
+                           pg_get_expr(default_row.adbin, default_row.adrelid, true),
+                           'nextval\(''(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)''::regclass\)',
+                           'nextval(''\1''::regclass)', 'gi'
+                       ),
+                       '''(?:[^'']|'''')*''|[^'']+', 'g'
+                   ) WITH ORDINALITY AS parts(m, ord),
+                   LATERAL (SELECT m[1]) AS p(piece))
+           END AS default_signature
+      FROM restore_table_policy
       JOIN pg_namespace AS namespace
-        ON namespace.oid = relation.relnamespace
+        ON namespace.nspname = restore_table_policy.schema_name
+      JOIN pg_class AS relation
+        ON relation.relnamespace = namespace.oid
+       AND relation.relname = restore_table_policy.table_name
       JOIN pg_attribute AS attribute
         ON attribute.attrelid = relation.oid
        AND attribute.attnum > 0
@@ -1405,11 +1669,6 @@ WITH execution_contract AS (
       LEFT JOIN pg_attrdef AS default_row
         ON default_row.adrelid = relation.oid
        AND default_row.adnum = attribute.attnum
-     WHERE (namespace.nspname, relation.relname) IN (
-         ('logo', 'assignment'),
-         ('logo', 'store_settings'),
-         ('woo', 'store_pricing_tier')
-     )
 ), restore_column_contract AS (
     SELECT NOT EXISTS (
                SELECT 1
@@ -1418,18 +1677,41 @@ WITH execution_contract AS (
                    ON actual.schema_name = expected.schema_name
                   AND actual.table_name = expected.table_name
                   AND actual.column_name = expected.column_name
-                WHERE actual.column_name IS NULL
+                 LEFT JOIN restore_column_order_policy AS expected_order
+                   ON expected_order.schema_name = expected.schema_name
+                  AND expected_order.table_name = expected.table_name
+                WHERE expected_order.table_name IS NULL
+                   OR actual.column_name IS NULL
+                   -- Physical order matters: the restore path writes whole
+                   -- rows, so a column added by ALTER TABLE lands last and
+                   -- must be pinned where it actually is.
+                   OR actual.ordinal_position <> array_position(
+                       expected_order.column_names, expected.column_name
+                   )
                    OR actual.formatted_type <> expected.formatted_type
                    OR actual.nullable <> expected.nullable
                    OR actual.generated_kind <> ''
-                   OR actual.identity_kind <> ''
+                   OR actual.identity_kind <> expected.identity_kind
                    OR actual.collation_name IS DISTINCT FROM CASE
                        WHEN expected.formatted_type IN ('text', 'text[]')
                            THEN 'default'
                        ELSE NULL
                    END
-                   OR actual.default_signature IS DISTINCT FROM
-                      expected.default_signature
+                   OR (
+                       expected.default_signature IS NULL
+                       AND actual.default_signature IS NOT NULL
+                   )
+                   OR (
+                       expected.default_signature IS NOT NULL
+                       AND (
+                           actual.default_signature IS NULL
+                           OR NOT actual.default_signature = ANY (
+                               string_to_array(
+                                   expected.default_signature, '|'
+                               )
+                           )
+                       )
+                   )
            )
            AND NOT EXISTS (
                SELECT 1
@@ -1441,52 +1723,75 @@ WITH execution_contract AS (
                 WHERE expected.column_name IS NULL
            ) AS passes
 ), restore_constraint_inventory AS (
-    SELECT source_namespace.nspname AS source_schema,
-           source.relname AS source_table,
-           constraint_row.conname AS constraint_name,
-           constraint_row.contype AS constraint_type,
-           ARRAY(
-               SELECT attribute.attname::text
-                 FROM unnest(constraint_row.conkey)
-                      WITH ORDINALITY AS key_column(
-                          attnum, ordinal_position
-                      )
-                 JOIN pg_attribute AS attribute
-                   ON attribute.attrelid = source.oid
-                  AND attribute.attnum = key_column.attnum
-                ORDER BY key_column.ordinal_position
-           ) AS key_columns,
-           target_namespace.nspname AS target_schema,
-           target.relname AS target_table,
-           ARRAY(
-               SELECT attribute.attname::text
-                 FROM unnest(constraint_row.confkey)
-                      WITH ORDINALITY AS key_column(
-                          attnum, ordinal_position
-                      )
-                 JOIN pg_attribute AS attribute
-                   ON attribute.attrelid = target.oid
-                  AND attribute.attnum = key_column.attnum
-                ORDER BY key_column.ordinal_position
-           ) AS referenced_columns,
-           constraint_row.confupdtype AS update_action,
-           constraint_row.confdeltype AS delete_action,
-           constraint_row.confmatchtype AS match_type,
+    SELECT format(
+               '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s',
+               format('%I.%I', source_namespace.nspname, source.relname),
+               constraint_row.conname,
+               constraint_row.contype,
+               array_to_string(ARRAY(
+                   SELECT attribute.attname::text
+                     FROM unnest(constraint_row.conkey)
+                          WITH ORDINALITY AS key_column(
+                              attnum, ordinal_position
+                          )
+                     JOIN pg_attribute AS attribute
+                       ON attribute.attrelid = source.oid
+                      AND attribute.attnum = key_column.attnum
+                    ORDER BY key_column.ordinal_position
+               ), ','),
+               CASE WHEN constraint_row.contype = 'f' THEN format(
+                   '%I.%I', target_namespace.nspname, target.relname
+               ) ELSE '' END,
+               CASE WHEN constraint_row.contype = 'f' THEN array_to_string(
+                   ARRAY(
+                       SELECT attribute.attname::text
+                         FROM unnest(constraint_row.confkey)
+                              WITH ORDINALITY AS key_column(
+                                  attnum, ordinal_position
+                              )
+                         JOIN pg_attribute AS attribute
+                           ON attribute.attrelid = target.oid
+                          AND attribute.attnum = key_column.attnum
+                        ORDER BY key_column.ordinal_position
+                   ), ','
+               ) ELSE '' END,
+               CASE WHEN constraint_row.contype = 'f'
+                   THEN constraint_row.confupdtype ELSE '' END,
+               CASE WHEN constraint_row.contype = 'f'
+                   THEN constraint_row.confdeltype ELSE '' END,
+               CASE WHEN constraint_row.contype = 'f'
+                   THEN constraint_row.confmatchtype ELSE '' END,
+               CASE WHEN constraint_row.contype = 'c' THEN
+               (SELECT string_agg(
+                   CASE WHEN piece LIKE '''%' THEN piece
+                        ELSE regexp_replace(
+                                 regexp_replace(
+                                     regexp_replace(
+                                         lower(piece), '"([a-z_][a-z0-9_$]*)"', '\1', 'g'
+                                     ),
+                                     '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
+                                     '', 'g'
+                                 ),
+                                 '[[:space:]]', '', 'g'
+                             )
+                   END, '' ORDER BY ord)
+                  FROM regexp_matches(
+                           regexp_replace(
+                               pg_get_expr(
+                   constraint_row.conbin, constraint_row.conrelid, true
+               ),
+                               'nextval\(''(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)''::regclass\)',
+                               'nextval(''\1''::regclass)', 'gi'
+                           ),
+                           '''(?:[^'']|'''')*''|[^'']+', 'g'
+                       ) WITH ORDINALITY AS parts(m, ord),
+                       LATERAL (SELECT m[1]) AS p(piece))
+               ELSE '' END
+           ) AS signature,
            constraint_row.condeferrable AS is_deferrable,
            constraint_row.condeferred AS initially_deferred,
            constraint_row.convalidated AS validated,
-           constraint_row.connoinherit AS no_inherit,
-           regexp_replace(
-               replace(replace(replace(
-                   lower(pg_get_expr(
-                       constraint_row.conbin,
-                       constraint_row.conrelid,
-                       true
-                   )),
-                   '::smallint', ''
-               ), '::integer', ''), '::bigint', ''),
-               '[[:space:]()"]', '', 'g'
-           ) AS check_expression
+           constraint_row.connoinherit AS no_inherit
       FROM pg_constraint AS constraint_row
       JOIN pg_class AS source ON source.oid = constraint_row.conrelid
       JOIN pg_namespace AS source_namespace
@@ -1495,107 +1800,82 @@ WITH execution_contract AS (
       LEFT JOIN pg_namespace AS target_namespace
         ON target_namespace.oid = target.relnamespace
      WHERE (
-               (source_namespace.nspname, source.relname) IN (
-                   ('logo', 'assignment'),
-                   ('logo', 'store_settings'),
-                   ('woo', 'store_pricing_tier')
+               EXISTS (
+                   SELECT 1
+                     FROM restore_table_policy
+                    WHERE restore_table_policy.schema_name =
+                          source_namespace.nspname
+                      AND restore_table_policy.table_name = source.relname
                )
-               AND constraint_row.contype IN ('p', 'c', 'f', 'u', 'x')
+               AND constraint_row.contype IN ('p', 'u', 'c', 'f', 'x')
            )
         OR (
-               (target_namespace.nspname, target.relname) IN (
-                   ('logo', 'assignment'),
-                   ('logo', 'store_settings'),
-                   ('woo', 'store_pricing_tier')
+               constraint_row.contype = 'f'
+               AND EXISTS (
+                   SELECT 1
+                     FROM restore_table_policy
+                    WHERE restore_table_policy.schema_name =
+                          target_namespace.nspname
+                      AND restore_table_policy.table_name = target.relname
                )
-               AND constraint_row.contype = 'f'
            )
 ), restore_constraint_contract AS (
-    SELECT count(*) = 7
+    -- Ordered with the C collation so the comparison does not depend on the
+    -- database's locale; the expected list is generated in the same order.
+    SELECT (
+               SELECT array_agg(signature ORDER BY signature COLLATE "C")
+                 FROM restore_constraint_inventory
+           ) = (
+               SELECT array_agg(signature ORDER BY signature COLLATE "C")
+                 FROM restore_constraint_policy
+           )
            AND bool_and(
                NOT is_deferrable
                AND NOT initially_deferred
                AND validated
                -- PostgreSQL marks index-backed and foreign-key constraints
                -- NO INHERIT; the flag is only a policy signal on CHECKs.
-               AND (constraint_type <> 'c' OR NOT no_inherit)
-               AND CASE
-                   WHEN source_schema = 'logo'
-                    AND source_table = 'assignment'
-                    AND constraint_name = 'assignment_pkey'
-                    AND constraint_type = 'p'
-                       THEN key_columns = ARRAY[
-                           'fdm4_store', 'product_style',
-                           'garment_color_code', 'option_row', 'position'
-                       ]::text[]
-                   WHEN source_schema = 'logo'
-                    AND source_table = 'store_settings'
-                    AND constraint_name = 'store_settings_pkey'
-                    AND constraint_type = 'p'
-                       THEN key_columns = ARRAY['fdm4_store']::text[]
-                   WHEN source_schema = 'woo'
-                    AND source_table = 'store_pricing_tier'
-                    AND constraint_name = 'store_pricing_tier_pkey'
-                    AND constraint_type = 'p'
-                       THEN key_columns = ARRAY['fdm4_store']::text[]
-                   WHEN source_schema = 'logo'
-                    AND source_table = 'assignment'
-                    AND constraint_name =
-                        'logo_assignment_position_check'
-                    AND constraint_type = 'c'
-                       THEN key_columns = ARRAY['position']::text[]
-                           AND check_expression =
-                               'position>=1andposition<=3'
-                   WHEN source_schema = 'logo'
-                    AND source_table = 'assignment'
-                    AND constraint_name = 'assignment_option_row_check'
-                    AND constraint_type = 'c'
-                       THEN key_columns = ARRAY['option_row']::text[]
-                           AND check_expression = 'option_row>=1'
-                   WHEN source_schema = 'logo'
-                    AND source_table = 'assignment'
-                    AND constraint_name =
-                        'logo_assignment_option_row_check'
-                    AND constraint_type = 'c'
-                       THEN key_columns = ARRAY['option_row']::text[]
-                           AND check_expression =
-                               'option_row>=1andoption_row<=999'
-                   WHEN source_schema = 'woo'
-                    AND source_table = 'store_pricing_tier'
-                    AND constraint_name =
-                        'store_pricing_tier_tier_name_fkey'
-                    AND constraint_type = 'f'
-                       THEN key_columns = ARRAY['tier_name']::text[]
-                           AND target_schema = 'woo'
-                           AND target_table = 'pricing_tier'
-                           AND referenced_columns =
-                               ARRAY['tier_name']::text[]
-                           AND update_action = 'a'
-                           AND delete_action = 'a'
-                           AND match_type = 's'
-                   ELSE false
-               END
+               AND (split_part(signature, '|', 3) <> 'c' OR NOT no_inherit)
            ) AS passes
       FROM restore_constraint_inventory
+), restore_unique_index_inventory AS (
+    -- A unique index with no constraint behind it is otherwise forbidden on
+    -- an exact-undo table (a row-by-row restore could trip it part-way).
+    -- The listed partial indexes are allowed because restore_state deletes
+    -- every row of every scope before it inserts any.
+    SELECT format('%I.%I', namespace.nspname, relation.relname) AS table_name,
+           index_relation.relname AS index_name,
+           pg_get_indexdef(index_row.indexrelid) AS definition,
+           index_row.indisvalid
+           AND index_row.indisready
+           AND index_row.indislive AS healthy
+      FROM pg_index AS index_row
+      JOIN pg_class AS relation
+        ON relation.oid = index_row.indrelid
+      JOIN pg_class AS index_relation
+        ON index_relation.oid = index_row.indexrelid
+      JOIN pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      JOIN restore_table_policy
+        ON restore_table_policy.schema_name = namespace.nspname
+       AND restore_table_policy.table_name = relation.relname
+     WHERE index_row.indisunique
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_constraint AS constraint_row
+            WHERE constraint_row.conindid = index_row.indexrelid
+       )
 ), restore_unique_index_contract AS (
     SELECT NOT EXISTS (
                SELECT 1
-                 FROM pg_index AS index_row
-                 JOIN pg_class AS relation
-                   ON relation.oid = index_row.indrelid
-                 JOIN pg_namespace AS namespace
-                   ON namespace.oid = relation.relnamespace
-                WHERE (namespace.nspname, relation.relname) IN (
-                    ('logo', 'assignment'),
-                    ('logo', 'store_settings'),
-                    ('woo', 'store_pricing_tier')
-                )
-                  AND index_row.indisunique
-                  AND NOT EXISTS (
-                      SELECT 1
-                        FROM pg_constraint AS constraint_row
-                       WHERE constraint_row.conindid = index_row.indexrelid
-                  )
+                 FROM restore_unique_index_inventory AS actual
+                 FULL JOIN restore_unique_index_policy AS expected
+                   ON expected.table_name = actual.table_name
+                  AND expected.index_name = actual.index_name
+                WHERE actual.index_name IS NULL
+                   OR expected.index_name IS NULL
+                   OR actual.definition <> expected.definition
+                   OR NOT actual.healthy
            ) AS passes
 ), trigger_inventory AS (
     SELECT namespace.nspname AS schema_name,
@@ -1624,8 +1904,11 @@ WITH execution_contract AS (
     -- Mirrors EXPECTED_TRIGGERS in logo-admin/database_contract.py: the
     -- audit triggers (tgtype 29) plus the feed-versioning triggers on
     -- logo.assignment (stamp 23 = BEFORE INSERT OR UPDATE, tombstone 9 =
-    -- AFTER DELETE).
-    SELECT count(*) = 9
+    -- AFTER DELETE), the feed-dependency bumps on logo.display_name and
+    -- logo.default_cost (29 = AFTER INSERT OR UPDATE OR DELETE), and the one
+    -- reviewed constraint trigger on woo.store_mix_item (9 = AFTER DELETE,
+    -- deferred to COMMIT).
+    SELECT count(*) = 12
            AND count(*) FILTER (
                WHERE schema_name = 'logo'
                  AND table_name = 'assignment'
@@ -1657,6 +1940,16 @@ WITH execution_contract AS (
                  AND trigger_name = 'logo_display_name_audit'
            ) = 1
            AND count(*) FILTER (
+               WHERE schema_name = 'logo'
+                 AND table_name = 'display_name'
+                 AND trigger_name = 'display_name_feed_bump'
+           ) = 1
+           AND count(*) FILTER (
+               WHERE schema_name = 'logo'
+                 AND table_name = 'default_cost'
+                 AND trigger_name = 'default_cost_feed_bump'
+           ) = 1
+           AND count(*) FILTER (
                WHERE schema_name = 'woo'
                  AND table_name = 'price_rule'
                  AND trigger_name = 'price_rule_audit'
@@ -1670,6 +1963,11 @@ WITH execution_contract AS (
                WHERE schema_name = 'woo'
                  AND table_name = 'store_mix_item'
                  AND trigger_name = 'store_mix_item_audit'
+           ) = 1
+           AND count(*) FILTER (
+               WHERE schema_name = 'woo'
+                 AND table_name = 'store_mix_item'
+                 AND trigger_name = 'store_mix_item_nonempty'
            ) = 1
            AND bool_and(
                enabled = 'O'
@@ -1691,6 +1989,15 @@ WITH execution_contract AS (
                             AND function_schema = 'logo'
                             AND function_name = 'audit_row'
                    WHEN schema_name = 'logo' AND table_name = 'display_name'
+                    AND trigger_name = 'display_name_feed_bump'
+                       THEN trigger_type = 29
+                            AND function_schema = 'logo'
+                            AND function_name = 'display_name_feed_bump'
+                   WHEN schema_name = 'logo' AND table_name = 'default_cost'
+                       THEN trigger_type = 29
+                            AND function_schema = 'logo'
+                            AND function_name = 'default_cost_feed_bump'
+                   WHEN schema_name = 'logo' AND table_name = 'display_name'
                        THEN trigger_type = 29
                             AND function_schema = 'logo'
                             AND function_name = 'audit_display_name_row'
@@ -1698,6 +2005,12 @@ WITH execution_contract AS (
                        THEN trigger_type = 29
                             AND function_schema = 'woo'
                             AND function_name = 'audit_price_rule_row'
+                   WHEN schema_name = 'woo'
+                    AND table_name = 'store_mix_item'
+                    AND trigger_name = 'store_mix_item_nonempty'
+                       THEN trigger_type = 9
+                            AND function_schema = 'woo'
+                            AND function_name = 'mix_items_nonempty'
                    WHEN schema_name = 'woo' AND table_name IN (
                        'store_mix_store', 'store_mix_item'
                    )
@@ -1709,7 +2022,14 @@ WITH execution_contract AS (
                AND argument_types = ''
                AND argument_count = 0
                AND no_when_clause
-               AND not_constraint_trigger
+               -- One reviewed constraint trigger; every other trigger must be
+               -- an ordinary one.
+               AND (
+                   not_constraint_trigger
+                   OR (schema_name = 'woo'
+                       AND table_name = 'store_mix_item'
+                       AND trigger_name = 'store_mix_item_nonempty')
+               )
            ) AS passes
       FROM trigger_inventory
 ), rule_contract AS (
@@ -1831,8 +2151,8 @@ WITH execution_contract AS (
         ('logo', 'agent_chat_session', 'title', 'text', false, ''''''),
         ('logo', 'agent_chat_session', 'active_turn_id', 'uuid', true, NULL),
         ('logo', 'agent_chat_session', 'turn_lease_expires_at', 'timestamp with time zone', true, NULL),
-        ('logo', 'agent_chat_session', 'created_at', 'timestamp with time zone', false, 'now'),
-        ('logo', 'agent_chat_session', 'updated_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_chat_session', 'created_at', 'timestamp with time zone', false, 'now()'),
+        ('logo', 'agent_chat_session', 'updated_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_chat_session', 'expires_at', 'timestamp with time zone', false, NULL),
         ('logo', 'agent_chat_message', 'id', 'uuid', false, NULL),
         ('logo', 'agent_chat_message', 'session_id', 'uuid', false, NULL),
@@ -1842,20 +2162,20 @@ WITH execution_contract AS (
         ('logo', 'agent_chat_message', 'status', 'text', false, NULL),
         ('logo', 'agent_chat_message', 'content', 'text', false, ''''''),
         ('logo', 'agent_chat_message', 'replay_items', 'jsonb', false, '''[]'''),
-        ('logo', 'agent_chat_message', 'created_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_chat_message', 'created_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_usage_daily', 'user_login', 'text', false, NULL),
         ('logo', 'agent_usage_daily', 'usage_day', 'date', false, NULL),
         ('logo', 'agent_usage_daily', 'requests', 'integer', false, '0'),
         ('logo', 'agent_usage_daily', 'reserved_tokens', 'bigint', false, '0'),
         ('logo', 'agent_usage_daily', 'input_tokens', 'bigint', false, '0'),
         ('logo', 'agent_usage_daily', 'output_tokens', 'bigint', false, '0'),
-        ('logo', 'agent_usage_daily', 'updated_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_usage_daily', 'updated_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_usage_monthly', 'usage_month', 'date', false, NULL),
         ('logo', 'agent_usage_monthly', 'requests', 'integer', false, '0'),
         ('logo', 'agent_usage_monthly', 'reserved_tokens', 'bigint', false, '0'),
         ('logo', 'agent_usage_monthly', 'input_tokens', 'bigint', false, '0'),
         ('logo', 'agent_usage_monthly', 'output_tokens', 'bigint', false, '0'),
-        ('logo', 'agent_usage_monthly', 'updated_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_usage_monthly', 'updated_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_rate_window', 'user_login', 'text', false, NULL),
         ('logo', 'agent_rate_window', 'window_start', 'timestamp with time zone', false, NULL),
         ('logo', 'agent_rate_window', 'requests', 'integer', false, '0'),
@@ -1868,9 +2188,9 @@ WITH execution_contract AS (
         ('logo', 'agent_quota_reservation', 'status', 'text', false, '''reserved'''),
         ('logo', 'agent_quota_reservation', 'input_tokens', 'bigint', false, '0'),
         ('logo', 'agent_quota_reservation', 'output_tokens', 'bigint', false, '0'),
-        ('logo', 'agent_quota_reservation', 'created_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_quota_reservation', 'created_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_quota_reservation', 'provider_started_at', 'timestamp with time zone', true, NULL),
-        ('logo', 'agent_quota_reservation', 'expires_at', 'timestamp with time zone', false, 'now+''00:15:00''|now+''15minutes'''),
+        ('logo', 'agent_quota_reservation', 'expires_at', 'timestamp with time zone', false, 'now()+''00:15:00''|now()+''15 minutes'''),
         ('logo', 'agent_quota_reservation', 'finalized_at', 'timestamp with time zone', true, NULL),
         ('logo', 'agent_change_set', 'id', 'uuid', false, NULL),
         ('logo', 'agent_change_set', 'session_id', 'uuid', false, NULL),
@@ -1882,8 +2202,8 @@ WITH execution_contract AS (
         ('logo', 'agent_change_set', 'preview_diff', 'jsonb', false, '''{}'''),
         ('logo', 'agent_change_set', 'affected_scopes', 'jsonb', false, '''[]'''),
         ('logo', 'agent_change_set', 'contains_hard_delete', 'boolean', false, 'false'),
-        ('logo', 'agent_change_set', 'created_at', 'timestamp with time zone', false, 'now'),
-        ('logo', 'agent_change_set', 'updated_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_change_set', 'created_at', 'timestamp with time zone', false, 'now()'),
+        ('logo', 'agent_change_set', 'updated_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_change_set', 'expires_at', 'timestamp with time zone', false, NULL),
         ('logo', 'agent_change_set', 'applied_at', 'timestamp with time zone', true, NULL),
         ('logo', 'agent_change_set', 'undone_at', 'timestamp with time zone', true, NULL),
@@ -1894,7 +2214,7 @@ WITH execution_contract AS (
         ('logo', 'agent_change_set_item', 'tool_name', 'text', false, NULL),
         ('logo', 'agent_change_set_item', 'arguments', 'jsonb', false, NULL),
         ('logo', 'agent_change_set_item', 'sort_order', 'integer', false, NULL),
-        ('logo', 'agent_change_set_item', 'created_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_change_set_item', 'created_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_action_journal', 'id', 'uuid', false, NULL),
         ('logo', 'agent_action_journal', 'change_set_id', 'uuid', false, NULL),
         ('logo', 'agent_action_journal', 'user_login', 'text', false, NULL),
@@ -1903,7 +2223,7 @@ WITH execution_contract AS (
         ('logo', 'agent_action_journal', 'preview_hash', 'text', false, NULL),
         ('logo', 'agent_action_journal', 'before_state', 'jsonb', false, NULL),
         ('logo', 'agent_action_journal', 'after_state', 'jsonb', false, NULL),
-        ('logo', 'agent_action_journal', 'created_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_action_journal', 'created_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_spreadsheet_job', 'id', 'uuid', false, NULL),
         ('logo', 'agent_spreadsheet_job', 'session_id', 'uuid', false, NULL),
         ('logo', 'agent_spreadsheet_job', 'user_login', 'text', false, NULL),
@@ -1919,7 +2239,7 @@ WITH execution_contract AS (
         ('logo', 'agent_spreadsheet_job', 'mapping_hash', 'text', false, NULL),
         ('logo', 'agent_spreadsheet_job', 'mapping', 'jsonb', false, NULL),
         ('logo', 'agent_spreadsheet_job', 'rejected_rows', 'jsonb', false, '''[]'''),
-        ('logo', 'agent_spreadsheet_job', 'created_at', 'timestamp with time zone', false, 'now'),
+        ('logo', 'agent_spreadsheet_job', 'created_at', 'timestamp with time zone', false, 'now()'),
         ('logo', 'agent_spreadsheet_job', 'expires_at', 'timestamp with time zone', false, NULL)
 ), agent_column_order_policy(schema_name, table_name, column_names) AS (
     VALUES
@@ -1978,16 +2298,30 @@ WITH execution_contract AS (
            attribute.attgenerated AS generated_kind,
            attribute.attidentity AS identity_kind,
            pg_collation.collname AS collation_name,
-           CASE WHEN default_row.oid IS NULL THEN NULL ELSE regexp_replace(
-               regexp_replace(
-                   lower(pg_get_expr(
-                       default_row.adbin, default_row.adrelid, true
-                   )),
-                   '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
-                   '', 'g'
-               ),
-               '[[:space:]()"]', '', 'g'
-           ) END AS default_signature
+           CASE WHEN default_row.oid IS NULL THEN NULL ELSE
+           (SELECT string_agg(
+               CASE WHEN piece LIKE '''%' THEN piece
+                    ELSE regexp_replace(
+                             regexp_replace(
+                                 regexp_replace(
+                                     lower(piece), '"([a-z_][a-z0-9_$]*)"', '\1', 'g'
+                                 ),
+                                 '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
+                                 '', 'g'
+                             ),
+                             '[[:space:]]', '', 'g'
+                         )
+               END, '' ORDER BY ord)
+              FROM regexp_matches(
+                       regexp_replace(
+                           pg_get_expr(default_row.adbin, default_row.adrelid, true),
+                           'nextval\(''(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)''::regclass\)',
+                           'nextval(''\1''::regclass)', 'gi'
+                       ),
+                       '''(?:[^'']|'''')*''|[^'']+', 'g'
+                   ) WITH ORDINALITY AS parts(m, ord),
+                   LATERAL (SELECT m[1]) AS p(piece))
+           END AS default_signature
       FROM agent_table_policy
       JOIN pg_namespace AS namespace
         ON namespace.nspname = agent_table_policy.schema_name
@@ -2093,18 +2427,32 @@ WITH execution_contract AS (
                    THEN constraint_row.confdeltype ELSE '' END,
                CASE WHEN constraint_row.contype = 'f'
                    THEN constraint_row.confmatchtype ELSE '' END,
-               CASE WHEN constraint_row.contype = 'c' THEN regexp_replace(
-                   regexp_replace(
-                       lower(pg_get_expr(
-                           constraint_row.conbin,
-                           constraint_row.conrelid,
-                           true
-                       )),
-                       '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
-                       '', 'g'
-                   ),
-                   '[[:space:]()"]', '', 'g'
-               ) ELSE '' END
+               CASE WHEN constraint_row.contype = 'c' THEN
+               (SELECT string_agg(
+                   CASE WHEN piece LIKE '''%' THEN piece
+                        ELSE regexp_replace(
+                                 regexp_replace(
+                                     regexp_replace(
+                                         lower(piece), '"([a-z_][a-z0-9_$]*)"', '\1', 'g'
+                                     ),
+                                     '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
+                                     '', 'g'
+                                 ),
+                                 '[[:space:]]', '', 'g'
+                             )
+                   END, '' ORDER BY ord)
+                  FROM regexp_matches(
+                           regexp_replace(
+                               pg_get_expr(
+                   constraint_row.conbin, constraint_row.conrelid, true
+               ),
+                               'nextval\(''(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)''::regclass\)',
+                               'nextval(''\1''::regclass)', 'gi'
+                           ),
+                           '''(?:[^'']|'''')*''|[^'']+', 'g'
+                       ) WITH ORDINALITY AS parts(m, ord),
+                       LATERAL (SELECT m[1]) AS p(piece))
+               ELSE '' END
            ) AS signature,
            constraint_row.condeferrable AS is_deferrable,
            constraint_row.condeferred AS initially_deferred,
@@ -2138,51 +2486,51 @@ WITH execution_contract AS (
                )
            )
 ), agent_constraint_contract AS (
-    SELECT array_agg(signature ORDER BY signature) = ARRAY[
+    SELECT array_agg(signature ORDER BY signature COLLATE "C") = ARRAY[
         'logo.agent_action_journal|agent_action_journal_change_set_id_event_type_key|u|change_set_id,event_type||||||',
         'logo.agent_action_journal|agent_action_journal_change_set_id_user_login_fkey|f|change_set_id,user_login|logo.agent_change_set|id,user_login|a|r|s|',
-        'logo.agent_action_journal|agent_action_journal_event_type_check|c|event_type||||||event_type=anyarray[''apply'',''undo'']',
+        'logo.agent_action_journal|agent_action_journal_event_type_check|c|event_type||||||event_type=any(array[''apply'',''undo''])',
         'logo.agent_action_journal|agent_action_journal_pkey|p|id||||||',
         'logo.agent_action_journal|agent_action_journal_preview_hash_check|c|preview_hash||||||preview_hash~''^[0-9a-f]{64}$''',
-        'logo.agent_change_set_item|agent_change_set_item_arguments_check|c|arguments||||||jsonb_typeofarguments=''object''',
+        'logo.agent_change_set_item|agent_change_set_item_arguments_check|c|arguments||||||jsonb_typeof(arguments)=''object''',
         'logo.agent_change_set_item|agent_change_set_item_change_set_id_call_id_key|u|change_set_id,call_id||||||',
         'logo.agent_change_set_item|agent_change_set_item_change_set_id_sort_order_key|u|change_set_id,sort_order||||||',
         'logo.agent_change_set_item|agent_change_set_item_change_set_id_user_login_fkey|f|change_set_id,user_login|logo.agent_change_set|id,user_login|a|c|s|',
         'logo.agent_change_set_item|agent_change_set_item_pkey|p|id||||||',
         'logo.agent_change_set_item|agent_change_set_item_sort_order_check|c|sort_order||||||sort_order>=0',
         'logo.agent_change_set|agent_change_set_id_user_login_key|u|id,user_login||||||',
-        'logo.agent_change_set|agent_change_set_origin_check|c|origin||||||origin=anyarray[''chat'',''spreadsheet'']',
+        'logo.agent_change_set|agent_change_set_origin_check|c|origin||||||origin=any(array[''chat'',''spreadsheet''])',
         'logo.agent_change_set|agent_change_set_pkey|p|id||||||',
         'logo.agent_change_set|agent_change_set_preview_hash_check|c|preview_hash||||||preview_hashisnullorpreview_hash~''^[0-9a-f]{64}$''',
         'logo.agent_change_set|agent_change_set_revision_check|c|revision||||||revision>=0',
         'logo.agent_change_set|agent_change_set_session_id_user_login_fkey|f|session_id,user_login|logo.agent_chat_session|id,user_login|a|r|s|',
-        'logo.agent_change_set|agent_change_set_status_check|c|status||||||status=anyarray[''pending'',''applied'',''discarded'',''undone'']',
+        'logo.agent_change_set|agent_change_set_status_check|c|status||||||status=any(array[''pending'',''applied'',''discarded'',''undone''])',
         'logo.agent_chat_message|agent_chat_message_pkey|p|id||||||',
-        'logo.agent_chat_message|agent_chat_message_replay_items_check|c|replay_items||||||jsonb_typeofreplay_items=''array''',
-        'logo.agent_chat_message|agent_chat_message_role_check|c|role||||||role=anyarray[''user'',''assistant'']',
+        'logo.agent_chat_message|agent_chat_message_replay_items_check|c|replay_items||||||jsonb_typeof(replay_items)=''array''',
+        'logo.agent_chat_message|agent_chat_message_role_check|c|role||||||role=any(array[''user'',''assistant''])',
         'logo.agent_chat_message|agent_chat_message_session_id_turn_id_role_key|u|session_id,turn_id,role||||||',
         'logo.agent_chat_message|agent_chat_message_session_id_user_login_fkey|f|session_id,user_login|logo.agent_chat_session|id,user_login|a|c|s|',
-        'logo.agent_chat_message|agent_chat_message_status_check|c|status||||||status=anyarray[''complete'',''failed'',''cancelled'']',
+        'logo.agent_chat_message|agent_chat_message_status_check|c|status||||||status=any(array[''complete'',''failed'',''cancelled''])',
         'logo.agent_chat_session|agent_chat_session_id_user_login_key|u|id,user_login||||||',
         'logo.agent_chat_session|agent_chat_session_pkey|p|id||||||',
         'logo.agent_quota_reservation|agent_quota_reservation_input_tokens_check|c|input_tokens||||||input_tokens>=0',
         'logo.agent_quota_reservation|agent_quota_reservation_output_tokens_check|c|output_tokens||||||output_tokens>=0',
         'logo.agent_quota_reservation|agent_quota_reservation_pkey|p|id||||||',
         'logo.agent_quota_reservation|agent_quota_reservation_reserved_tokens_check|c|reserved_tokens||||||reserved_tokens>0',
-        'logo.agent_quota_reservation|agent_quota_reservation_status_check|c|status||||||status=anyarray[''reserved'',''reconciled'',''retained'']',
+        'logo.agent_quota_reservation|agent_quota_reservation_status_check|c|status||||||status=any(array[''reserved'',''reconciled'',''retained''])',
         'logo.agent_rate_window|agent_rate_window_pkey|p|user_login,window_start||||||',
         'logo.agent_rate_window|agent_rate_window_requests_check|c|requests||||||requests>=0',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_byte_size_check|c|byte_size||||||byte_size>=0',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_change_set_id_key|u|change_set_id||||||',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_change_set_id_user_login_fkey|f|change_set_id,user_login|logo.agent_change_set|id,user_login|a|r|s|',
-        'logo.agent_spreadsheet_job|agent_spreadsheet_job_format_name_check|c|format_name||||||format_name=anyarray[''csv'',''xlsx'']',
+        'logo.agent_spreadsheet_job|agent_spreadsheet_job_format_name_check|c|format_name||||||format_name=any(array[''csv'',''xlsx''])',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_id_user_login_key|u|id,user_login||||||',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_mapping_hash_check|c|mapping_hash||||||mapping_hash~''^[0-9a-f]{64}$''',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_mapping_revision_check|c|mapping_revision||||||mapping_revision>=1',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_pkey|p|id||||||',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_session_id_user_login_fkey|f|session_id,user_login|logo.agent_chat_session|id,user_login|a|r|s|',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_sha256_check|c|sha256||||||sha256~''^[0-9a-f]{64}$''',
-        'logo.agent_spreadsheet_job|agent_spreadsheet_job_status_check|c|status||||||status=anyarray[''mapping_processing'',''mapping_pending'',''mapping_confirmed'',''staged'',''rejected'',''expired'']',
+        'logo.agent_spreadsheet_job|agent_spreadsheet_job_status_check|c|status||||||status=any(array[''mapping_processing'',''mapping_pending'',''mapping_confirmed'',''staged'',''rejected'',''expired''])',
         'logo.agent_spreadsheet_job|agent_spreadsheet_job_storage_key_key|u|storage_key||||||',
         'logo.agent_usage_daily|agent_usage_daily_input_tokens_check|c|input_tokens||||||input_tokens>=0',
         'logo.agent_usage_daily|agent_usage_daily_output_tokens_check|c|output_tokens||||||output_tokens>=0',
@@ -2194,7 +2542,7 @@ WITH execution_contract AS (
         'logo.agent_usage_monthly|agent_usage_monthly_pkey|p|usage_month||||||',
         'logo.agent_usage_monthly|agent_usage_monthly_requests_check|c|requests||||||requests>=0',
         'logo.agent_usage_monthly|agent_usage_monthly_reserved_tokens_check|c|reserved_tokens||||||reserved_tokens>=0',
-        'logo.agent_usage_monthly|agent_usage_monthly_usage_month_check|c|usage_month||||||date_trunc''month'',usage_month=usage_month'
+        'logo.agent_usage_monthly|agent_usage_monthly_usage_month_check|c|usage_month||||||date_trunc(''month'',usage_month)=usage_month'
     ]::text[]
            AND bool_and(
                NOT is_deferrable
@@ -2227,18 +2575,30 @@ WITH execution_contract AS (
                ), ','),
                array_to_string(index_row.indoption::smallint[], ','),
                CASE WHEN index_row.indpred IS NULL THEN '' ELSE
-                   regexp_replace(
-                       regexp_replace(
-                           lower(pg_get_expr(
-                               index_row.indpred,
-                               index_row.indrelid,
-                               true
-                           )),
-                           '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
-                           '', 'g'
-                       ),
-                       '[[:space:]()"]', '', 'g'
-                   )
+                   (SELECT string_agg(
+                       CASE WHEN piece LIKE '''%' THEN piece
+                            ELSE regexp_replace(
+                                     regexp_replace(
+                                         regexp_replace(
+                                             lower(piece), '"([a-z_][a-z0-9_$]*)"', '\1', 'g'
+                                         ),
+                                         '::(timestamp (with|without) time zone|character varying|smallint|integer|bigint|text|date|jsonb|interval|boolean|uuid|numeric)\M',
+                                         '', 'g'
+                                     ),
+                                     '[[:space:]]', '', 'g'
+                                 )
+                       END, '' ORDER BY ord)
+                      FROM regexp_matches(
+                               regexp_replace(
+                                   pg_get_expr(
+                       index_row.indpred, index_row.indrelid, true
+                   ),
+                                   'nextval\(''(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)''::regclass\)',
+                                   'nextval(''\1''::regclass)', 'gi'
+                               ),
+                               '''(?:[^'']|'''')*''|[^'']+', 'g'
+                           ) WITH ORDINALITY AS parts(m, ord),
+                           LATERAL (SELECT m[1]) AS p(piece))
                END
            ) AS signature,
            index_method.amname AS access_method,
@@ -2423,6 +2783,14 @@ WITH execution_contract AS (
                   AND argument_types = ''
                   AND routine_kind = 'f'
            )
+           AND EXISTS (
+               SELECT 1
+                 FROM callable_inventory
+                WHERE schema_name = 'logo'
+                  AND routine_name = 'art_pool'
+                  AND argument_types = 'text, text, text'
+                  AND routine_kind = 'f'
+           )
            AND NOT EXISTS (
                SELECT 1
                  FROM callable_inventory
@@ -2440,6 +2808,13 @@ WITH execution_contract AS (
                             AND
                             routine_name = 'repull_display_name'
                             AND argument_types = 'text, boolean'
+                        )
+                        -- Read-only artwork resolver for /feed/logos
+                        -- (migrations/2026-09-06-logo-art-pool.sql).
+                        OR (
+                            schema_name = 'logo'
+                            AND routine_name = 'art_pool'
+                            AND argument_types = 'text, text, text'
                         )
                         OR (
                             schema_name = 'woo'

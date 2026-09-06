@@ -179,11 +179,17 @@ def main():
                 )
             cur.execute("SELECT woo.refresh_product_state()")
             rows_loaded = cur.fetchone()[0]
+            # The gate version must cover tombstones too: a removal-only
+            # refresh bumps only inactive rows, so a max over active rows
+            # alone would not move (or could even go backwards) and the
+            # gated WordPress reconcile would skip the removal. The active
+            # count stays filtered so the assertion below still compares
+            # like with like.
             cur.execute(
                 """
-                SELECT COALESCE(MAX(row_version), 0), count(*)
+                SELECT COALESCE(MAX(row_version), 0),
+                       count(*) FILTER (WHERE is_active)
                   FROM woo.store_product_state
-                 WHERE is_active
                 """
             )
             refresh_version, active_rows = cur.fetchone()

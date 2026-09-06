@@ -263,3 +263,44 @@ def test_oversized_aggregate_sentinel_is_independent_of_row_limit(monkeypatch):
     assert result["stores"] == []
     assert result["truncated"] is True
     assert result["truncation"] == {"rows": False, "bytes": True}
+
+
+def test_snapshot_scopes_stops_reading_once_the_budget_is_spent(monkeypatch):
+    """The aggregate snapshot budget is charged per scope, as it is read.
+
+    Checking it only after every scope had been read let one admitted
+    change-set pull far more into the process than its byte budget allows.
+    """
+
+    import pytest
+
+    import snapshots
+    from domain import InvalidCommand
+    from mutations import MutationScope
+
+    monkeypatch.setattr(snapshots, "MAX_SNAPSHOT_TOTAL_BYTES", 2_500_000)
+
+    class SnapshotCursor:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+
+        def fetchall(self):
+            return [{
+                "row": {"fdm4_store": "S"},
+                "row_count": 5,
+                "max_row_bytes": 200_000,
+                "scope_bytes": 1_000_000,
+            }]
+
+    cursor = SnapshotCursor()
+    scopes = [
+        MutationScope("store_settings_row", {"fdm4_store": f"S{index}"})
+        for index in range(10)
+    ]
+    with pytest.raises(InvalidCommand, match="total exact-snapshot byte limit"):
+        snapshots.snapshot_scopes(cursor, scopes)
+    assert len(cursor.executed) < len(scopes)
+    assert len(cursor.executed) == 3

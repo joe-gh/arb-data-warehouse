@@ -48,6 +48,11 @@ grep -q "include_dir = 'conf.d'" "${PGDATA_CONF}/postgresql.conf" || \
 systemctl restart postgresql
 
 #######################  roles, db, extension  #######################
+# Command tracing is off from here until the credentials file is written and
+# locked down. With it on, every generated password is echoed verbatim into
+# /var/log/cloud-init-output.log (group-readable by adm) and onto the serial
+# console, which would hand the passwords to anyone who can read either.
+set +x
 ETL_PW="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"
 WOO_PW="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"
 INS_PW="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"
@@ -134,5 +139,7 @@ insights_reader  ${INS_PW}    (read-only - Insights)
 psql "host=127.0.0.1 port=6432 dbname=arb_warehouse user=etl_writer"
 CREDS
 chmod 600 /root/arb_warehouse_credentials.txt
+# The passwords are now only in the root-only file; tracing is safe again.
+set -x
 
 echo "cloud-init complete: Postgres 18 + pgvector + PgBouncer ready on 6432."

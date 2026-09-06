@@ -60,7 +60,10 @@ if [[ ! "${VER:-}" =~ ^[0-9]+$ || ! "${ROWS:-}" =~ ^[0-9]+$ ]]; then
   fail "loader returned no trusted transform result"
   exit 1
 fi
-completed_id=$(control "UPDATE woo.sync_control SET status='success', finished_at=now(), refresh_version=$VER, rows_loaded=$ROWS WHERE id=$RUN_ID AND status='running' RETURNING id" | grep -oE '^[0-9]+' | head -1)
+# refresh_version is a watermark WP compares against; it must never go
+# backwards. GREATEST against the last successful pull keeps it monotonic even
+# if a refresh reports a lower number (e.g. a restored projection).
+completed_id=$(control "UPDATE woo.sync_control SET status='success', finished_at=now(), refresh_version=GREATEST($VER, COALESCE((SELECT max(refresh_version) FROM woo.sync_control WHERE op='pull' AND status='success'),0)), rows_loaded=$ROWS WHERE id=$RUN_ID AND status='running' RETURNING id" | grep -oE '^[0-9]+' | head -1)
 if [[ "$completed_id" != "$RUN_ID" ]]; then
   echo "CONTROL FAILED - success row was not finalized." >&2
   exit 1

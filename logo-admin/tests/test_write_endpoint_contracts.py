@@ -138,3 +138,46 @@ def test_style_color_copy_routes_keep_existing_response_shapes(client_as):
     assert style.status_code == 200
     assert style.json()["active"] is False
     assert style.json()["updated"] >= 1
+
+
+def test_add_row_refuses_an_occupied_slot_without_touching_it(client_as):
+    """The Add-row button sends create_only, so a proposed option_row that is
+    already taken is refused rather than silently replaced."""
+
+    row = _assignment()
+    client = client_as("admin-one")
+    response = client.put(
+        "/api/assignments",
+        json=_assignment_body(row, create_only=True, location="SHOULD NOT LAND"),
+    )
+    assert response.status_code == 409, response.text
+    with database.cursor() as cursor:
+        cursor.execute(
+            "SELECT location FROM logo.assignment "
+            "WHERE fdm4_store=%s AND product_style=%s AND garment_color_code=%s "
+            "AND option_row=%s AND position=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"],
+             row["option_row"], row["position"]),
+        )
+        assert cursor.fetchone()["location"] == row["location"]
+
+
+def test_add_row_creates_on_a_free_slot(client_as):
+    row = _assignment()
+    with database.cursor() as cursor:
+        cursor.execute(
+            "SELECT COALESCE(max(option_row), 0) + 1 AS next FROM logo.assignment "
+            "WHERE fdm4_store=%s AND product_style=%s AND garment_color_code=%s",
+            (row["fdm4_store"], row["product_style"], row["garment_color_code"]),
+        )
+        free_row = int(cursor.fetchone()["next"])
+    client = client_as("admin-one")
+    response = client.put(
+        "/api/assignments",
+        json=_assignment_body(
+            row, create_only=True, option_row=free_row, location="ADDED ROW",
+        ),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["assignment"]["option_row"] == free_row
+    assert response.json()["assignment"]["location"] == "ADDED ROW"
