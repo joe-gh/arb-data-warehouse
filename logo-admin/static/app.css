@@ -1035,7 +1035,7 @@ tr.needs-review td:first-child { box-shadow: inset 3px 0 0 #d9a441; }
 .main-nav__link--quiet:hover, .main-nav__link--quiet.is-active { color: #fff; }
 .main-nav__link, .main-nav__trigger, .brand strong, .brand small { white-space: nowrap; }
 @media (max-width: 1500px) {
-  .combobox--header { flex: 1 1 220px; max-width: 330px; }
+  .combobox--header { flex: 1 1 260px; max-width: 390px; }
   .main-nav { margin-left: .6rem; }
   .main-nav__link, .main-nav__trigger { padding-inline: .55rem; }
   .header-actions { gap: .55rem; }
@@ -1242,3 +1242,10 @@ div.mix-choice { cursor: default; }
 .colors-legend { margin-top: .6rem; }
 .colors-legend .chip { margin-right: .35rem; }
 .review-bar-swatch { display: inline-block; width: .3rem; height: 1rem; border-radius: 2px; background: #d9a441; }
+
+/* Text floor for <small> (2026-09-06): the browser default (smaller than its
+   parent) took table notes to 10px. Nothing a person reads sits below 12px. */
+small { font-size: max(.75rem, .85em); }
+/* The header store picker showed "Davey RC Safety (S_03…" at laptop widths:
+   a slightly smaller face lets the full name and code fit. */
+.combobox--header input[type="search"] { font-size: .95rem; }
