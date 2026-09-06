@@ -931,7 +931,9 @@ button.chip:focus-visible { outline: none; box-shadow: var(--focus); }
 
 /* ===== UI review fixes (2026-09-03) ===== */
 /* Header: the utility cluster stays on one line and the store picker gets room. */
-.header-actions { flex-wrap: nowrap; }
+/* Let the actions row take the leftover header width, so the store picker can
+   grow to its full name instead of sitting at its minimum. */
+.header-actions { flex: 1 1 auto; min-width: 0; justify-content: flex-end; flex-wrap: nowrap; }
 .header-actions .button, .user-menu__name, .environment-pill { white-space: nowrap; }
 .combobox--header { min-width: 240px; flex: 0 1 330px; }
 /* Every search-style combobox: the value never runs under the clear (x) button. */
