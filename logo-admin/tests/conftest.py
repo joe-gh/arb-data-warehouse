@@ -131,7 +131,7 @@ def inspect_database(dsn: str, *, inspect_app: bool = False) -> dict:
                 )
                 result["membership_count"] = int(cursor.fetchone()[0])
                 cursor.execute(
-                    "SELECT to_regclass('fdm4.codex_test_harness')"
+                    "SELECT to_regclass('fdm4.test_harness_marker')"
                 )
                 if cursor.fetchone()[0] is None:
                     result["marker_database_name"] = ""
@@ -140,7 +140,7 @@ def inspect_database(dsn: str, *, inspect_app: bool = False) -> dict:
                     cursor.execute(
                         """
                         SELECT database_name, nonce
-                          FROM fdm4.codex_test_harness
+                          FROM fdm4.test_harness_marker
                          ORDER BY created_at DESC LIMIT 1
                         """
                     )

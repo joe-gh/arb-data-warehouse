@@ -466,16 +466,16 @@ def test_provisioner_marks_fdm4_and_runs_app_preflight_read_only():
     provisioner = PROVISIONER.read_text()
     conftest = CONFTEST.read_text()
     for required_fragment in (
-        "fdm4.codex_test_harness",
+        "fdm4.test_harness_marker",
         "PGOPTIONS='-c default_transaction_read_only=on'",
         'psql "$target_app_dsn"',
         "agent-write-preflight.sql",
         'repull_function_sha256="${AGENT_REPULL_FUNCTION_SHA256:-}"',
     ):
         assert required_fragment in provisioner
-    assert "fdm4.codex_test_harness" in conftest
-    assert "public.codex_test_harness" not in provisioner
-    assert "public.codex_test_harness" not in conftest
+    assert "fdm4.test_harness_marker" in conftest
+    assert "public.test_harness_marker" not in provisioner
+    assert "public.test_harness_marker" not in conftest
 
 
 def test_sql_preflight_accepts_the_clean_disposable_target():
@@ -520,10 +520,10 @@ def test_sql_preflight_accepts_the_clean_disposable_target():
         ),
         (
             "trigger",
-            "CREATE TRIGGER codex_agent_drift_trigger BEFORE INSERT ON "
+            "CREATE TRIGGER harness_drift_trigger BEFORE INSERT ON "
             "logo.agent_chat_session FOR EACH ROW EXECUTE FUNCTION "
             "logo.audit_row()",
-            "DROP TRIGGER codex_agent_drift_trigger ON "
+            "DROP TRIGGER harness_drift_trigger ON "
             "logo.agent_chat_session",
         ),
         (

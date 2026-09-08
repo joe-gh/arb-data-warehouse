@@ -446,6 +446,10 @@ CREATE INDEX IF NOT EXISTS catmgr_audit_log_at ON catmgr.audit_log (at);
 
 GRANT USAGE ON SCHEMA catmgr TO logo_admin, etl_writer, woo_reader, insights_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA catmgr TO woo_reader, insights_reader;
+-- catmgr.run_job carries worker_token (the secret the WordPress job
+-- callbacks present); it is plumbing, not analytics, so the analyst role
+-- does not read it (2026-09-08 migration keeps live databases in step).
+REVOKE ALL ON TABLE catmgr.run_job FROM insights_reader;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON catmgr.snapshot, catmgr.wp_term, catmgr.wp_term_product TO logo_admin;
 GRANT SELECT, INSERT ON catmgr.audit_log TO logo_admin;

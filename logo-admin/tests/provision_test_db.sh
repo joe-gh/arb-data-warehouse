@@ -142,15 +142,15 @@ psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 \
 
 psql "$target_admin_dsn" -X -v ON_ERROR_STOP=1 \
   -v database_name="$database_name" -v nonce="$nonce" <<'SQL'
-CREATE TABLE fdm4.codex_test_harness (
+CREATE TABLE fdm4.test_harness_marker (
     database_name text NOT NULL,
     nonce text NOT NULL CHECK (nonce ~ '^[0-9a-f]{32}$'),
     created_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO fdm4.codex_test_harness (database_name, nonce)
+INSERT INTO fdm4.test_harness_marker (database_name, nonce)
 VALUES (:'database_name', :'nonce');
-REVOKE ALL ON fdm4.codex_test_harness FROM PUBLIC;
-GRANT SELECT ON fdm4.codex_test_harness TO logo_admin;
+REVOKE ALL ON fdm4.test_harness_marker FROM PUBLIC;
+GRANT SELECT ON fdm4.test_harness_marker TO logo_admin;
 SQL
 
 # Seed once so the provisioned database is immediately inspectable. The
