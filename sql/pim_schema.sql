@@ -75,3 +75,20 @@ SELECT fdm4_store,
 GRANT SELECT ON pim.v_enrichment TO woo_reader, insights_reader;
 
 COMMIT;
+
+-- Live Woo product presence, replaced hourly by WordPress (wp arb
+-- pim-presence-push): every published parent per store, its catalog
+-- visibility and its published variation SKUs. Read by push_pim.py to set
+-- product visibility in the PIM.
+CREATE TABLE IF NOT EXISTS pim.woo_presence (
+    env          text        NOT NULL,
+    blog_id      integer     NOT NULL,
+    parent_sku   text        NOT NULL,
+    visible      boolean     NOT NULL DEFAULT true,
+    upcs         text[]      NOT NULL DEFAULT '{}',
+    refreshed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (env, blog_id, parent_sku)
+);
+CREATE INDEX IF NOT EXISTS pim_woo_presence_sku  ON pim.woo_presence (parent_sku);
+CREATE INDEX IF NOT EXISTS pim_woo_presence_upcs ON pim.woo_presence USING gin (upcs);
+GRANT SELECT ON pim.woo_presence TO woo_reader, insights_reader;

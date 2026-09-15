@@ -8,13 +8,55 @@ per the approved August 2026 review sheets:
   color_fix       lane a/b  variant color code differs from FDM4
                   (a = pure zero padding, b = real divergence)
   variant_remove  lane b  ONLY refs from an explicit --remove-skus file
-                  (the human-approved removal sheet); the diff never
+                  (the approved removal sheet); the diff never
                   auto-proposes deletions
   variant_create  lane b  FDM4 variant missing under an existing PIM product
-  product_create  lane b  Arborwear style absent from the PIM; created hidden
-                  (prod_stat D) with content backfilled from the Woo mirror
+  product_create  lane b  style live in Woo but absent from the PIM; created
+                  visible with content backfilled from the Woo mirror
+  product_publish lane b  draft (prod_stat D) product that is live in Woo;
+                  switched to visible
+  variant_publish lane b  draft (frmt_stat D) variant under a live product;
+                  switched to visible
+  product_remove  lane b  product that is live nowhere in Woo, OR that FDM4
+                  does not know at all; deleted from the PIM together with
+                  its variants (the reason is recorded on the row)
+  style_fill      lane b  product with no style number whose reference or a
+                  variant UPC FDM4 knows; gets FDM4's style code
+  (product_draft  retired 2026-09-14: removal replaced it; old rows remain)
 
-Stages:
+Rule (2026-09-14, extended 2026-09-15): FDM4 is the single source of truth.
+The PIM carries exactly the FDM4 products the Woo stores carry, and all of it
+visible; a product none of whose identifiers (style number, reference, variant
+UPCs) FDM4 knows leaves the PIM whatever Woo says, and a product FDM4 knows
+but no store carries stays out. A product is "live" when a published, catalog-visible product
+on at least one Woo store that is NOT an all-products store carries its style
+number, its PIM reference, or one of its variant SKUs. The all-products stores
+(PIM_ALL_PRODUCTS_BLOGS, default 2,36,59) carry the whole FDM4 range and say
+nothing about merchandising, so they do not count. Presence comes from
+pim.woo_presence, replaced hourly by WordPress (wp arb pim-presence-push).
+When that set is missing or older than PIM_PRESENCE_MAX_AGE_HOURS every
+presence-driven rule (create, publish, remove) is skipped for the run; only
+colour fixes and variants under existing products go out, the variants
+taking their parent's status. Removals additionally need the set to hold at
+least PIM_PRESENCE_MIN_ROWS rows, so a truncated refresh cannot empty the PIM.
+
+Automatic mode (the scheduled hourly run):
+  --auto                 diff, then apply every row except variant removals,
+                         in one go. Nothing here waits for a person. Older
+                         change sets still holding proposed rows are closed
+                         as superseded first (a fresh diff re-proposes
+                         whatever still applies). Requires PIM_PUSH_ENABLED=1
+                         like --apply. Two anomaly brakes: PIM_AUTO_MAX_FLIPS
+                         (default 1000) caps product+variant publishes and
+                         PIM_AUTO_MAX_REMOVALS (default 250) caps product
+                         removals one run will send; above a cap those rows
+                         are left proposed and reported, everything else
+                         still applies, and the next run tries again. A
+                         bigger backlog is applied by hand:
+                         --approve --set N --action product_remove, then
+                         --apply --set N --allow-removals [--limit N].
+
+Manual stages (kept for removals and for inspection):
   --diff                 compute a new change set (read-only against the PIM)
   --summary [--set N]    print a change set summary with samples
   --approve --set N [--lane X] [--action Y]   mark rows approved
@@ -23,8 +65,11 @@ Stages:
                          otherwise prints what it would do
 
 Safety: the apply engine re-reads every target first and skips rows whose
-precondition no longer holds; it never deletes products; variant deletes
-additionally require --allow-removals. A variant delete rechecks the premise
+precondition no longer holds. A product delete re-checks the live presence set
+at apply time and is skipped when the product went live since the diff or the
+set is missing, stale or truncated; in manual mode it also requires
+--allow-removals. Variant deletes require --allow-removals and are never
+auto-proposed. A variant delete rechecks the premise
 it was staged on - the sku must still be absent from FDM4 and the live colour
 and size must still match the reviewed sheet - and a set carrying more than
 REMOVAL_CAP removals is refused whole. Every row records its outcome.
@@ -58,7 +103,33 @@ REMOVAL_CAP = 200
 DB_NAME = "arb_warehouse"
 DB_SOCKET = "/var/run/postgresql"
 
-ACTIONS = ("color_fill", "color_fix", "variant_remove", "variant_create", "product_create")
+ACTIONS = ("color_fill", "color_fix", "variant_remove", "variant_create", "product_create",
+           "product_publish", "product_draft", "variant_publish", "product_remove", "style_fill")
+
+# Product visibility in the PIM follows Woo presence (pim.woo_presence, pushed
+# hourly by WordPress). Only stores outside PIM_ALL_PRODUCTS_BLOGS count as
+# merchandising a product; those blogs carry the whole FDM4 range.
+PRESENCE_ENV = os.environ.get("PIM_PRESENCE_ENV", "production")
+PRESENCE_MAX_AGE_HOURS = float(os.environ.get("PIM_PRESENCE_MAX_AGE_HOURS", "3"))
+ALL_PRODUCTS_BLOGS = tuple(
+    int(b) for b in os.environ.get("PIM_ALL_PRODUCTS_BLOGS", "2,36,59").split(",") if b.strip())
+# Anomaly brake for the automatic run: more publish/draft flips than this in
+# one hour means something upstream is wrong (a broken presence set slips past
+# the freshness check, a mass store change), so they wait for the next run.
+AUTO_MAX_FLIPS = int(os.environ.get("PIM_AUTO_MAX_FLIPS", "1000"))
+# Same idea for deletions: a presence set that lost a store (or a Woo-side
+# sweep) must not empty the PIM unattended.
+AUTO_MAX_REMOVALS = int(os.environ.get("PIM_AUTO_MAX_REMOVALS", "250"))
+# A presence set smaller than this is treated as truncated: removals are
+# skipped for the run (the full set is ~33k rows across ~100 stores).
+PRESENCE_MIN_ROWS = int(os.environ.get("PIM_PRESENCE_MIN_ROWS", "20000"))
+# Same guard for the FDM4 item master (rebuilt hourly by the extractor): a
+# truncated read must not read as "FDM4 knows nothing". ~5.8k styles / ~57k UPCs.
+FDM4_MIN_STYLES = int(os.environ.get("PIM_FDM4_MIN_STYLES", "1000"))
+FDM4_MIN_UPCS = int(os.environ.get("PIM_FDM4_MIN_UPCS", "10000"))
+AUTO_ACTIONS = ("color_fill", "color_fix", "variant_create", "product_create",
+                "product_publish", "variant_publish", "product_remove", "style_fill")
+FLIP_ACTIONS = ("product_publish", "variant_publish")
 
 
 def api_key():
@@ -123,8 +194,8 @@ def api_call(method, path, key, body=None):
 GET_SELECT = {
     # frmt_sizelabel and frmt_variantname are read so a removal can compare the
     # live variant against the one the reviewer saw on the sheet.
-    "variants": "frmt_id,frmt_ref,frmt_colorcode,frmt_colorname,frmt_sizelabel,frmt_variantname",
-    "products": "prod_id,prod_ref,prod_stat",
+    "variants": "frmt_id,frmt_ref,frmt_stat,frmt_colorcode,frmt_colorname,frmt_sizelabel,frmt_variantname",
+    "products": "prod_id,prod_ref,prod_stat,prod_stylenumber",
 }
 
 
@@ -162,6 +233,73 @@ def fdm4_has_ref(cursor, ref):
         'SELECT 1 FROM fdm4.item WHERE upper(btrim("upc-code")) = %s LIMIT 1',
         ((ref or "").strip().upper(),),
     )
+    return cursor.fetchone() is not None
+
+
+def product_live_now(cursor, prod_ref, style_code):
+    """Is this PIM product live on a counting store right now?
+
+    Reads pim.woo_presence directly (fresh, full set only) for the style
+    number, the PIM reference, or any active variant SKU. Returns None when
+    the set is missing, stale or truncated, so a removal refuses rather than
+    guesses.
+    """
+    cursor.execute(
+        """
+        SELECT count(*) AS n,
+               coalesce(max(refreshed_at) < now() - %(age)s * interval '1 hour', true) AS stale
+          FROM pim.woo_presence WHERE env = %(env)s
+        """,
+        {"age": PRESENCE_MAX_AGE_HOURS, "env": PRESENCE_ENV})
+    state = cursor.fetchone()
+    if not state["n"] or state["stale"] or state["n"] < PRESENCE_MIN_ROWS:
+        return None
+    cursor.execute(
+        """
+        SELECT 1 FROM pim.woo_presence w
+         WHERE w.env = %(env)s AND w.visible AND NOT (w.blog_id = ANY(%(all_blogs)s))
+           AND (w.parent_sku = %(style)s OR w.parent_sku = %(ref)s
+                OR w.upcs && ARRAY(SELECT upper(btrim(v.frmt_ref)) FROM pim.api_variant v
+                                    WHERE v.prod_ref = %(ref)s AND v.retired_at IS NULL))
+         LIMIT 1
+        """,
+        {"env": PRESENCE_ENV, "all_blogs": list(ALL_PRODUCTS_BLOGS),
+         "style": (style_code or "").strip().upper(), "ref": (prod_ref or "").strip().upper()})
+    return cursor.fetchone() is not None
+
+
+_fdm4_master_ok = None
+
+
+def product_known_to_fdm4(cursor, prod_ref, style_code):
+    """Does FDM4 know this product by style number, reference, or any active
+    variant UPC? Returns None when the item master looks truncated (checked
+    once per process), so a removal refuses rather than guesses."""
+    global _fdm4_master_ok
+    if _fdm4_master_ok is None:
+        cursor.execute(
+            """
+            SELECT (SELECT count(DISTINCT upper(btrim("style-code"))) FROM fdm4.item) AS styles,
+                   (SELECT count(*) FROM fdm4.item WHERE btrim("upc-code") <> '') AS upcs
+            """)
+        fk = cursor.fetchone()
+        _fdm4_master_ok = fk["styles"] >= FDM4_MIN_STYLES and fk["upcs"] >= FDM4_MIN_UPCS
+    if not _fdm4_master_ok:
+        return None
+    params = {"style": (style_code or "").strip().upper(), "ref": (prod_ref or "").strip().upper()}
+    cursor.execute(
+        """
+        SELECT 1 FROM fdm4.item i
+         WHERE upper(btrim(i."style-code")) IN (%(style)s, %(ref)s)
+            OR upper(btrim(i."upc-code")) = %(ref)s
+            OR upper(btrim(i."upc-code")) IN (SELECT upper(btrim(v.frmt_ref)) FROM pim.api_variant v
+                                               WHERE v.prod_ref = %(ref)s AND v.retired_at IS NULL)
+         LIMIT 1
+        """, params)
+    if cursor.fetchone() is not None:
+        return True
+    cursor.execute(
+        'SELECT 1 FROM fdm4.style WHERE upper(btrim("style-code")) IN (%(style)s, %(ref)s) LIMIT 1', params)
     return cursor.fetchone() is not None
 
 
@@ -203,6 +341,92 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
     cursor.execute("CREATE INDEX ON wh (sku)")
     cursor.execute("CREATE INDEX ON wh (style_code)")
 
+    # Woo presence: the stores that count for visibility (see the module
+    # docstring). A missing or stale set leaves live_blog empty, which skips
+    # the publish/draft rules and creates new products as drafts.
+    cursor.execute(
+        """
+        SELECT count(*) AS n, max(refreshed_at) AS fresh,
+               coalesce(max(refreshed_at) < now() - %s * interval '1 hour', true) AS stale
+          FROM pim.woo_presence WHERE env = %s
+        """,
+        (PRESENCE_MAX_AGE_HOURS, PRESENCE_ENV))
+    presence = cursor.fetchone()
+    presence_ok = bool(presence["n"]) and not presence["stale"]
+    # Deletions need more than freshness: a set that lost most of its rows
+    # (a partial write, a broken store loop) must not read as "nothing is live".
+    presence_full = presence_ok and presence["n"] >= PRESENCE_MIN_ROWS
+    cursor.execute(
+        """
+        CREATE TEMP TABLE live_blog AS
+        SELECT blog_id, parent_sku, upcs
+          FROM pim.woo_presence
+         WHERE env = %(env)s AND visible AND NOT (blog_id = ANY(%(all_blogs)s)) AND %(ok)s
+        """,
+        {"env": PRESENCE_ENV, "all_blogs": list(ALL_PRODUCTS_BLOGS), "ok": presence_ok})
+    cursor.execute("CREATE INDEX ON live_blog (parent_sku)")
+    cursor.execute("CREATE INDEX ON live_blog USING gin (upcs)")
+    cursor.execute(
+        """
+        CREATE TEMP TABLE live_product AS
+        SELECT p.prod_ref FROM pim.api_product p
+         WHERE p.retired_at IS NULL
+           AND EXISTS (SELECT 1 FROM live_blog l WHERE l.parent_sku = upper(btrim(p.style_number)))
+        UNION
+        SELECT p.prod_ref FROM pim.api_product p
+         WHERE p.retired_at IS NULL
+           AND EXISTS (SELECT 1 FROM live_blog l WHERE l.parent_sku = upper(btrim(p.prod_ref)))
+        UNION
+        SELECT v.prod_ref FROM pim.api_variant v
+          JOIN pim.api_product p ON p.prod_ref = v.prod_ref AND p.retired_at IS NULL
+         WHERE v.retired_at IS NULL
+           AND EXISTS (SELECT 1 FROM live_blog l WHERE l.upcs @> ARRAY[upper(btrim(v.frmt_ref))])
+        """)
+    cursor.execute("SELECT count(*) AS n FROM live_product")
+    live_n = cursor.fetchone()["n"]
+
+    # FDM4 universe: every style code and UPC the item master knows, any
+    # status. known_product = PIM products FDM4 knows by style number,
+    # reference, or an active variant UPC. Guarded like presence: a truncated
+    # item master (mid-refresh, failed pull) skips the FDM4-driven rules.
+    cursor.execute(
+        """
+        CREATE TEMP TABLE f_style AS
+        SELECT DISTINCT upper(btrim("style-code")) AS s FROM fdm4.item WHERE btrim("style-code") <> ''
+        UNION SELECT DISTINCT upper(btrim("style-code")) FROM fdm4.style WHERE btrim("style-code") <> ''
+        """)
+    cursor.execute("CREATE INDEX ON f_style (s)")
+    cursor.execute(
+        """
+        CREATE TEMP TABLE f_upc AS
+        SELECT DISTINCT upper(btrim("upc-code")) AS u FROM fdm4.item WHERE btrim("upc-code") <> ''
+        """)
+    cursor.execute("CREATE INDEX ON f_upc (u)")
+    cursor.execute("SELECT (SELECT count(*) FROM f_style) AS styles, (SELECT count(*) FROM f_upc) AS upcs")
+    fk = cursor.fetchone()
+    fdm4_ok = fk["styles"] >= FDM4_MIN_STYLES and fk["upcs"] >= FDM4_MIN_UPCS
+    cursor.execute(
+        """
+        CREATE TEMP TABLE known_product AS
+        SELECT p.prod_ref FROM pim.api_product p
+         WHERE p.retired_at IS NULL
+           AND (upper(btrim(p.style_number)) IN (SELECT s FROM f_style)
+                OR upper(btrim(p.prod_ref)) IN (SELECT s FROM f_style)
+                OR upper(btrim(p.prod_ref)) IN (SELECT u FROM f_upc)
+                OR EXISTS (SELECT 1 FROM pim.api_variant v JOIN f_upc f ON f.u = upper(btrim(v.frmt_ref))
+                            WHERE v.prod_ref = p.prod_ref AND v.retired_at IS NULL))
+        """)
+    print(f"fdm4: {fk['styles']} styles, {fk['upcs']} UPCs"
+          + ("" if fdm4_ok else " - looks truncated, not-in-FDM4 removals and style fills skipped this run"))
+    if presence_ok:
+        print(f"presence[{PRESENCE_ENV}]: {presence['n']} rows refreshed {presence['fresh']:%Y-%m-%d %H:%M}Z;"
+              f" {live_n} PIM products live outside blogs {list(ALL_PRODUCTS_BLOGS)}"
+              + ("" if presence_full else
+                 f"; below PIM_PRESENCE_MIN_ROWS={PRESENCE_MIN_ROWS}, removals skipped this run"))
+    else:
+        print(f"presence[{PRESENCE_ENV}]: {'missing' if not presence['n'] else 'stale (' + str(presence['fresh']) + ')'}"
+              " - create/publish/remove rules skipped this run")
+
     cursor.execute(
         "INSERT INTO pim.push_change_set (created_by, note) VALUES (%s, %s) RETURNING set_id",
         ("push_pim", note))
@@ -239,7 +463,7 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
         {"set_id": set_id})
 
     # variant_remove (lane b): removals are NEVER auto-proposed. Only refs
-    # from an explicitly supplied, human-approved sheet are staged, and each
+    # from an explicitly supplied, approved sheet are staged, and each
     # is verified to be genuinely absent from FDM4 before it is included.
     # (A full auto-scan found ~7k FDM4-gone variants in the PIM - that
     # backlog belongs to a separate PIM-team review, not this push.)
@@ -268,6 +492,12 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                jsonb_build_object(
                    'prod_ref', p.prod_ref,
                    'frmt_ref', w.sku,
+                   -- A variant takes its parent's visibility (input enum is
+                   -- lowercase): visible under a visible or live product,
+                   -- draft under a draft that presence cannot vouch for.
+                   'frmt_stat', CASE WHEN p.payload ->> 'prod_stat' = 'V'
+                                       OR p.prod_ref IN (SELECT prod_ref FROM live_product)
+                                     THEN 'v' ELSE 'd' END,
                    'frmt_colorcode', w.color_code,
                    'frmt_colorname', w.color_name,
                    'frmt_sizecode', w.size_code,
@@ -288,8 +518,11 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
            -- counting them here would suppress a legitimate re-create.
            AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant
                               WHERE retired_at IS NULL)
+           -- With a fresh presence set, products live nowhere are on their
+           -- way out of the PIM (product_remove below); do not grow them.
+           AND (NOT %(ok)s OR p.prod_ref IN (SELECT prod_ref FROM live_product))
         """,
-        {"set_id": set_id})
+        {"set_id": set_id, "ok": presence_ok})
 
     # product_create (lane b): active store-carried styles absent from the
     # PIM, with content backfilled from the Woo mirror (lowest blog with
@@ -311,6 +544,13 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                      WHERE btrim(style_number) <> '' AND retired_at IS NULL)
                AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant
                                   WHERE retired_at IS NULL)
+               -- Only styles a counting store already carries (by style
+               -- number or by one of the style's SKUs). live_blog is empty
+               -- when the presence set is missing or stale, so nothing is
+               -- created then.
+               AND (EXISTS (SELECT 1 FROM live_blog l WHERE l.parent_sku = w.style_code)
+                    OR EXISTS (SELECT 1 FROM wh w2 JOIN live_blog l ON l.upcs @> ARRAY[w2.sku]
+                                WHERE w2.style_code = w.style_code))
              GROUP BY 1
         ), content AS (
             SELECT DISTINCT ON (upper(btrim(sku_parent)))
@@ -330,7 +570,9 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                jsonb_build_object(
                    'prod_ref', m.style_code,
                    'prod_stylenumber', m.style_code,
-                   'prod_stat', 'd',  -- hidden; input enum is lowercase v/i/d/r
+                   -- input enum is lowercase v/i/d/r; every created product
+                   -- is live by construction (see the WHERE above)
+                   'prod_stat', 'v',
                    'prod_brand', m.brand,
                    'prod_title', COALESCE(c.name, m.wh_name, m.style_code),
                    'prod_description', c.description,
@@ -342,6 +584,98 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
         """,
         {"set_id": set_id})
 
+    # Visibility (lane b): drafts that are live in Woo become visible, and so
+    # do draft variants under live products. The mirror status is the premise;
+    # the apply step re-reads the live status and skips rows that no longer
+    # hold. Skipped whole when the presence set is missing or stale.
+    if presence_ok:
+        cursor.execute(
+            """
+            INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, style_code, before, after)
+            SELECT %(set_id)s, 'b', 'product_publish', p.prod_ref, upper(btrim(p.style_number)),
+                   jsonb_build_object('prod_stat', 'D'),
+                   jsonb_build_object('prod_stat', 'v')
+              FROM pim.api_product p
+             WHERE p.retired_at IS NULL
+               AND p.payload ->> 'prod_stat' = 'D'
+               AND p.prod_ref IN (SELECT prod_ref FROM live_product)
+            """,
+            {"set_id": set_id})
+        # Only drafts flip: a variant the PIM team set invisible ('I') is a
+        # deliberate choice and is left alone.
+        cursor.execute(
+            """
+            INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, frmt_ref, style_code, before, after)
+            SELECT %(set_id)s, 'b', 'variant_publish', v.prod_ref, v.frmt_ref, upper(btrim(p.style_number)),
+                   jsonb_build_object('frmt_stat', 'D'),
+                   jsonb_build_object('frmt_stat', 'v')
+              FROM pim.api_variant v
+              JOIN pim.api_product p ON p.prod_ref = v.prod_ref AND p.retired_at IS NULL
+             WHERE v.retired_at IS NULL
+               AND v.payload ->> 'frmt_stat' = 'D'
+               AND v.prod_ref IN (SELECT prod_ref FROM live_product)
+            """,
+            {"set_id": set_id})
+
+    # Removal (lane b): a product leaves the PIM, variants included (the API
+    # deletes them with the product), when it is live on no counting store
+    # (needs a fresh AND full presence set) or when FDM4 does not know it at
+    # all (needs a full item master). The reason rides on the row; the apply
+    # step re-checks that same premise right before the delete.
+    if presence_full or fdm4_ok:
+        cursor.execute(
+            """
+            INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, style_code, before, after)
+            SELECT %(set_id)s, 'b', 'product_remove', p.prod_ref, upper(btrim(p.style_number)),
+                   jsonb_build_object(
+                       'prod_id', (p.payload ->> 'prod_id')::bigint,
+                       'prod_stat', p.payload ->> 'prod_stat',
+                       'prod_title', NULLIF(btrim(p.payload ->> 'prod_title'), ''),
+                       'variants', (SELECT count(*) FROM pim.api_variant v
+                                     WHERE v.prod_ref = p.prod_ref AND v.retired_at IS NULL),
+                       'reason', CASE WHEN %(fdm4_ok)s AND p.prod_ref NOT IN (SELECT prod_ref FROM known_product)
+                                      THEN 'not in FDM4' ELSE 'not live in Woo' END),
+                   NULL
+              FROM pim.api_product p
+             WHERE p.retired_at IS NULL
+               AND ((%(presence_full)s AND p.prod_ref NOT IN (SELECT prod_ref FROM live_product))
+                    OR (%(fdm4_ok)s AND p.prod_ref NOT IN (SELECT prod_ref FROM known_product)))
+            """,
+            {"set_id": set_id, "presence_full": presence_full, "fdm4_ok": fdm4_ok})
+
+    # style_fill (lane b): a product with no style number gets FDM4's style
+    # code when its reference is one, or when its reference / an active
+    # variant UPC maps to exactly one FDM4 style. Products on their way out
+    # (live nowhere) are not worth filling.
+    if fdm4_ok:
+        cursor.execute(
+            """
+            WITH bare AS (
+              SELECT p.prod_ref FROM pim.api_product p
+               WHERE p.retired_at IS NULL AND coalesce(btrim(p.style_number), '') = ''
+                 AND (NOT %(presence_full)s OR p.prod_ref IN (SELECT prod_ref FROM live_product))
+            ), cand AS (
+              SELECT b.prod_ref, upper(btrim(b.prod_ref)) AS style FROM bare b
+               WHERE upper(btrim(b.prod_ref)) IN (SELECT s FROM f_style)
+              UNION
+              SELECT b.prod_ref, upper(btrim(i."style-code")) FROM bare b
+                JOIN fdm4.item i ON upper(btrim(i."upc-code")) = upper(btrim(b.prod_ref))
+              UNION
+              SELECT b.prod_ref, upper(btrim(i."style-code")) FROM bare b
+                JOIN pim.api_variant v ON v.prod_ref = b.prod_ref AND v.retired_at IS NULL
+                JOIN fdm4.item i ON upper(btrim(i."upc-code")) = upper(btrim(v.frmt_ref))
+            ), one AS (
+              SELECT prod_ref, min(style) AS style FROM cand
+               WHERE coalesce(style, '') <> '' GROUP BY prod_ref HAVING count(DISTINCT style) = 1
+            )
+            INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, style_code, before, after)
+            SELECT %(set_id)s, 'b', 'style_fill', o.prod_ref, o.style,
+                   jsonb_build_object('prod_stylenumber', NULL),
+                   jsonb_build_object('prod_stylenumber', o.style)
+              FROM one o
+            """,
+            {"set_id": set_id, "presence_full": presence_full})
+
     # variants for the created products ride as variant_create rows keyed to
     # the future prod_ref (the style number).
     cursor.execute(
@@ -351,6 +685,7 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                jsonb_build_object(
                    'prod_ref', r.prod_ref,
                    'frmt_ref', w.sku,
+                   'frmt_stat', 'v',  -- the product is created visible
                    'frmt_colorcode', w.color_code,
                    'frmt_colorname', w.color_name,
                    'frmt_sizecode', w.size_code,
@@ -397,6 +732,8 @@ def print_summary(set_id):
     cursor.execute("SELECT * FROM pim.push_change_set WHERE set_id = %s", (set_id,))
     header = cursor.fetchone()
     print(f"change set {set_id}  status={header['status']}  created={header['created_at']}  {header['note']}")
+    print(f"  rule: live on a store outside blogs {list(ALL_PRODUCTS_BLOGS)} -> in the PIM and visible, else removed"
+          f" (presence env {PRESENCE_ENV}, max age {PRESENCE_MAX_AGE_HOURS:g}h)")
     cursor.execute(
         """
         SELECT action, lane, status, count(*) AS n
@@ -442,7 +779,7 @@ def approve(set_id, lane, action):
 # --------------------------------------------------------------------------
 # Apply engine
 
-def apply_set(set_id, limit, allow_removals):
+def apply_set(set_id, limit, allow_removals, auto=False):
     enabled = os.environ.get("PIM_PUSH_ENABLED") == "1"
     key = api_key()
     connection = connect()
@@ -459,8 +796,8 @@ def apply_set(set_id, limit, allow_removals):
     rows = cursor.fetchall()
     if not rows:
         print("nothing approved to apply")
-        return
-    # REMOVAL_CAP is the size of a removal batch a person can actually review.
+        return 0, 0, 0
+    # REMOVAL_CAP is the largest removal batch that can reasonably be reviewed.
     # A set that carries more of them is refused whole rather than half-applied.
     removals = sum(1 for row in rows if row["action"] == "variant_remove")
     if allow_removals and removals > REMOVAL_CAP:
@@ -473,7 +810,7 @@ def apply_set(set_id, limit, allow_removals):
     for row in rows:
         # One bad row must not abort a multi-hour run.
         try:
-            outcome, detail = apply_row(row, key, enabled, allow_removals, cursor)
+            outcome, detail = apply_row(row, key, enabled, allow_removals, cursor, auto)
         except Exception as exc:  # noqa: BLE001 - keep the batch moving
             outcome, detail = "failed", f"exception: {exc}"
         if enabled:
@@ -491,12 +828,13 @@ def apply_set(set_id, limit, allow_removals):
         print(f"  [{outcome}] {row['action']} {row['prod_ref']} {row['frmt_ref']} {detail}")
     print(f"apply finished: {done} applied, {skipped} skipped, {failed} failed"
           + ("" if enabled else " (dry run, nothing sent)"))
+    return done, skipped, failed
 
 
 _parent_id_cache = {}
 
 
-def apply_row(row, key, enabled, allow_removals, cursor):
+def apply_row(row, key, enabled, allow_removals, cursor, auto=False):
     action = row["action"]
     after = row["after"] or {}
     if action in ("color_fill", "color_fix"):
@@ -569,13 +907,162 @@ def apply_row(row, key, enabled, allow_removals, cursor):
                 if k.startswith("prod_") and v is not None}
         status, payload = api_call("POST", "/catalog/products", key, body)
         return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
+    if action == "product_publish":
+        current = api_get_one("products", "prod_ref", row["prod_ref"], key)
+        if current is None:
+            return "skipped", "product no longer in the PIM"
+        live = str(current.get("prod_stat") or "").strip().upper()
+        if live != "D":
+            return "skipped", f"status is {live or 'unset'}, not a draft"
+        if not enabled:
+            return "skipped", "dry run"
+        status, payload = api_call("PATCH", f"/catalog/products({current['prod_id']})", key,
+                                   {"prod_stat": "v"})
+        return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
+    if action == "variant_publish":
+        current = api_get_one("variants", "frmt_ref", row["frmt_ref"], key)
+        if current is None:
+            return "skipped", "variant no longer in the PIM"
+        live = str(current.get("frmt_stat") or "").strip().upper()
+        if live != "D":
+            return "skipped", f"status is {live or 'unset'}, not a draft"
+        if not enabled:
+            return "skipped", "dry run"
+        status, payload = api_call("PATCH", f"/catalog/variants({current['frmt_id']})", key,
+                                   {"frmt_stat": "v"})
+        return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
+    if action == "style_fill":
+        current = api_get_one("products", "prod_ref", row["prod_ref"], key)
+        if current is None:
+            return "skipped", "product no longer in the PIM"
+        have = str(current.get("prod_stylenumber") or "").strip()
+        if have:
+            return "skipped", f"style number already set ({have})"
+        if not enabled:
+            return "skipped", "dry run"
+        status, payload = api_call("PATCH", f"/catalog/products({current['prod_id']})", key,
+                                   {"prod_stylenumber": after.get("prod_stylenumber")})
+        return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
+    if action == "product_remove":
+        # The hourly run deletes on its own (within PIM_AUTO_MAX_REMOVALS);
+        # a hand-applied set has to say so explicitly.
+        if not (auto or allow_removals):
+            return "skipped", "product removals require --allow-removals"
+        current = api_get_one("products", "prod_ref", row["prod_ref"], key)
+        if current is None:
+            return "skipped", "already gone"
+        # Recheck the staged premise as things stand now, and refuse to act
+        # on a missing, stale or truncated source. "not in FDM4" is rechecked
+        # against the item master; "not live in Woo" against the presence set
+        # (a product that went live since the diff stays).
+        reason = (row["before"] or {}).get("reason") or "not live in Woo"
+        if reason == "not in FDM4":
+            known = product_known_to_fdm4(cursor, row["prod_ref"], row["style_code"])
+            if known is None:
+                return "skipped", "FDM4 item master looks truncated at apply time"
+            if known:
+                return "skipped", "back in FDM4 since diff"
+        else:
+            live = product_live_now(cursor, row["prod_ref"], row["style_code"])
+            if live is None:
+                return "skipped", "presence set missing, stale or truncated at apply time"
+            if live:
+                return "skipped", "went live in Woo since diff"
+        if not enabled:
+            return "skipped", "dry run"
+        status, payload = api_call("DELETE", f"/catalog/products({current['prod_id']})", key)
+        if not 200 <= status < 300:
+            return "failed", f"{status} {payload}"
+        # Retire the mirror rows now: the incremental pull never sees a
+        # deletion (only the weekly --full reconciles), and until then the
+        # diff would keep re-proposing this product every hour.
+        cursor.execute(
+            "UPDATE pim.api_product SET retired_at = now() WHERE prod_ref = %s AND retired_at IS NULL",
+            (row["prod_ref"],))
+        cursor.execute(
+            "UPDATE pim.api_variant SET retired_at = now() WHERE prod_ref = %s AND retired_at IS NULL",
+            (row["prod_ref"],))
+        return "applied", ""
     return "failed", f"unknown action {action}"
+
+
+# --------------------------------------------------------------------------
+# Automatic run
+
+def run_auto():
+    """Diff, then apply every row except variant removals. See the module docstring."""
+    enabled = os.environ.get("PIM_PUSH_ENABLED") == "1"
+    connection = connect()
+    cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Close out proposals left behind by earlier sets: the fresh diff below
+    # re-proposes whatever still applies, so nothing stays "pending" by accident.
+    # Approved-but-unsent rows count too (a dry run leaves them behind), except
+    # removals, which are only ever approved by hand and applied right after.
+    cursor.execute(
+        "UPDATE pim.push_change_row SET status = 'rejected', result = 'superseded by automatic run'"
+        " WHERE status = 'proposed'"
+        "    OR (status = 'approved' AND action NOT IN ('variant_remove', 'product_remove'))")
+    superseded = cursor.rowcount
+    cursor.execute(
+        """
+        UPDATE pim.push_change_set s
+           SET status = CASE WHEN EXISTS (SELECT 1 FROM pim.push_change_row r
+                                           WHERE r.set_id = s.set_id AND r.status = 'applied')
+                             THEN 'done' ELSE 'cancelled' END
+         WHERE s.status NOT IN ('done', 'cancelled')
+           AND NOT EXISTS (SELECT 1 FROM pim.push_change_row r
+                            WHERE r.set_id = s.set_id AND r.status IN ('proposed', 'approved'))
+        """)
+    connection.commit()
+
+    set_id, counts = run_diff("automatic run")
+    cursor.execute(
+        "SELECT count(*) FILTER (WHERE action = ANY(%s)) AS flips,"
+        "       count(*) FILTER (WHERE action = 'product_remove') AS removals"
+        "  FROM pim.push_change_row WHERE set_id = %s",
+        (list(FLIP_ACTIONS), set_id))
+    brakes = cursor.fetchone()
+    actions = list(AUTO_ACTIONS)
+    if brakes["flips"] > AUTO_MAX_FLIPS:
+        print(f"auto: {brakes['flips']} visibility flips exceed PIM_AUTO_MAX_FLIPS={AUTO_MAX_FLIPS};"
+              " leaving them proposed this run")
+        actions = [a for a in actions if a not in FLIP_ACTIONS]
+    if brakes["removals"] > AUTO_MAX_REMOVALS:
+        print(f"auto: {brakes['removals']} product removals exceed PIM_AUTO_MAX_REMOVALS={AUTO_MAX_REMOVALS};"
+              " leaving them proposed this run (apply by hand with --allow-removals)")
+        actions = [a for a in actions if a != "product_remove"]
+    cursor.execute(
+        "UPDATE pim.push_change_row SET status = 'approved'"
+        " WHERE set_id = %s AND status = 'proposed' AND action = ANY(%s)",
+        (set_id, actions))
+    approved = cursor.rowcount
+    cursor.execute("UPDATE pim.push_change_set SET status = %s WHERE set_id = %s",
+                   ("approved" if approved else "done", set_id))
+    connection.commit()
+    if not approved:
+        print(f"auto: set {set_id}: nothing to send ({superseded} stale proposal(s) closed)")
+        return
+
+    result = apply_set(set_id, 1000000, False, auto=True)
+    done, skipped, failed = result if result else (0, 0, 0)
+    cursor.execute("SELECT count(*) AS n FROM pim.push_change_row WHERE set_id = %s AND status IN ('approved', 'proposed')",
+                   (set_id,))
+    left = cursor.fetchone()["n"]
+    cursor.execute("UPDATE pim.push_change_set SET status = %s WHERE set_id = %s",
+                   ("done" if left == 0 else "approved", set_id))
+    connection.commit()
+    print(f"auto: set {set_id}: {approved} approved, {done} applied, {skipped} skipped, {failed} failed,"
+          f" {left} left for next run, {superseded} stale proposal(s) closed"
+          + ("" if enabled else " (DRY RUN, nothing sent)"))
 
 
 # --------------------------------------------------------------------------
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--auto", action="store_true",
+                        help="scheduled run: diff, then apply everything except removals")
     parser.add_argument("--diff", action="store_true")
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--approve", action="store_true")
@@ -592,7 +1079,9 @@ def main(argv=None):
                         help="limit product creation to Arborwear (mill 22) styles; default creates every brand")
     args = parser.parse_args(argv)
 
-    if args.diff:
+    if args.auto:
+        run_auto()
+    elif args.diff:
         remove_skus = None
         if args.remove_skus:
             with open(args.remove_skus) as fh:

@@ -101,6 +101,7 @@ GRANT USAGE, SELECT ON SEQUENCE pim.ingest_event_id_seq TO pim_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE pim.media_object TO pim_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE pim.product_placement TO pim_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE pim.media_rendition TO pim_writer;
+GRANT SELECT, INSERT, DELETE ON TABLE pim.woo_presence TO pim_writer;
 
 -- Explicitly NO access to fdm4.*, woo.*, or logo.* - the mirror only records
 -- what Sales Layer pushed; joins happen in the projection as woo_reader/owner.
