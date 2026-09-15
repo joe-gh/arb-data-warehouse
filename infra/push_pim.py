@@ -22,6 +22,13 @@ per the approved August 2026 review sheets:
                   its variants (the reason is recorded on the row)
   style_fill      lane b  product with no style number whose reference or a
                   variant UPC FDM4 knows; gets FDM4's style code
+  variant_orphan_remove
+                  lane b  variant with no product reference. Sales Layer's
+                  product DELETE does not delete variants: it detaches them
+                  (prod_ref cleared) and drops them to draft, so every product
+                  removal used to leave its variants behind as orphans.
+                  product_remove now deletes a product's variants first; this
+                  action sweeps up any orphan that still appears.
   (product_draft  retired 2026-09-14: removal replaced it; old rows remain)
 
 Rule (2026-09-14, extended 2026-09-15): FDM4 is the single source of truth.
@@ -104,7 +111,8 @@ DB_NAME = "arb_warehouse"
 DB_SOCKET = "/var/run/postgresql"
 
 ACTIONS = ("color_fill", "color_fix", "variant_remove", "variant_create", "product_create",
-           "product_publish", "product_draft", "variant_publish", "product_remove", "style_fill")
+           "product_publish", "product_draft", "variant_publish", "product_remove", "style_fill",
+           "variant_orphan_remove")
 
 # Product visibility in the PIM follows Woo presence (pim.woo_presence, pushed
 # hourly by WordPress). Only stores outside PIM_ALL_PRODUCTS_BLOGS count as
@@ -127,8 +135,13 @@ PRESENCE_MIN_ROWS = int(os.environ.get("PIM_PRESENCE_MIN_ROWS", "20000"))
 # truncated read must not read as "FDM4 knows nothing". ~5.8k styles / ~57k UPCs.
 FDM4_MIN_STYLES = int(os.environ.get("PIM_FDM4_MIN_STYLES", "1000"))
 FDM4_MIN_UPCS = int(os.environ.get("PIM_FDM4_MIN_UPCS", "10000"))
+# Orphan variants only ever come from product deletions (ours, or the PIM
+# team's), so a big number in one hour is a backlog to clear by hand, not a
+# signal to act on unattended.
+AUTO_MAX_ORPHANS = int(os.environ.get("PIM_AUTO_MAX_ORPHANS", "2000"))
 AUTO_ACTIONS = ("color_fill", "color_fix", "variant_create", "product_create",
-                "product_publish", "variant_publish", "product_remove", "style_fill")
+                "product_publish", "variant_publish", "product_remove", "style_fill",
+                "variant_orphan_remove")
 FLIP_ACTIONS = ("product_publish", "variant_publish")
 
 
@@ -301,6 +314,36 @@ def product_known_to_fdm4(cursor, prod_ref, style_code):
     cursor.execute(
         'SELECT 1 FROM fdm4.style WHERE upper(btrim("style-code")) IN (%(style)s, %(ref)s) LIMIT 1', params)
     return cursor.fetchone() is not None
+
+
+def delete_product_variants(prod_ref, key):
+    """Delete every live variant attached to a product, paging the live API.
+
+    Sales Layer's product DELETE detaches variants instead of deleting them,
+    so a product removal has to clear its variants first or it leaves
+    orphans. Returns (deleted, failure_detail); failure_detail is None when
+    every variant went.
+    """
+    deleted = 0
+    while True:
+        query = urllib.parse.urlencode(
+            {"$select": "frmt_id,frmt_ref", "$filter": f"prod_ref eq '{prod_ref}'", "$top": "100"},
+            quote_via=urllib.parse.quote)
+        status, payload = api_call("GET", f"/catalog/variants?{query}", key)
+        if status == 404:
+            return deleted, None                      # no (more) variants
+        if status != 200:
+            return deleted, f"listing variants: {status} {payload}"
+        rows = payload.get("value") or []
+        if not rows:
+            return deleted, None
+        for row in rows:
+            status, payload = api_call("DELETE", f"/catalog/variants({row['frmt_id']})", key)
+            if not 200 <= status < 300 and status != 404:
+                return deleted, f"variant {row.get('frmt_ref')}: {status} {payload}"
+            deleted += 1
+        if len(rows) < 100:
+            return deleted, None
 
 
 # --------------------------------------------------------------------------
@@ -676,6 +719,24 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
             """,
             {"set_id": set_id, "presence_full": presence_full})
 
+    # variant_orphan_remove (lane b): variants the PIM holds with no product
+    # reference. They are what a product deletion leaves behind (see the
+    # module docstring); nothing can sell or enrich them, so they go.
+    cursor.execute(
+        """
+        INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, frmt_ref, style_code, before, after)
+        SELECT %(set_id)s, 'b', 'variant_orphan_remove', '', v.frmt_ref, '',
+               jsonb_build_object(
+                   'frmt_id', (v.payload ->> 'frmt_id')::bigint,
+                   'frmt_stat', v.payload ->> 'frmt_stat',
+                   'frmt_variantname', NULLIF(btrim(v.payload ->> 'frmt_variantname'), '')),
+               NULL
+          FROM pim.api_variant v
+         WHERE v.retired_at IS NULL
+           AND coalesce(btrim(v.prod_ref), '') = ''
+        """,
+        {"set_id": set_id})
+
     # variants for the created products ride as variant_create rows keyed to
     # the future prod_ref (the style number).
     cursor.execute(
@@ -943,6 +1004,34 @@ def apply_row(row, key, enabled, allow_removals, cursor, auto=False):
         status, payload = api_call("PATCH", f"/catalog/products({current['prod_id']})", key,
                                    {"prod_stylenumber": after.get("prod_stylenumber")})
         return ("applied", "") if 200 <= status < 300 else ("failed", f"{status} {payload}")
+    if action == "variant_orphan_remove":
+        if not (auto or allow_removals):
+            return "skipped", "variant removals require --allow-removals"
+        # One live read (GET_SELECT for variants does not carry prod_ref): a
+        # variant someone re-attached to a product since the diff is left alone.
+        query = urllib.parse.urlencode(
+            {"$select": "frmt_id,frmt_ref,prod_ref", "$filter": f"frmt_ref eq '{row['frmt_ref']}'", "$top": "1"},
+            quote_via=urllib.parse.quote)
+        status, payload = api_call("GET", f"/catalog/variants?{query}", key)
+        if status == 404:
+            return "skipped", "already gone"
+        if status != 200:
+            return "failed", f"GET {status} {payload}"
+        rows_ = payload.get("value") or []
+        if not rows_:
+            return "skipped", "already gone"
+        live = rows_[0]
+        if str(live.get("prod_ref") or "").strip():
+            return "skipped", f"re-attached to product {live['prod_ref']} since diff"
+        if not enabled:
+            return "skipped", "dry run"
+        status, payload = api_call("DELETE", f"/catalog/variants({live['frmt_id']})", key)
+        if not 200 <= status < 300:
+            return "failed", f"{status} {payload}"
+        cursor.execute(
+            "UPDATE pim.api_variant SET retired_at = now() WHERE frmt_ref = %s AND retired_at IS NULL",
+            (row["frmt_ref"],))
+        return "applied", ""
     if action == "product_remove":
         # The hourly run deletes on its own (within PIM_AUTO_MAX_REMOVALS);
         # a hand-applied set has to say so explicitly.
@@ -970,9 +1059,15 @@ def apply_row(row, key, enabled, allow_removals, cursor, auto=False):
                 return "skipped", "went live in Woo since diff"
         if not enabled:
             return "skipped", "dry run"
+        # Variants first: the API detaches them on product delete instead of
+        # removing them. If any variant refuses to go, the product stays so
+        # nothing is left half-removed.
+        gone, problem = delete_product_variants(row["prod_ref"], key)
+        if problem:
+            return "failed", f"after deleting {gone} variant(s): {problem}"
         status, payload = api_call("DELETE", f"/catalog/products({current['prod_id']})", key)
         if not 200 <= status < 300:
-            return "failed", f"{status} {payload}"
+            return "failed", f"{status} {payload} ({gone} variant(s) already deleted)"
         # Retire the mirror rows now: the incremental pull never sees a
         # deletion (only the weekly --full reconciles), and until then the
         # diff would keep re-proposing this product every hour.
@@ -1002,7 +1097,7 @@ def run_auto():
     cursor.execute(
         "UPDATE pim.push_change_row SET status = 'rejected', result = 'superseded by automatic run'"
         " WHERE status = 'proposed'"
-        "    OR (status = 'approved' AND action NOT IN ('variant_remove', 'product_remove'))")
+        "    OR (status = 'approved' AND action NOT IN ('variant_remove', 'product_remove', 'variant_orphan_remove'))")
     superseded = cursor.rowcount
     cursor.execute(
         """
@@ -1019,11 +1114,16 @@ def run_auto():
     set_id, counts = run_diff("automatic run")
     cursor.execute(
         "SELECT count(*) FILTER (WHERE action = ANY(%s)) AS flips,"
-        "       count(*) FILTER (WHERE action = 'product_remove') AS removals"
+        "       count(*) FILTER (WHERE action = 'product_remove') AS removals,"
+        "       count(*) FILTER (WHERE action = 'variant_orphan_remove') AS orphans"
         "  FROM pim.push_change_row WHERE set_id = %s",
         (list(FLIP_ACTIONS), set_id))
     brakes = cursor.fetchone()
     actions = list(AUTO_ACTIONS)
+    if brakes["orphans"] > AUTO_MAX_ORPHANS:
+        print(f"auto: {brakes['orphans']} orphan variants exceed PIM_AUTO_MAX_ORPHANS={AUTO_MAX_ORPHANS};"
+              " leaving them proposed this run (apply by hand with --allow-removals)")
+        actions = [a for a in actions if a != "variant_orphan_remove"]
     if brakes["flips"] > AUTO_MAX_FLIPS:
         print(f"auto: {brakes['flips']} visibility flips exceed PIM_AUTO_MAX_FLIPS={AUTO_MAX_FLIPS};"
               " leaving them proposed this run")

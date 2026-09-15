@@ -63,3 +63,4 @@
 2026-09-09-pim-woo-presence.sql
 2026-09-14-pim-push-variant-publish-product-remove.sql
 2026-09-15-pim-push-style-fill.sql
+2026-09-15-pim-push-orphan-variants.sql
