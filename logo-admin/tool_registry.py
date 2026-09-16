@@ -867,7 +867,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     _read_spec(
         "list_styles",
-        "Find product styles in one store (max 100): style code, product name, brand and whether logos are configured. Use it to get a style code from a product name.",
+        "Find product styles in one store (max 100): style code, product name, how many logos are configured, the design ids of its current logos, and which decoration methods those logos use (has_emb = embroidery, has_scr = screen print, has_cap = a hat/cap placement). Pass method='emb'|'scr'|'cap' to return only styles that currently carry a logo of that method. Use it to get a style code from a product name, or to find every embroidered / screen-printed / hat style in a store.",
         ListStylesCommand,
         _list_styles,
     ),

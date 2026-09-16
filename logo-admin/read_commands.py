@@ -34,6 +34,10 @@ class ListStylesCommand(ReadCommand):
         default=True,
         description="True = only styles that already have logo rows; False = every catalog style (use this to find products with no logos yet).",
     )
+    method: str = Field(
+        default="",
+        description="Optional decoration-method filter on the style's current logos: 'emb' (embroidery), 'scr' (screen print), or 'cap' (a hat/cap placement). Empty = no method filter.",
+    )
 
 
 class GetStyleCommand(ReadCommand):

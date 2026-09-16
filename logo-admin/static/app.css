@@ -1261,3 +1261,13 @@ small { font-size: max(.75rem, .85em); }
 /* PIM Sync view: spacing the template cannot inline (CSP style-src 'self'). */
 .pim-actions { margin-top: .75rem; }
 .pim-examples { margin-top: .5rem; }
+
+/* Bulk Operations: per-style logo method summary + method filter chips. */
+.batch-method-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: .1rem 0 .6rem; }
+.batch-logo-cell { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.batch-logo-count { font-weight: 750; min-width: 1.2rem; }
+.method-chip { display: inline-flex; align-items: center; padding: .05rem .4rem; border-radius: 4px; font-size: 0.66rem; font-weight: 800; letter-spacing: .04em; }
+.method-chip--emb { color: #1b5e46; background: #d9efe3; }
+.method-chip--scr { color: #7a4b12; background: #f6e6c8; }
+.method-chip--cap { color: #3a3a86; background: #e2e2f5; }
+.batch-design-ids { color: var(--ink-soft); font-size: 0.72rem; }

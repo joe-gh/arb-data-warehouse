@@ -440,6 +440,13 @@
             <button id="batch-select-similar" class="button button--ghost button--small" type="button" disabled>Select styles with the same logos as the open style</button>
             <button id="batch-select-visible" class="button button--ghost button--small" type="button">Select all shown</button>
           </div>
+          <div class="batch-method-filters" role="group" aria-label="Filter by decoration method">
+            <span class="text-small muted">Show logos:</span>
+            <button type="button" class="chip batch-method" data-method="" aria-pressed="true">All methods</button>
+            <button type="button" class="chip batch-method" data-method="emb" aria-pressed="false">Embroidery</button>
+            <button type="button" class="chip batch-method" data-method="scr" aria-pressed="false">Screen print</button>
+            <button type="button" class="chip batch-method" data-method="cap" aria-pressed="false">Hat / cap</button>
+          </div>
           <div id="batch-table" class="table-wrap"></div>
           <div id="batch-bar" class="batch-bar">
             <span id="batch-count" class="muted">No styles selected</span>

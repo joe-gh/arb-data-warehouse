@@ -157,7 +157,7 @@ def list_stores() -> Any:
 
 
 @mcp.tool()
-def list_styles(store: str, q: str = "", active_only: bool = True, assigned_only: bool = True) -> Any:
+def list_styles(store: str, q: str = "", active_only: bool = True, assigned_only: bool = True, method: str = "") -> Any:
     """Search a store's product styles. active_only limits to the live FDM4
     catalog; assigned_only limits to styles that already have logo rows."""
     return _call("GET", "/api/styles", params={

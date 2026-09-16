@@ -602,6 +602,7 @@ def styles(
     q: str = Query("", max_length=100),
     active_only: bool = Query(True),
     assigned_only: bool = Query(True),
+    method: str = Query("", max_length=8),
     user: Dict[str, str] = Depends(require_user),
 ):
     del user
@@ -611,6 +612,7 @@ def styles(
         q=q,
         active_only=active_only,
         assigned_only=assigned_only,
+        method=method,
     )
 
 

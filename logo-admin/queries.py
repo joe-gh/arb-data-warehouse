@@ -295,9 +295,13 @@ def list_styles(
     q: str = "",
     active_only: bool = True,
     assigned_only: bool = True,
+    method: str = "",
 ) -> dict:
     store = _clean(store, "store")
     q = _optional(q, "q")
+    method = (method or "").strip().lower()
+    if method not in ("", "emb", "scr", "cap"):
+        raise QueryValidationError("method must be one of emb, scr, cap")
     catalog = _catalog_for_store(cursor, store)
     if catalog is None:
         raise QueryNotFound("Store not found")
@@ -308,6 +312,12 @@ def list_styles(
         active_clauses.append(
             "AND COALESCE(c.active_count, c.assignment_count, 0) > 0"
         )
+    if method == "emb":
+        active_clauses.append("AND COALESCE(ls.has_emb, false)")
+    elif method == "scr":
+        active_clauses.append("AND COALESCE(ls.has_scr, false)")
+    elif method == "cap":
+        active_clauses.append("AND COALESCE(ls.has_cap, false)")
     rows, truncated, byte_truncated = _bounded_query(
         cursor,
         f"""
@@ -328,15 +338,51 @@ def list_styles(
               FROM logo.assignment
              WHERE fdm4_store = %s
              GROUP BY product_style
+        ), design_method AS (
+            -- Each FDM4 design's decoration method(s): embroidery (em) or
+            -- screen print (print, and other stores' scr/sp spellings).
+            SELECT design_id,
+                   bool_or(m ~ 'em') AS is_emb,
+                   bool_or(m ~ 'print|screen|scr|sp') AS is_scr
+              FROM (
+                  SELECT btrim(design_id::text) AS design_id, lower(COALESCE(method_id::text, '')) AS m
+                    FROM fdm4.design_pool
+                  UNION ALL
+                  SELECT btrim(design_id::text), lower(COALESCE(methods_used::text, ''))
+                    FROM fdm4.dec_design
+              ) src
+             WHERE design_id <> ''
+             GROUP BY design_id
+        ), logo_summary AS (
+            -- Per style: which methods its current logos use, whether any is a
+            -- cap/hat placement, and the first few design ids for display.
+            SELECT a.product_style,
+                   (array_agg(DISTINCT btrim(a.design_id::text) ORDER BY btrim(a.design_id::text))
+                       FILTER (WHERE btrim(COALESCE(a.design_id::text, '')) <> ''))[1:8] AS design_ids,
+                   count(DISTINCT btrim(a.design_id::text))
+                       FILTER (WHERE btrim(COALESCE(a.design_id::text, '')) <> '') AS design_count,
+                   bool_or(dm.is_emb) AS has_emb,
+                   bool_or(dm.is_scr) AS has_scr,
+                   bool_or(a.location ~* '(cap|hat|beanie|knit|toque)') AS has_cap
+              FROM logo.assignment a
+              LEFT JOIN design_method dm ON dm.design_id = btrim(a.design_id::text)
+             WHERE a.fdm4_store = %s AND a.active
+             GROUP BY a.product_style
         )
         SELECT left(COALESCE(s.product_style, c.product_style), 256)
                    AS product_style,
                left(COALESCE(s.name, ''), {READ_TEXT_CHAR_LIMIT}) AS name,
                COALESCE(s.color_count, 0) AS color_count,
                COALESCE(c.assignment_count, 0) AS assignment_count,
-               COALESCE(c.active_count, 0) AS active_count
+               COALESCE(c.active_count, 0) AS active_count,
+               COALESCE(ls.design_ids, ARRAY[]::text[]) AS design_ids,
+               COALESCE(ls.design_count, 0) AS design_count,
+               COALESCE(ls.has_emb, false) AS has_emb,
+               COALESCE(ls.has_scr, false) AS has_scr,
+               COALESCE(ls.has_cap, false) AS has_cap
           FROM state_styles s
           FULL OUTER JOIN configured c USING (product_style)
+          LEFT JOIN logo_summary ls USING (product_style)
          WHERE (
                 COALESCE(s.product_style, c.product_style) ILIKE %s ESCAPE '\\'
              OR COALESCE(s.name, '') ILIKE %s ESCAPE '\\'
@@ -348,6 +394,7 @@ def list_styles(
         (
             store,
             catalog,
+            store,
             store,
             _like(q),
             _like(q),

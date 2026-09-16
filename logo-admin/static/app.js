@@ -4778,7 +4778,7 @@
   }
 
   // ===== Batch selection of styles (paste / activate / bulk apply scope) =====
-  const batchState = { selected: new Set(), rows: [] };
+  const batchState = { selected: new Set(), rows: [], method: "" };
 
   // Confirmations name what a batch will touch, not just how many. A count
   // alone once let a filtered "select all" stamp every category Delete.
@@ -4803,10 +4803,32 @@
     $("#batch-clear").hidden = !n;
   }
 
+  // Compact per-style logo summary for the bulk list: a count, method chips
+  // (embroidery / screen print / hat) and the first design ids, so Maria can
+  // tell embroidered from screen-printed products without opening each one.
+  function batchLogoSummary(r) {
+    const count = Number(r.assignment_count ?? 0);
+    if (!count) return '<span class="muted">-</span>';
+    const chips = [];
+    if (r.has_emb) chips.push('<span class="method-chip method-chip--emb" title="Has an embroidery logo">EMB</span>');
+    if (r.has_scr) chips.push('<span class="method-chip method-chip--scr" title="Has a screen-print logo">SCR</span>');
+    if (r.has_cap) chips.push('<span class="method-chip method-chip--cap" title="Has a hat / cap logo">HAT</span>');
+    const ids = (r.design_ids || []).filter(Boolean);
+    const extra = Math.max(0, Number(r.design_count ?? ids.length) - ids.length);
+    const idText = ids.length
+      ? `<span class="batch-design-ids" title="Design ids on this style">#${ids.map((d) => escapeHtml(String(d))).join(", #")}${extra ? ` +${extra}` : ""}</span>`
+      : "";
+    return `<div class="batch-logo-cell"><span class="batch-logo-count">${count}</span>${chips.join("")}${idText}</div>`;
+  }
+
   async function loadBatchRows() {
     const q = $("#batch-search").value.trim();
     const onlyUnconfigured = $("#batch-unconfigured-only").checked;
     $("#batch-assigned-only").disabled = onlyUnconfigured;
+    // Method chips filter by a style's current logos, so they don't apply to
+    // the "unconfigured colors" view; grey them out there.
+    $$(".batch-method").forEach((c) => { c.disabled = onlyUnconfigured; });
+    if (onlyUnconfigured && batchState.method) { batchState.method = ""; $$(".batch-method").forEach((c) => { const on = !(c.dataset.method || ""); c.classList.toggle("dark", on); c.setAttribute("aria-pressed", on ? "true" : "false"); }); }
     let rows;
     let note = "";
     try {
@@ -4819,6 +4841,7 @@
         const params = new URLSearchParams({ store: state.store, active_only: "true",
           assigned_only: $("#batch-assigned-only").checked ? "true" : "false" });
         if (q) params.set("q", q);
+        if (batchState.method) params.set("method", batchState.method);
         rows = envelope(await api(`/api/styles?${params}`), "styles");
       }
     } catch (error) {
@@ -4828,8 +4851,8 @@
     batchState.rows = rows;
     const lastHeader = onlyUnconfigured ? "Colors without logos" : "Logos";
     const lastCell = (r) => onlyUnconfigured
-      ? `<span class="batch-unconfigured">${escapeHtml(String(r.colors_configured ?? 0))}/${escapeHtml(String(r.colors_total ?? 0))} configured</span><br><small>${(r.unconfigured || []).map((code) => escapeHtml(code)).join(", ")}</small>`
-      : escapeHtml(String(r.assignment_count ?? 0));
+      ? `<span class="batch-unconfigured">${escapeHtml(String(r.colors_configured ?? 0))}/${escapeHtml(String(r.colors_total ?? 0))} configured</span>`
+      : batchLogoSummary(r);
     const table = $("#batch-table");
     table.innerHTML = `${note}<table class="data-table"><thead><tr><th></th><th>Style</th><th>Name</th><th>${lastHeader}</th></tr></thead><tbody>${rows.map((r) => `<tr><td><input type="checkbox" class="batch-row-check" data-style="${escapeHtml(styleCode(r))}" ${batchState.selected.has(styleCode(r)) ? "checked" : ""}></td><td><code>${escapeHtml(styleCode(r))}</code></td><td>${escapeHtml(styleName(r))}</td><td>${lastCell(r)}</td></tr>`).join("")}</tbody></table>`;
     $$(".batch-row-check", table).forEach((box) => box.addEventListener("change", () => {
@@ -5640,6 +5663,11 @@
     $("#batch-unconfigured-only")?.addEventListener("change", loadBatchRows);
     $("#batch-select-similar")?.addEventListener("click", batchSelectSimilar);
     $("#batch-select-visible")?.addEventListener("click", () => { batchState.rows.forEach((r) => batchState.selected.add(styleCode(r))); loadBatchRows(); });
+    $$(".batch-method").forEach((chip) => chip.addEventListener("click", () => {
+      batchState.method = chip.dataset.method || "";
+      $$(".batch-method").forEach((c) => { const on = (c.dataset.method || "") === batchState.method; c.classList.toggle("dark", on); c.setAttribute("aria-pressed", on ? "true" : "false"); });
+      loadBatchRows();
+    }));
     $("#batch-clear")?.addEventListener("click", () => { batchState.selected.clear(); renderBatchBar(); loadBatchRows(); });
     $("#batch-activate")?.addEventListener("click", () => batchActive(true));
     $("#batch-deactivate")?.addEventListener("click", () => batchActive(false));
