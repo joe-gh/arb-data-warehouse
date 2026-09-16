@@ -1131,6 +1131,63 @@ def get_sync_status(store: Optional[str] = None) -> Any:
 
 
 @mcp.tool()
+def pim_explain_style(style: str) -> Any:
+    """Why a style is or is not in the PIM (Sales Layer): FDM4 eligibility,
+    which stores carry it, PIM match by style or by UPC under another
+    product, the push's recent decisions, and a plain-language verdict."""
+    return _call("GET", "/api/pim/explain", params={"style": style})
+
+
+@mcp.tool()
+def pim_lookup(q: str) -> Any:
+    """Find PIM products by style code, PIM reference or variant UPC:
+    reference, style number, title, status, variant counts, how it matched."""
+    return _call("GET", "/api/pim/lookup", params={"q": q})
+
+
+@mcp.tool()
+def pim_push_history(q: str, limit: int = 20) -> Any:
+    """Every change the PIM push proposed or sent for a style, reference or
+    UPC, newest first, with status, reason and result."""
+    return _call("GET", "/api/pim/history", params={"q": q, "limit": limit})
+
+
+@mcp.tool()
+def pim_pipeline_status() -> Any:
+    """Freshness of every PIM stage: FDM4 pull, Woo presence, PIM mirror
+    pull, latest push set with counts; plus PIM totals."""
+    return _call("GET", "/api/pim/pipeline")
+
+
+@mcp.tool()
+def pim_summary() -> Any:
+    """PIM totals from the mirror: products/variants by status, orphan
+    variants, live parent SKUs, last mirror pull, the rule enforced."""
+    return _call("GET", "/api/pim/summary")
+
+
+@mcp.tool()
+def pim_recent_pushes(limit: int = 10) -> Any:
+    """Latest PIM push change sets with per-action applied/skipped/failed/
+    proposed counts."""
+    return _call("GET", "/api/pim/pushes", params={"limit": limit})
+
+
+@mcp.tool()
+def pim_requests(limit: int = 10) -> Any:
+    """Recent on-demand PIM preview/push requests: who, when, state, result."""
+    return _call("GET", "/api/pim/requests", params={"limit": limit})
+
+
+@mcp.tool()
+def pim_request(mode: str, styles: Optional[List[str]] = None) -> Any:
+    """Queue an on-demand PIM run: mode 'preview' (dry diff, nothing sent) or
+    'push' (mirror pull, diff and send under the hourly job's caps). Optional
+    style codes limit the run. Poll pim_requests for the outcome."""
+    return _call("POST", "/api/pim/request", json_body={"mode": mode, "styles": styles or []})
+
+
+@mcp.tool()
 def list_design_usage(store: str, design_id: str, color_scheme_id: Optional[str] = None) -> Any:
     """Styles of a store carrying a design (optionally one scheme): rows,
     colors, schemes, logo codes and style_codes for a swap."""

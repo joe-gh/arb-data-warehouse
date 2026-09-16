@@ -3498,6 +3498,11 @@ def sync_now(
             styles.append(cleaned)
 
     with database.cursor() as cursor:
+        # Fail fast with the banner text while the FDM4 raw swap holds its
+        # locks; otherwise the WordPress side would sit on the lock queue and
+        # come back with a generic 503 after its query timeout.
+        if _fdm4_load_state(cursor)["active"]:
+            raise HTTPException(status_code=409, detail=FDM4_LOAD_NOTICE)
         catalog = _catalog_for_store(cursor, store)
         if catalog is None:
             raise HTTPException(status_code=404, detail="Store not found")
@@ -3989,6 +3994,43 @@ class DefaultCostBody(BaseModel):
 @router.put("/default-costs")
 def set_logo_default_cost(body: DefaultCostBody, user: Dict[str, str] = Depends(require_csrf)):
     return _execute_mutation(SetLogoDefaultCostCommand.model_validate(body.model_dump()), user)
+
+
+FDM4_LOAD_NOTICE = (
+    "Pulling data from FDM4. Logo sync to stores is temporarily disabled for 3 to 4 minutes."
+)
+# A flag older than this is a loader that died without clearing it; ignore
+# it rather than pause syncs indefinitely.
+FDM4_LOAD_FLAG_MAX_AGE = datetime.timedelta(minutes=15)
+
+
+def _fdm4_load_state(cursor) -> Dict[str, Any]:
+    """The loader raises woo.app_flag 'fdm4_load' while it swaps the raw
+    fdm4.* tables, the window in which every fdm4 read (logo sync included)
+    waits on locks."""
+    cursor.execute(
+        "SELECT enabled, updated_at FROM woo.app_flag WHERE name = 'fdm4_load'"
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {"active": False, "since": None, "message": FDM4_LOAD_NOTICE}
+    enabled = row["enabled"] if isinstance(row, dict) else row[0]
+    since = row["updated_at"] if isinstance(row, dict) else row[1]
+    fresh = bool(since) and (datetime.datetime.now(datetime.timezone.utc) - since) <= FDM4_LOAD_FLAG_MAX_AGE
+    active = bool(enabled) and fresh
+    return {
+        "active": active,
+        "since": since.isoformat() if (active and since) else None,
+        "message": FDM4_LOAD_NOTICE,
+    }
+
+
+@router.get("/notice")
+def pipeline_notice(user: Dict[str, str] = Depends(require_user)):
+    """Lightweight banner state the app polls: is the FDM4 load window open."""
+    del user
+    with database.cursor() as cursor:
+        return {"fdm4_load": _fdm4_load_state(cursor)}
 
 
 @router.get("/sync-status")

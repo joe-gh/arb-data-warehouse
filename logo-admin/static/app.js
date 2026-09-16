@@ -8188,7 +8188,7 @@
     }
   }
 
-  const VIEWS = ["dashboard", "logo", "bulk", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "categories", "health", "help"];
+  const VIEWS = ["dashboard", "logo", "bulk", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "categories", "pim", "health", "help"];
   function switchView(name) {
     if (!VIEWS.includes(name)) name = "dashboard";
     VIEWS.forEach((v) => { const el = $(`#view-${v}`); if (el) el.hidden = v !== name; });
@@ -8215,6 +8215,7 @@
     if (name === "stock") { loadStockOverrides(); loadBrandRules(); }
     if (name === "categories") loadCategories();
     if (name === "health") loadHealth();
+    if (name === "pim") loadPim();
     if (name === "dashboard") loadDashboard();
     healthTimerSync(name);
   }
@@ -10439,18 +10440,250 @@
   attachStoreCombobox({ search: "#tier-store-search", hidden: "#tier-store-code", options: "#tier-store-options", onPick: prefillTierForm });
   $("#tier-form").addEventListener("submit", saveTier);
 
+  // ----- Pipeline notice: the warehouse is swapping in fresh FDM4 data -----
+  // The loader raises a flag for the minutes it holds the fdm4 table locks;
+  // while it is up the banner shows and the sync buttons are paused. The
+  // server refuses syncs in that window too, so this is only the courtesy.
+  const pipelineNotice = $("#pipeline-notice");
+  let pipelineNoticeActive = false;
+
+  function setSyncPaused(paused) {
+    for (const id of ["sync-style-button", "sync-store-button"]) {
+      const button = document.getElementById(id);
+      if (!button) continue;
+      button.disabled = paused;
+      button.title = paused ? "Paused while data is pulled from FDM4" : "";
+    }
+  }
+
+  async function pollPipelineNotice() {
+    try {
+      const data = await api("/api/notice");
+      const load = data?.fdm4_load || {};
+      const active = !!load.active;
+      if (pipelineNotice) {
+        const text = pipelineNotice.querySelector("[data-notice-text]");
+        if (text && load.message) text.textContent = load.message;
+        pipelineNotice.hidden = !active;
+      }
+      if (active !== pipelineNoticeActive) {
+        pipelineNoticeActive = active;
+        setSyncPaused(active);
+      }
+    } catch (_) {
+      // Advisory only; a failed poll changes nothing.
+    }
+  }
+  pollPipelineNotice();
+  setInterval(pollPipelineNotice, 30000);
+
   // ----- System health -----
   let healthTimer = null;
 
   function healthTimerSync(view) {
-    if (view === "health") {
+    if (view === "health" || view === "pim") {
       if (!healthTimer) healthTimer = setInterval(() => {
         if (document.body.dataset.view === "health") loadHealth(true);
+        if (document.body.dataset.view === "pim") loadPim(true);
       }, 60000);
     } else if (healthTimer) {
       clearInterval(healthTimer);
       healthTimer = null;
     }
+  }
+
+  // ---------------------------------------------------------------- PIM sync view
+
+  const pimState = { wired: false, polling: null, lastRequestId: null };
+
+  function pimActionLabel(row) {
+    return text(row.what || row.action);
+  }
+
+  function pimCountsHtml(set) {
+    if (!set) return '<div class="grid-empty">No change set yet.</div>';
+    const counts = set.counts || [];
+    if (!counts.length) return '<div class="grid-empty">Nothing to send: the PIM already matches the rule.</div>';
+    const byAction = new Map();
+    counts.forEach((c) => {
+      const key = c.action;
+      const cur = byAction.get(key) || { what: c.what || c.action, applied: 0, proposed: 0, skipped: 0, failed: 0, rejected: 0 };
+      const s = text(c.status);
+      if (s === "approved") cur.proposed += Number(c.n || 0);
+      else if (cur[s] !== undefined) cur[s] += Number(c.n || 0);
+      byAction.set(key, cur);
+    });
+    const rows = [...byAction.values()].filter((c) => c.applied + c.proposed + c.skipped + c.failed > 0).map((c) => {
+      const bits = [];
+      if (c.applied) bits.push(`${c.applied} sent`);
+      if (c.proposed) bits.push(`${c.proposed} waiting`);
+      if (c.skipped) bits.push(`${c.skipped} skipped`);
+      if (c.failed) bits.push(`${c.failed} failed`);
+      return `<li><strong>${escapeHtml(c.what)}</strong>: ${escapeHtml(bits.join(" · "))}</li>`;
+    });
+    if (!rows.length) return '<div class="grid-empty">Nothing to send: the PIM already matches the rule.</div>';
+    return `<ul class="health-list">${rows.join("")}</ul>`;
+  }
+
+  function pimSamplesHtml(set) {
+    const samples = (set && set.samples) || [];
+    if (!samples.length) return "";
+    const items = samples.slice(0, 12).map((s) => {
+      const what = pimActionLabel(s);
+      const who = [s.style_code || s.prod_ref, s.frmt_ref].filter(Boolean).map(text).join(" ");
+      const title = s.title ? ` · ${escapeHtml(s.title)}` : "";
+      const why = s.reason ? ` <span class="muted">(${escapeHtml(s.reason)})</span>` : "";
+      return `<li>${escapeHtml(what)} <strong>${escapeHtml(who)}</strong>${title}${why}</li>`;
+    });
+    return `<p class="muted" style="margin-top:.5rem">Examples</p><ul class="health-list">${items.join("")}</ul>`;
+  }
+
+  function pimRequestLine(r) {
+    const when = healthWhen(r.finished_at || r.started_at || r.requested_at);
+    const scope = (r.styles || []).length ? ` for ${escapeHtml(r.styles.slice(0, 6).join(", "))}${r.styles.length > 6 ? "…" : ""}` : "";
+    const stateWord = { queued: "queued", running: "running", finished: "done", failed: "failed" }[r.state] || r.state;
+    const chipCls = r.state === "finished" ? "chip health-chip--ok" : (r.state === "failed" ? "chip health-chip--bad" : "chip health-chip--pending");
+    let result = "";
+    if (r.state === "finished" && r.set) {
+      result = r.mode === "preview"
+        ? ` · would send ${r.set.total || 0}`
+        : ` · sent ${r.set.applied || 0}${r.set.failed ? `, ${r.set.failed} failed` : ""}${r.set.pending ? `, ${r.set.pending} waiting for a person` : ""}`;
+    } else if (r.state === "finished") {
+      result = " · nothing to send";
+    } else if (r.state === "failed") {
+      result = ` · ${escapeHtml((r.outcome && r.outcome.error) || "failed")}`;
+    }
+    return `<li><span class="${chipCls}">${escapeHtml(stateWord)}</span> ${escapeHtml(r.mode === "preview" ? "Preview" : "Push")}${scope} by ${escapeHtml(text(r.requested_by))} · ${escapeHtml(when)}${result}</li>`;
+  }
+
+  function renderPim(resp) {
+    const f = resp.fdm4_pull || {};
+    const pres = resp.woo_presence || {};
+    const mirror = resp.pim_mirror || {};
+    const push = resp.push || {};
+    const sum = resp.summary || {};
+    const latestRun = f.latest_run || {};
+    const pullTone = latestRun.status === "success" || (latestRun.status === "running" && f.last_success_at) ? "ok" : (f.failed_24h ? "late" : "ok");
+    const pullValue = f.last_success_at ? healthAge(f.last_success_at) : "never";
+    const pullSub = `${f.schedule || "hourly"}${latestRun.status === "running" ? " · a pull is running now" : ""}${f.load_in_progress ? " · loading tables now" : ""}${f.failed_24h ? ` · ${plural("failed pull", Number(f.failed_24h))} in 24h` : ""}`;
+    const presValue = pres.refreshed_at ? healthAge(pres.refreshed_at) : "never";
+    const presSub = pres.stale ? `STALE: rules paused until it refreshes · ${pres.schedule || ""}` : `${plural("published product", Number(pres.rows || 0))} · ${pres.schedule || ""}`;
+    const entities = mirror.entities || [];
+    const mirrorLast = entities.reduce((m, e) => (e.last_run && (!m || e.last_run > m) ? e.last_run : m), null);
+    const latest = push.latest_set;
+    const sending = push.last_sending_set;
+    const pushValue = sending ? healthAge(sending.created_at) : "never";
+    const pushSub = sending ? `last sent ${sending.applied} change${sending.applied === 1 ? "" : "s"}${sending.failed ? `, ${sending.failed} failed` : ""} · ${push.schedule || ""}` : (push.schedule || "");
+    $("#pim-stats").innerHTML = [
+      healthStat("FDM4 pull", pullValue, pullSub, pullTone),
+      healthStat("Store presence", presValue, presSub, pres.stale ? "late" : "ok"),
+      healthStat("PIM mirror", mirrorLast ? healthAge(mirrorLast) : "never", mirror.schedule || "", mirrorLast ? "ok" : "late"),
+      healthStat("Last push", pushValue, pushSub, sending && sending.failed ? "late" : (sending ? "ok" : null)),
+      healthStat("In the PIM", `${Number(sum.products_visible || 0)} products`, `${plural("variant", Number(sum.variants_visible || 0))} visible · ${Number(sum.products_draft || 0)} draft products · ${Number(sum.orphan_variants || 0)} orphan variants`, null),
+      healthStat("Live on stores", String(Number(sum.live_parent_skus || 0)), "parent SKUs on counting stores (what the PIM should hold)", null),
+    ].join("");
+
+    const preview = resp.preview || {};
+    const prev = preview.preview;
+    let previewHtml;
+    if (prev && prev.set) {
+      previewHtml = `<p class="muted">Preview ${escapeHtml(healthAge(prev.finished_at))} by ${escapeHtml(text(prev.requested_by))}${(prev.styles || []).length ? ` for ${escapeHtml(prev.styles.join(", "))}` : ""}:</p>` + pimCountsHtml(prev.set) + pimSamplesHtml(prev.set);
+    } else if (prev) {
+      previewHtml = `<p class="muted">Preview ${escapeHtml(healthAge(prev.finished_at))}: nothing to send.</p>`;
+    } else if (latest) {
+      previewHtml = `<p class="muted">From the latest run (${escapeHtml(healthAge(latest.created_at))}). Press Preview now for a fresh dry run.</p>` + pimCountsHtml(latest) + pimSamplesHtml(latest);
+    } else {
+      previewHtml = '<div class="grid-empty">No runs yet. Press Preview now.</div>';
+    }
+    $("#pim-preview").innerHTML = previewHtml;
+
+    const requests = resp.requests || [];
+    const active = requests.find((r) => r.state === "queued" || r.state === "running");
+    $("#pim-active").innerHTML = active
+      ? `<div class="notice notice--tight"><span class="notice__icon">…</span><div>A ${escapeHtml(active.mode)} request by ${escapeHtml(text(active.requested_by))} is ${escapeHtml(active.state)}${active.state === "queued" ? " (the worker picks it up within a minute)" : ""}.</div></div>`
+      : "";
+    const pushBtn = $("#pim-push-button");
+    const prevBtn = $("#pim-preview-button");
+    if (pushBtn && !pushBtn.dataset.originalLabel) pushBtn.disabled = Boolean(active);
+    if (prevBtn && !prevBtn.dataset.originalLabel) prevBtn.disabled = Boolean(active);
+    if (active && !pimState.polling) pimStartPolling();
+    if (!active && pimState.polling) { clearInterval(pimState.polling); pimState.polling = null; }
+
+    $("#pim-requests").innerHTML = requests.length
+      ? `<ul class="health-list">${requests.slice(0, 8).map(pimRequestLine).join("")}</ul>`
+      : '<div class="grid-empty">No on-demand runs yet.</div>';
+
+    const sets = (resp.recent_sets || []).slice(0, 8);
+    $("#pim-pushes").innerHTML = sets.length
+      ? `<ul class="health-list">${sets.map((s) => {
+          const sent = Number(s.applied || 0);
+          const note = /automatic/.test(text(s.note)) ? "automatic" : text(s.note).slice(0, 60);
+          const summary = s.total ? `${sent} sent${s.failed ? `, ${s.failed} failed` : ""}${s.pending ? `, ${s.pending} waiting` : ""}` : "nothing to send";
+          return `<li>${escapeHtml(healthWhen(s.created_at))} · ${escapeHtml(note)} · ${escapeHtml(summary)}</li>`;
+        }).join("")}</ul>`
+      : '<div class="grid-empty">No runs yet.</div>';
+    $("#pim-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  async function loadPim(quiet = false) {
+    pimWire();
+    try {
+      const [status, pushes] = await Promise.all([api("/api/pim/status"), api("/api/pim/pushes?limit=8")]);
+      status.recent_sets = pushes.sets || [];
+      renderPim(status);
+    } catch (error) {
+      if (!quiet) toast(error.message, "error");
+      $("#pim-stats").innerHTML = `<div class="grid-empty">Couldn't load the PIM status: ${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function pimStartPolling() {
+    if (pimState.polling) return;
+    pimState.polling = setInterval(() => {
+      if (document.body.dataset.view !== "pim") { clearInterval(pimState.polling); pimState.polling = null; return; }
+      loadPim(true);
+    }, 5000);
+  }
+
+  function pimStyles() {
+    const raw = ($("#pim-styles")?.value || "").split(/[,\s;]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return [...new Set(raw)];
+  }
+
+  async function pimRequest(mode) {
+    const button = mode === "push" ? $("#pim-push-button") : $("#pim-preview-button");
+    const styles = pimStyles();
+    if (mode === "push") {
+      const accepted = await confirmAction({
+        title: styles.length ? `Push ${styles.length === 1 ? styles[0] : `${styles.length} styles`} to the PIM now?` : "Push to the PIM now?",
+        message: styles.length
+          ? "Refreshes the PIM mirror, then creates, publishes and fills these styles. Nothing is removed in a scoped run."
+          : "Refreshes the PIM mirror, then sends everything the rule says is due, including removals, with the same caps as the hourly run.",
+        actionLabel: "Push now",
+        danger: !styles.length,
+      });
+      if (!accepted) return;
+    }
+    setBusy(button, true, mode === "push" ? "Queuing..." : "Queuing...");
+    try {
+      const result = await api("/api/pim/request", { method: "POST", body: { mode, styles } });
+      pimState.lastRequestId = result.request_id;
+      $("#pim-push-status").textContent = mode === "push" ? "Queued. The worker starts it within a minute." : "Preview queued.";
+      toast(mode === "push" ? "Push queued. This view updates as it runs." : "Preview queued. Results appear here in about a minute.");
+      pimStartPolling();
+      await loadPim(true);
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  function pimWire() {
+    if (pimState.wired) return;
+    pimState.wired = true;
+    $("#pim-preview-button")?.addEventListener("click", () => pimRequest("preview"));
+    $("#pim-push-button")?.addEventListener("click", () => pimRequest("push"));
   }
 
   function healthAge(value) {

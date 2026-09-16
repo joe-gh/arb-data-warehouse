@@ -320,3 +320,41 @@ class FindIssuesCommand(ReadCommand):
 class ExplainProductCommand(ReadCommand):
     store: str = Field(min_length=1, max_length=100, description=STORE)
     style: str = Field(min_length=1, max_length=100, description=STYLE)
+
+
+# ---- PIM (Sales Layer): mirror, push decisions, pipeline freshness
+
+
+class PimLookupCommand(ReadCommand):
+    q: str = Field(
+        min_length=1, max_length=100,
+        description="A style code (e.g. RB31BK), a PIM product reference, or a variant UPC. Finds the PIM product(s) that carry it, including a style whose UPCs live under a differently named PIM product.",
+    )
+
+
+class PimExplainStyleCommand(ReadCommand):
+    style: str = Field(min_length=1, max_length=100, description=STYLE)
+
+
+class PimPushHistoryCommand(ReadCommand):
+    q: str = Field(
+        min_length=1, max_length=100,
+        description="Style code, PIM product reference, or variant UPC whose push decisions to list.",
+    )
+    limit: int = Field(default=20, ge=1, le=200, description="How many change rows to return, newest first.")
+
+
+class PimPipelineStatusCommand(ReadCommand):
+    pass
+
+
+class PimSummaryCommand(ReadCommand):
+    pass
+
+
+class PimRecentPushesCommand(ReadCommand):
+    limit: int = Field(default=10, ge=1, le=50, description="How many recent push change sets to return.")
+
+
+class PimRequestsCommand(ReadCommand):
+    limit: int = Field(default=10, ge=1, le=50, description="How many recent on-demand preview/push requests to return.")

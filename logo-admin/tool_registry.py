@@ -74,6 +74,7 @@ from commands import (
 )
 from config import Settings
 from db import database
+import pim_queries
 import queries
 import mutations
 import snapshots
@@ -109,6 +110,13 @@ from read_commands import (
     GetProductMixCommand,
     GetStockRulesCommand,
     GetSyncStatusCommand,
+    PimExplainStyleCommand,
+    PimLookupCommand,
+    PimPipelineStatusCommand,
+    PimPushHistoryCommand,
+    PimRecentPushesCommand,
+    PimRequestsCommand,
+    PimSummaryCommand,
     GetStoreSettingsCommand,
     GetStyleCommand,
     ListColorsCommand,
@@ -267,6 +275,13 @@ APPROVED_AGENT_READ_NAMES = frozenset({
     "list_design_usage",
     "get_product_link",
     "get_sync_status",
+    "pim_lookup",
+    "pim_explain_style",
+    "pim_push_history",
+    "pim_pipeline_status",
+    "pim_summary",
+    "pim_recent_pushes",
+    "pim_requests",
 })
 
 # Never model-callable: file exports/imports, uploads, and anything that
@@ -403,6 +418,41 @@ def _get_product_link(cursor, command, settings):
 def _get_sync_status(cursor, command, settings):
     del settings
     return wp_bridge.sync_status_report(cursor, _model_arguments(command).get("store"))
+
+
+def _pim_lookup(cursor, command, settings):
+    del settings
+    return pim_queries.pim_lookup(cursor, **_model_arguments(command))
+
+
+def _pim_explain_style(cursor, command, settings):
+    del settings
+    return pim_queries.pim_explain_style(cursor, **_model_arguments(command))
+
+
+def _pim_push_history(cursor, command, settings):
+    del settings
+    return pim_queries.pim_push_history(cursor, **_model_arguments(command))
+
+
+def _pim_pipeline_status(cursor, command, settings):
+    del settings, command
+    return pim_queries.pim_pipeline_status(cursor)
+
+
+def _pim_summary(cursor, command, settings):
+    del settings, command
+    return pim_queries.pim_summary(cursor)
+
+
+def _pim_recent_pushes(cursor, command, settings):
+    del settings
+    return pim_queries.pim_recent_pushes(cursor, **_model_arguments(command))
+
+
+def _pim_requests(cursor, command, settings):
+    del settings
+    return pim_queries.pim_requests(cursor, **_model_arguments(command))
 
 
 def _preview_price_rule(cursor, command, settings):
@@ -575,6 +625,13 @@ CANONICAL_AGENT_READ_CONTRACTS = {
     "list_design_usage": (ListDesignUsageCommand, _list_design_usage),
     "get_product_link": (GetProductLinkCommand, _get_product_link),
     "get_sync_status": (GetSyncStatusCommand, _get_sync_status),
+    "pim_lookup": (PimLookupCommand, _pim_lookup),
+    "pim_explain_style": (PimExplainStyleCommand, _pim_explain_style),
+    "pim_push_history": (PimPushHistoryCommand, _pim_push_history),
+    "pim_pipeline_status": (PimPipelineStatusCommand, _pim_pipeline_status),
+    "pim_summary": (PimSummaryCommand, _pim_summary),
+    "pim_recent_pushes": (PimRecentPushesCommand, _pim_recent_pushes),
+    "pim_requests": (PimRequestsCommand, _pim_requests),
 }
 
 
@@ -933,6 +990,48 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Whether the sync pipeline is running and when it last ran: the latest FDM4 warehouse pull and the latest WooCommerce reconcile per environment with status, timing and errors, plus 24-hour success/failure counts. With a store: whether the app owns that store's logo sync (logo_sync_ownership.owned), its recent sync/ownership events, active freezes, logos-enabled switch and the time of its last logo edit. Use it for 'did the sync run?' and 'why isn't this on the site?'.",
         GetSyncStatusCommand,
         _get_sync_status,
+    ),
+    _read_spec(
+        "pim_explain_style",
+        "Why a style is or is not in the PIM (Sales Layer), with a plain-language verdict: whether FDM4 knows it and sells it (web-active, priced, with UPCs), which stores carry it and whether any counts for visibility, whether the PIM has it by style number or already holds its UPCs under a differently named product, and the push's recent decisions for it. Use it for 'why isn't X in the PIM?' and 'why did the push remove X?'.",
+        PimExplainStyleCommand,
+        _pim_explain_style,
+    ),
+    _read_spec(
+        "pim_lookup",
+        "Find PIM (Sales Layer) products by style code, PIM product reference or variant UPC: reference, style number, title, visible/draft status, variant counts by status, and how each matched (by style or by a UPC under another product). Use it to check whether something exists in the PIM and under what name.",
+        PimLookupCommand,
+        _pim_lookup,
+    ),
+    _read_spec(
+        "pim_push_history",
+        "Every change the PIM push proposed or sent for a style, PIM reference or UPC, newest first: change set, action (create/publish/delete/fill), status (applied, skipped, failed, proposed, rejected), the reason recorded for removals and the result text. Use it for 'what did the push do with X and when'.",
+        PimPushHistoryCommand,
+        _pim_push_history,
+    ),
+    _read_spec(
+        "pim_pipeline_status",
+        "Freshness of every stage the PIM depends on: the hourly FDM4 pull into the warehouse (latest run, last success, 24h counts, whether a load is in progress), the Woo presence set (age, stale or not), the PIM mirror pull per entity, and the latest push change set with counts by action and status. Includes PIM totals. Use it for 'is the PIM sync running?' and 'when will X reach the PIM?'.",
+        PimPipelineStatusCommand,
+        _pim_pipeline_status,
+    ),
+    _read_spec(
+        "pim_summary",
+        "PIM (Sales Layer) totals from the warehouse mirror: products and variants by visible/draft, orphan variants with no product, how many parent SKUs are live on counting stores, when the mirror was last pulled, and the rule the push enforces.",
+        PimSummaryCommand,
+        _pim_summary,
+    ),
+    _read_spec(
+        "pim_recent_pushes",
+        "The latest PIM push change sets (automatic hourly runs and on-demand ones): when, note, and per action how many rows were applied, skipped, failed or left proposed. Use it to see what recently went to the PIM.",
+        PimRecentPushesCommand,
+        _pim_recent_pushes,
+    ),
+    _read_spec(
+        "pim_requests",
+        "Recent on-demand PIM preview and push requests made from the app: who asked, when, queued/running/finished/failed, and the resulting change set with counts and samples. Use it to answer 'did my push run?'.",
+        PimRequestsCommand,
+        _pim_requests,
     ),
     _write_spec(
         "save_assignment",

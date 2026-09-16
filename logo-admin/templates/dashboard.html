@@ -49,12 +49,13 @@
           <button class="main-nav__item" type="button" role="menuitem" data-view="stock">Stock Display</button>
         </div>
       </div>
-      <div class="main-nav__group" data-group="categories,health">
+      <div class="main-nav__group" data-group="categories,pim,health">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-tools">Tools<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu main-nav__menu--wide" id="nav-menu-tools" role="menu" aria-label="Tools" hidden>
           {% if categories_enabled %}
           <button class="main-nav__item" type="button" role="menuitem" data-view="categories">Categories</button>
           {% endif %}
+          <button class="main-nav__item" type="button" role="menuitem" data-view="pim">PIM Sync</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="health">System Health</button>
           <div class="main-nav__divider" role="separator"></div>
           <p class="main-nav__section" role="presentation">Logo data</p>
@@ -97,6 +98,10 @@
       </div>
     </div>
   </header>
+  <div id="pipeline-notice" class="pipeline-notice" role="status" aria-live="polite" hidden>
+    <span class="pipeline-notice__icon" aria-hidden="true">!</span>
+    <span data-notice-text>Pulling data from FDM4. Logo sync to stores is temporarily disabled for 3 to 4 minutes.</span>
+  </div>
 
   <main id="workspace" class="workspace" tabindex="-1">
 
@@ -1135,6 +1140,61 @@
           </section>
         </div>
         <p id="health-updated" class="muted health-updated"></p>
+      </div>
+    </section>
+
+    <section id="view-pim" class="view" hidden aria-label="PIM sync">
+      <div class="health">
+        <div class="health__head">
+          <p class="eyebrow">Tools</p>
+          <h1>PIM Sync</h1>
+          <p class="muted">What the PIM (Sales Layer) is receiving from FDM4 and when. FDM4 is the source of truth: the PIM carries exactly the FDM4 styles that a store carries, all visible. Refreshes every minute while this view is open.</p>
+        </div>
+        <div id="pim-stats" class="health-stats" aria-live="polite"><div class="grid-empty">Loading...</div></div>
+        <div class="health-grid">
+          <section class="card">
+            <div class="card__header card__header--compact">
+              <div><p class="eyebrow">Next push</p><h3>What would go over</h3></div>
+              <button id="pim-preview-button" class="button button--secondary button--small" type="button">Preview now</button>
+            </div>
+            <div id="pim-preview" class="health-card-body"><div class="grid-empty">Loading...</div></div>
+          </section>
+          <section class="card">
+            <div class="card__header card__header--compact">
+              <div><p class="eyebrow">On demand</p><h3>Push to PIM now</h3></div>
+            </div>
+            <div class="health-card-body">
+              <p class="muted">Refreshes the PIM mirror, then sends whatever the rule says is due, with the same safety caps as the hourly run. Leave the styles box empty for a full run. With styles, the run only creates, publishes and fills those styles and never removes anything.</p>
+              <label class="field"><span class="field__label">Only these styles (optional)</span><input id="pim-styles" type="text" placeholder="e.g. CP91, RB31BK" autocomplete="off"></label>
+              <div class="form-row" style="margin-top:.75rem">
+                <button id="pim-push-button" class="button button--primary" type="button">Push to PIM now</button>
+                <span id="pim-push-status" class="muted" role="status"></span>
+              </div>
+              <div id="pim-active" class="health-card-body"></div>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card__header card__header--compact"><div><p class="eyebrow">History</p><h3>Recent requests</h3></div></div>
+            <div id="pim-requests" class="health-card-body"></div>
+          </section>
+          <section class="card">
+            <div class="card__header card__header--compact"><div><p class="eyebrow">History</p><h3>Recent automatic runs</h3></div></div>
+            <div id="pim-pushes" class="health-card-body"></div>
+          </section>
+          <section class="card">
+            <div class="card__header card__header--compact"><div><p class="eyebrow">Guide</p><h3>How a style reaches the PIM</h3></div></div>
+            <div class="health-card-body">
+              <ul class="health-list">
+                <li><strong>1. FDM4 pull</strong> (hourly at :00) copies FDM4's products into the warehouse. A style must be web-active with a price and a UPC.</li>
+                <li><strong>2. Store presence</strong> (hourly at :07) records what each store publishes. Only stores outside the all-products stores count.</li>
+                <li><strong>3. PIM mirror</strong> (hourly at :25) copies what the PIM already has, so the push knows what is missing.</li>
+                <li><strong>4. Push</strong> (hourly at :45, or the button above) creates missing styles visible, publishes drafts, fills style numbers, and removes what FDM4 or the stores no longer carry.</li>
+                <li>Ask the assistant "why isn't <em>style</em> in the PIM?" for the full reasoning on one style.</li>
+              </ul>
+            </div>
+          </section>
+        </div>
+        <p id="pim-updated" class="muted health-updated"></p>
       </div>
     </section>
 

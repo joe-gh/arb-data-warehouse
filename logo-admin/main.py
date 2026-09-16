@@ -20,6 +20,7 @@ from routes_agent import router as agent_router
 from routes_api import router as api_router
 from routes_feed import router as feed_router
 from routes_pages import router as pages_router
+from routes_pim import router as pim_router
 from tool_registry import validate_registry, validate_write_tool_allowlist
 
 
@@ -49,6 +50,7 @@ app.include_router(categories_router)
 app.include_router(agent_router)
 app.include_router(feed_router)
 app.include_router(pages_router)
+app.include_router(pim_router)
 
 
 @app.middleware("http")

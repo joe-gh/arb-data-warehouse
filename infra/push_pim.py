@@ -377,10 +377,17 @@ WAREHOUSE_VARIANTS_SQL = """
 """
 
 
-def run_diff(note, remove_skus=None, arborwear_only=False):
+def run_diff(note, remove_skus=None, arborwear_only=False, styles=None):
+    """styles: optional list of style codes. A scoped diff only creates,
+    publishes and fills those styles; removals and orphan sweeps are left to
+    the unscoped hourly run so 'push these styles now' can never delete."""
+    styles = sorted({str(s).strip().upper() for s in (styles or []) if str(s).strip()})
+    scoped = bool(styles)
     connection = connect()
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("CREATE TEMP TABLE wh AS " + WAREHOUSE_VARIANTS_SQL)
+    if scoped:
+        cursor.execute("DELETE FROM wh WHERE style_code <> ALL(%s)", (styles,))
     cursor.execute("CREATE INDEX ON wh (sku)")
     cursor.execute("CREATE INDEX ON wh (style_code)")
 
@@ -482,6 +489,9 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                 OR EXISTS (SELECT 1 FROM pim.api_variant v JOIN f_upc f ON f.u = upper(btrim(v.frmt_ref))
                             WHERE v.prod_ref = p.prod_ref AND v.retired_at IS NULL))
         """)
+    if scoped:
+        print(f"scoped to {len(styles)} style(s): {', '.join(styles[:20])}{' …' if len(styles) > 20 else ''}"
+              " - removals and orphan sweeps are skipped in a scoped run")
     print(f"fdm4: {fk['styles']} styles, {fk['upcs']} UPCs"
           + ("" if fdm4_ok else " - looks truncated, not-in-FDM4 removals and style fills skipped this run"))
     if presence_ok:
@@ -667,8 +677,9 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
              WHERE p.retired_at IS NULL
                AND p.payload ->> 'prod_stat' = 'D'
                AND p.prod_ref IN (SELECT prod_ref FROM live_product)
+               AND (NOT %(scoped)s OR upper(btrim(p.style_number)) = ANY(%(styles)s) OR upper(btrim(p.prod_ref)) = ANY(%(styles)s))
             """,
-            {"set_id": set_id})
+            {"set_id": set_id, "scoped": scoped, "styles": styles})
         # Only drafts flip: a variant the PIM team set invisible ('I') is a
         # deliberate choice and is left alone.
         cursor.execute(
@@ -682,15 +693,16 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
              WHERE v.retired_at IS NULL
                AND v.payload ->> 'frmt_stat' = 'D'
                AND v.prod_ref IN (SELECT prod_ref FROM live_product)
+               AND (NOT %(scoped)s OR upper(btrim(p.style_number)) = ANY(%(styles)s) OR upper(btrim(p.prod_ref)) = ANY(%(styles)s))
             """,
-            {"set_id": set_id})
+            {"set_id": set_id, "scoped": scoped, "styles": styles})
 
     # Removal (lane b): a product leaves the PIM, variants included (the API
     # deletes them with the product), when it is live on no counting store
     # (needs a fresh AND full presence set) or when FDM4 does not know it at
     # all (needs a full item master). The reason rides on the row; the apply
     # step re-checks that same premise right before the delete.
-    if presence_full or fdm4_ok:
+    if (presence_full or fdm4_ok) and not scoped:
         cursor.execute(
             """
             INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, style_code, before, after)
@@ -722,6 +734,7 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
               SELECT p.prod_ref FROM pim.api_product p
                WHERE p.retired_at IS NULL AND coalesce(btrim(p.style_number), '') = ''
                  AND (NOT %(presence_full)s OR p.prod_ref IN (SELECT prod_ref FROM live_product))
+                 AND (NOT %(scoped)s OR upper(btrim(p.prod_ref)) = ANY(%(styles)s))
             ), cand AS (
               SELECT b.prod_ref, upper(btrim(b.prod_ref)) AS style FROM bare b
                WHERE upper(btrim(b.prod_ref)) IN (SELECT s FROM f_style)
@@ -742,12 +755,13 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                    jsonb_build_object('prod_stylenumber', o.style)
               FROM one o
             """,
-            {"set_id": set_id, "presence_full": presence_full})
+            {"set_id": set_id, "presence_full": presence_full, "scoped": scoped, "styles": styles})
 
     # variant_orphan_remove (lane b): variants the PIM holds with no product
     # reference. They are what a product deletion leaves behind (see the
     # module docstring); nothing can sell or enrich them, so they go.
-    cursor.execute(
+    if not scoped:
+      cursor.execute(
         """
         INSERT INTO pim.push_change_row (set_id, lane, action, prod_ref, frmt_ref, style_code, before, after)
         SELECT %(set_id)s, 'b', 'variant_orphan_remove', '', v.frmt_ref, '',
@@ -1109,8 +1123,9 @@ def apply_row(row, key, enabled, allow_removals, cursor, auto=False):
 # --------------------------------------------------------------------------
 # Automatic run
 
-def run_auto():
-    """Diff, then apply every row except variant removals. See the module docstring."""
+def run_auto(styles=None):
+    """Diff, then apply every row except variant removals. See the module docstring.
+    styles: optional scope (see run_diff); a scoped run never removes."""
     enabled = os.environ.get("PIM_PUSH_ENABLED") == "1"
     connection = connect()
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1136,7 +1151,7 @@ def run_auto():
         """)
     connection.commit()
 
-    set_id, counts = run_diff("automatic run")
+    set_id, counts = run_diff("automatic run" + (f" (scoped: {', '.join(sorted({str(s).strip().upper() for s in styles}))})" if styles else ""), styles=styles)
     cursor.execute(
         "SELECT count(*) FILTER (WHERE action = ANY(%s)) AS flips,"
         "       count(*) FILTER (WHERE action = 'product_remove') AS removals,"
@@ -1200,12 +1215,15 @@ def main(argv=None):
     parser.add_argument("--note", default="")
     parser.add_argument("--remove-skus", default=None,
                         help="path to a text/CSV file whose rows contain approved variant refs to remove")
+    parser.add_argument("--styles", default=None,
+                        help="comma-separated style codes: scope --auto/--diff to creating, publishing and filling only these (never removes)")
     parser.add_argument("--arborwear-only", action="store_true",
                         help="limit product creation to Arborwear (mill 22) styles; default creates every brand")
     args = parser.parse_args(argv)
 
+    styles = [s for s in (args.styles or "").replace(";", ",").split(",") if s.strip()] or None
     if args.auto:
-        run_auto()
+        run_auto(styles)
     elif args.diff:
         remove_skus = None
         if args.remove_skus:
@@ -1218,7 +1236,7 @@ def main(argv=None):
                     and len(token.strip()) >= 10
                 })
             print(f"removal sheet: {len(remove_skus)} refs")
-        set_id, counts = run_diff(args.note or "diff run", remove_skus, args.arborwear_only)
+        set_id, counts = run_diff(args.note or "diff run", remove_skus, args.arborwear_only, styles)
         print(f"change set {set_id} written:")
         for k, v in sorted(counts.items()):
             print(f"  {k}: {v}")
