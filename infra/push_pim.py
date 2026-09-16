@@ -409,6 +409,22 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
         {"env": PRESENCE_ENV, "all_blogs": list(ALL_PRODUCTS_BLOGS), "ok": presence_ok})
     cursor.execute("CREATE INDEX ON live_blog (parent_sku)")
     cursor.execute("CREATE INDEX ON live_blog USING gin (upcs)")
+    # Styles a counting store carries, computed ONCE: by parent SKU, or by
+    # any of the style's UPCs appearing among a store's published variations.
+    # (Evaluating this per wh row inside the product_create query took 40
+    # minutes and, inside the diff transaction, held fdm4.* read locks that
+    # blocked the hourly FDM4 load - 2026-09-16.)
+    cursor.execute(
+        """
+        CREATE TEMP TABLE live_style AS
+        SELECT DISTINCT w.style_code FROM wh w
+         WHERE EXISTS (SELECT 1 FROM live_blog l WHERE l.parent_sku = w.style_code)
+        UNION
+        SELECT DISTINCT w.style_code FROM live_blog l
+          CROSS JOIN LATERAL unnest(l.upcs) AS u(sku)
+          JOIN wh w ON w.sku = upper(u.sku)
+        """)
+    cursor.execute("CREATE INDEX ON live_style (style_code)")
     cursor.execute(
         """
         CREATE TEMP TABLE live_product AS
@@ -445,6 +461,13 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
         SELECT DISTINCT upper(btrim("upc-code")) AS u FROM fdm4.item WHERE btrim("upc-code") <> ''
         """)
     cursor.execute("CREATE INDEX ON f_upc (u)")
+    cursor.execute(
+        """
+        CREATE TEMP TABLE f_upc_style AS
+        SELECT DISTINCT upper(btrim("upc-code")) AS u, upper(btrim("style-code")) AS s FROM fdm4.item
+         WHERE btrim("upc-code") <> '' AND btrim("style-code") <> ''
+        """)
+    cursor.execute("CREATE INDEX ON f_upc_style (u)")
     cursor.execute("SELECT (SELECT count(*) FROM f_style) AS styles, (SELECT count(*) FROM f_upc) AS upcs")
     fk = cursor.fetchone()
     fdm4_ok = fk["styles"] >= FDM4_MIN_STYLES and fk["upcs"] >= FDM4_MIN_UPCS
@@ -469,6 +492,11 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
     else:
         print(f"presence[{PRESENCE_ENV}]: {'missing' if not presence['n'] else 'stale (' + str(presence['fresh']) + ')'}"
               " - create/publish/remove rules skipped this run")
+
+    # Every fdm4.* read is done (the temp tables above survive the commit);
+    # release those read locks now so the hourly FDM4 load can DROP/CREATE
+    # its tables even if the diff below runs long.
+    connection.commit()
 
     cursor.execute(
         "INSERT INTO pim.push_change_set (created_by, note) VALUES (%s, %s) RETURNING set_id",
@@ -522,8 +550,7 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
               FROM pim.api_variant v
              WHERE upper(btrim(v.frmt_ref)) = ANY(%(skus)s)
                AND upper(btrim(v.frmt_ref)) NOT IN (SELECT sku FROM wh)
-               AND NOT EXISTS (SELECT 1 FROM fdm4.item i
-                                WHERE upper(btrim(i."upc-code")) = upper(btrim(v.frmt_ref)))
+               AND upper(btrim(v.frmt_ref)) NOT IN (SELECT u FROM f_upc)
             """,
             {"set_id": set_id, "skus": remove_skus})
 
@@ -587,13 +614,11 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
                      WHERE btrim(style_number) <> '' AND retired_at IS NULL)
                AND w.sku NOT IN (SELECT upper(btrim(frmt_ref)) FROM pim.api_variant
                                   WHERE retired_at IS NULL)
-               -- Only styles a counting store already carries (by style
-               -- number or by one of the style's SKUs). live_blog is empty
+               -- Only styles a counting store already carries (live_style:
+               -- by style number or by one of the style's SKUs). It is empty
                -- when the presence set is missing or stale, so nothing is
                -- created then.
-               AND (EXISTS (SELECT 1 FROM live_blog l WHERE l.parent_sku = w.style_code)
-                    OR EXISTS (SELECT 1 FROM wh w2 JOIN live_blog l ON l.upcs @> ARRAY[w2.sku]
-                                WHERE w2.style_code = w.style_code))
+               AND w.style_code IN (SELECT style_code FROM live_style)
              GROUP BY 1
         ), content AS (
             SELECT DISTINCT ON (upper(btrim(sku_parent)))
@@ -701,12 +726,12 @@ def run_diff(note, remove_skus=None, arborwear_only=False):
               SELECT b.prod_ref, upper(btrim(b.prod_ref)) AS style FROM bare b
                WHERE upper(btrim(b.prod_ref)) IN (SELECT s FROM f_style)
               UNION
-              SELECT b.prod_ref, upper(btrim(i."style-code")) FROM bare b
-                JOIN fdm4.item i ON upper(btrim(i."upc-code")) = upper(btrim(b.prod_ref))
+              SELECT b.prod_ref, f.s FROM bare b
+                JOIN f_upc_style f ON f.u = upper(btrim(b.prod_ref))
               UNION
-              SELECT b.prod_ref, upper(btrim(i."style-code")) FROM bare b
+              SELECT b.prod_ref, f.s FROM bare b
                 JOIN pim.api_variant v ON v.prod_ref = b.prod_ref AND v.retired_at IS NULL
-                JOIN fdm4.item i ON upper(btrim(i."upc-code")) = upper(btrim(v.frmt_ref))
+                JOIN f_upc_style f ON f.u = upper(btrim(v.frmt_ref))
             ), one AS (
               SELECT prod_ref, min(style) AS style FROM cand
                WHERE coalesce(style, '') <> '' GROUP BY prod_ref HAVING count(DISTINCT style) = 1
