@@ -1257,3 +1257,7 @@ small { font-size: max(.75rem, .85em); }
 /* The header store picker showed "Davey RC Safety (S_03…" at laptop widths:
    a slightly smaller face lets the full name and code fit. */
 .combobox--header input[type="search"] { font-size: .95rem; }
+
+/* PIM Sync view: spacing the template cannot inline (CSP style-src 'self'). */
+.pim-actions { margin-top: .75rem; }
+.pim-examples { margin-top: .5rem; }

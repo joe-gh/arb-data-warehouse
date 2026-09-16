@@ -10535,7 +10535,7 @@
       const why = s.reason ? ` <span class="muted">(${escapeHtml(s.reason)})</span>` : "";
       return `<li>${escapeHtml(what)} <strong>${escapeHtml(who)}</strong>${title}${why}</li>`;
     });
-    return `<p class="muted" style="margin-top:.5rem">Examples</p><ul class="health-list">${items.join("")}</ul>`;
+    return `<p class="muted pim-examples">Examples</p><ul class="health-list">${items.join("")}</ul>`;
   }
 
   function pimRequestLine(r) {
@@ -10579,7 +10579,7 @@
       healthStat("Store presence", presValue, presSub, pres.stale ? "late" : "ok"),
       healthStat("PIM mirror", mirrorLast ? healthAge(mirrorLast) : "never", mirror.schedule || "", mirrorLast ? "ok" : "late"),
       healthStat("Last push", pushValue, pushSub, sending && sending.failed ? "late" : (sending ? "ok" : null)),
-      healthStat("In the PIM", `${Number(sum.products_visible || 0)} products`, `${plural("variant", Number(sum.variants_visible || 0))} visible · ${Number(sum.products_draft || 0)} draft products · ${Number(sum.orphan_variants || 0)} orphan variants`, null),
+      healthStat("In the PIM", `${Number(sum.products_visible || 0)} products`, `${plural("variant", Number(sum.variants_visible || 0))} visible · ${plural("draft product", Number(sum.products_draft || 0))} · ${plural("orphan variant", Number(sum.orphan_variants || 0))}`, null),
       healthStat("Live on stores", String(Number(sum.live_parent_skus || 0)), "parent SKUs on counting stores (what the PIM should hold)", null),
     ].join("");
 
@@ -10606,6 +10606,7 @@
     const prevBtn = $("#pim-preview-button");
     if (pushBtn && !pushBtn.dataset.originalLabel) pushBtn.disabled = Boolean(active);
     if (prevBtn && !prevBtn.dataset.originalLabel) prevBtn.disabled = Boolean(active);
+    if (!active) { const st = $("#pim-push-status"); if (st && /queued/i.test(st.textContent)) st.textContent = ""; }
     if (active && !pimState.polling) pimStartPolling();
     if (!active && pimState.polling) { clearInterval(pimState.polling); pimState.polling = null; }
 
