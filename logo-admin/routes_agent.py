@@ -1112,12 +1112,19 @@ async def chat_route(
         raise
 
     session_id = session["id"]
-    screen = await _joinable_to_thread(_resolve_screen, body)
+    # Register cleanup before the next await: the semaphore permit and turn
+    # lease are already held, so a cancellation during screen resolution must
+    # still release both (cleanup is idempotent, so the normal path is safe).
     cleanup = _TurnCleanup(
         session_id,
         context.user_login,
         turn_id,
     )
+    try:
+        screen = await _joinable_to_thread(_resolve_screen, body)
+    except BaseException:
+        await asyncio.shield(cleanup())
+        raise
     log_event(
         "turn_start",
         session_id=session_id,
