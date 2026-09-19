@@ -55,6 +55,34 @@ def ident(name):
     return '"' + name.replace('"', '""') + '"'
 
 
+LOAD_FLAG = "fdm4_load"
+
+
+def set_load_flag(enabled, note=""):
+    """Tell the Warehouse Operations app whether the raw fdm4.* swap is in
+    progress: the minutes in which every read of fdm4.* waits on the
+    drop/create locks (logo sync included). Uses its own autocommit
+    connection so the state is visible outside the load transaction.
+    Advisory only: a failure here never fails the load."""
+    try:
+        flag_conn = psycopg2.connect(host="/var/run/postgresql", dbname=DB, user="postgres")
+        flag_conn.autocommit = True
+        with flag_conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO woo.app_flag (name, enabled, note, updated_by, updated_at)
+                VALUES (%s, %s, %s, 'load_dump', now())
+                ON CONFLICT (name) DO UPDATE
+                   SET enabled = EXCLUDED.enabled, note = EXCLUDED.note,
+                       updated_by = EXCLUDED.updated_by, updated_at = now()
+                """,
+                (LOAD_FLAG, bool(enabled), note[:200]),
+            )
+        flag_conn.close()
+    except Exception as exc:  # noqa: BLE001 - advisory flag
+        print(f"warning: could not update woo.app_flag {LOAD_FLAG}: {exc}", file=sys.stderr)
+
+
 def load(conn, table, csv_path, expected_rows):
     with open(csv_path, newline="") as fh:
         header = next(csv.reader(fh))
@@ -159,6 +187,7 @@ def main():
                 )
 
         total = 0
+        set_load_flag(True, f"raw fdm4 swap from {os.path.basename(run_dir)}")
         for table, csv_path, expected_rows in tables:
             loaded = load(conn, table, csv_path, expected_rows)
             total += loaded
@@ -170,6 +199,7 @@ def main():
         # after this commit leaves new-raw/old-woo with the run marked failed
         # and the WP version gate holding - the same state as a failed run.
         conn.commit()
+        set_load_flag(False, "raw fdm4 swap committed")
 
         with conn.cursor() as cur:
             cur.execute("SELECT to_regprocedure('woo.refresh_product_state()') IS NOT NULL")
@@ -198,6 +228,7 @@ def main():
         conn.commit()
     except Exception:
         conn.rollback()
+        set_load_flag(False, "load failed; raw swap rolled back or transform failed")
         raise
     finally:
         conn.close()
