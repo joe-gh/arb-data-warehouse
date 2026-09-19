@@ -55,6 +55,18 @@ class Preview:
     results: tuple[dict, ...]
 
 
+
+
+def _command_is_destructive(name, command) -> bool:
+    """A change set needs the explicit hard-delete acknowledgement when it
+    permanently deletes rows: the dedicated hard-delete tools, or
+    remove_design with hard=true (which deletes assignment rows)."""
+    if name in HARD_DELETE_TOOLS:
+        return True
+    if name == "remove_design" and getattr(command, "hard", False):
+        return True
+    return False
+
 def _json(value: Any) -> Json:
     # dumps_exact keeps a Decimal (how db.py decodes json/jsonb numbers) as a
     # bare number, so a journaled value survives the round trip unrounded.
@@ -483,7 +495,7 @@ def stage_write(
         preview = preview_commands(commands, user_login)
         revision = base_revision + 1
         digest = _hash_payload(revision, commands, preview.semantic_diff)
-        destructive = any(name in HARD_DELETE_TOOLS for name, _ in commands)
+        destructive = any(_command_is_destructive(name, c) for name, c in commands)
         with database.cursor(write=True, actor=user_login) as cursor:
             locked = dict(_owned_change_set(
                 cursor,
@@ -635,7 +647,7 @@ def stage_write_batch(
         ]
         revision = base_revision + 1
         digest = _hash_payload(revision, commands, preview.semantic_diff)
-        destructive = any(name in HARD_DELETE_TOOLS for name, _ in commands)
+        destructive = any(_command_is_destructive(name, c) for name, c in commands)
         with database.cursor(write=True, actor=user_login) as cursor:
             locked = dict(_owned_change_set(
                 cursor,

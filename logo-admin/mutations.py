@@ -235,6 +235,10 @@ def _decimal(value: Any) -> Optional[Decimal]:
         raise InvalidCommand(
             "cost_override may have at most two decimal places"
         )
+    # A logo cost is a shopper charge; it is never negative. Enforced here so
+    # every assignment / paste / bulk / spreadsheet path matches set_logo_cost.
+    if parsed < 0:
+        raise InvalidCommand("cost_override cannot be negative")
     return parsed
 
 
@@ -402,8 +406,12 @@ def _validate_warehouse_keys(cursor, values: Mapping[str, Any]) -> None:
     _validate_primary_anchor(cursor, values)
 
     # Existing image-only legacy assignments deliberately bypass missing FDM4
-    # art/scheme checks, matching the established HTTP behavior.
-    if values.get("image_url"):
+    # art/scheme checks, matching the established HTTP behavior. Restrict the
+    # bypass to rows that already exist: a NEW assignment (or a changed
+    # identity) must still pass customer/scheme/code validation, so an image
+    # URL cannot be used to attach another customer's design or an invalid
+    # scheme/code combination.
+    if values.get("image_url") and existing:
         return
     if not validate_design_asset(
         cursor,
@@ -1353,12 +1361,15 @@ def set_color_prices(cursor, actor: str, command: SetColorPricesCommand) -> Muta
     if len(command.prices) > 100:
         raise InvalidCommand("At most 100 colors at once")
     note = " ".join(_optional_text(command.note, "note", 1000).split())
+    # Per color: the true garment cost (def_cost) and the FDM4 list price (msrp),
+    # taken across sizes so a single per-color price is flagged if it drops below
+    # cost for any size (max cost) or rises above the list price of any size
+    # (min msrp).
     cursor.execute(
         """
         SELECT color_code, max(color) AS color,
-               max((price_levels ->> 'msrp')::numeric)      AS msrp,
-               max((price_levels ->> 'wholesale')::numeric) AS wholesale,
-               max((price_levels ->> 'employee')::numeric)  AS employee
+               min((price_levels ->> 'msrp')::numeric) AS msrp_min,
+               max(def_cost)                           AS cost_max
           FROM woo.store_product_state
          WHERE fdm4_store = %s AND upper(btrim(style_code)) = %s AND kind = 'variation'
          GROUP BY color_code
@@ -1384,17 +1395,23 @@ def set_color_prices(cursor, actor: str, command: SetColorPricesCommand) -> Muta
         if code not in colors:
             raise InvalidCommand(f"Color {code} is not a garment color of {style} at {store}")
         info = colors[code]
-        msrp = info.get("msrp")
-        floor = info.get("wholesale") if info.get("wholesale") is not None else info.get("employee")
+        msrp_min = info.get("msrp_min")
+        cost_max = info.get("cost_max")
         label = f"{code} ({info.get('color') or ''})".strip()
-        if msrp is not None and price > Decimal(str(msrp)):
-            warnings.append(f"{label}: {price} is above the FDM4 list price {msrp}")
-        if floor is not None and price < Decimal(str(floor)):
-            warnings.append(f"{label}: {price} is below cost {floor}")
-        rows.append((code, price))
+        flag = None
+        if msrp_min is not None and price > Decimal(str(msrp_min)):
+            flag = f"above the FDM4 list price {msrp_min}"
+        elif cost_max is not None and price < Decimal(str(cost_max)):
+            flag = f"below cost {cost_max}"
+        if flag:
+            warnings.append(f"{label}: {price} is {flag}")
+        # Fold the warning into the stored note so it shows on the review card
+        # (a staged write returns only confirmation metadata, not this value).
+        row_note = (note + f"  [warning: {flag}]").strip() if flag else note
+        rows.append((code, price, row_note[:1000]))
 
     _assert_changed_rows_bounded(len(rows), label="Set color prices")
-    for code, price in rows:
+    for code, price, row_note in rows:
         cursor.execute(
             """
             INSERT INTO woo.color_price_override
@@ -1404,11 +1421,11 @@ def set_color_prices(cursor, actor: str, command: SetColorPricesCommand) -> Muta
                 price = EXCLUDED.price, note = EXCLUDED.note, active = true,
                 updated_by = EXCLUDED.updated_by, updated_at = now()
             """,
-            (store, style, code, price, note, actor),
+            (store, style, code, price, row_note, actor),
         )
     return MutationResult(
         {"ok": True, "store": store, "style": style, "set": len(rows),
-         "prices": {code: str(price) for code, price in rows},
+         "prices": {code: str(price) for code, price, _ in rows},
          "warnings": warnings,
          "note": "Forced prices reach the website on the next hourly sync; FDM4/B3B are unchanged."},
         _color_price_scope(command),
