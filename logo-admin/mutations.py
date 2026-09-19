@@ -64,6 +64,9 @@ from commands import (
     RemoveSyncBlockCommand,
     ReorderLogoRowsCommand,
     ReplaceDesignCommand,
+    RemoveDesignCommand,
+    SetColorPricesCommand,
+    ClearColorPricesCommand,
     SaveAssignmentCommand,
     SetBrandStockRuleCommand,
     SetColorClassCommand,
@@ -158,6 +161,9 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "copy_style_to_many": frozenset({"assignment_style"}),
     "paste_logo_set": frozenset({"assignment_style"}),
     "replace_design": frozenset({"assignment_style"}),
+    "remove_design": frozenset({"assignment_style"}),
+    "set_color_prices": frozenset({"color_price_override_row"}),
+    "clear_color_prices": frozenset({"color_price_override_row"}),
     "reorder_logo_rows": frozenset({"assignment_style"}),
     "set_styles_active": frozenset({"assignment_style"}),
     "set_logo_name": frozenset({"display_name_row"}),
@@ -624,7 +630,7 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = (assignment_style_scope(command.store, command.target_style),)
     elif isinstance(command, CopyStyleToManyCommand):
         scopes = _style_scopes(command.store, command.target_styles)
-    elif isinstance(command, (PasteLogoSetCommand, ReplaceDesignCommand, SetStylesActiveCommand)):
+    elif isinstance(command, (PasteLogoSetCommand, ReplaceDesignCommand, RemoveDesignCommand, SetStylesActiveCommand)):
         scopes = _style_scopes(command.store, command.styles)
     elif isinstance(command, ReorderLogoRowsCommand):
         scopes = (assignment_style_scope(command.store, command.style),)
@@ -638,6 +644,8 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = (MutationScope("color_class_row", {"color_code": _clean(command.color_code, "color_code")}),)
     elif isinstance(command, (SetStockOverrideCommand, RemoveStockOverrideCommand)):
         scopes = (MutationScope("stock_override_row", {"style_code": _upper(command.style_code, "style_code")}),)
+    elif isinstance(command, (SetColorPricesCommand, ClearColorPricesCommand)):
+        scopes = _color_price_scope(command)
     elif isinstance(command, (SetBrandStockRuleCommand, RemoveBrandStockRuleCommand)):
         scopes = (MutationScope("brand_stock_rule_row", {"mill_code": _clean(command.mill_code, "mill_code", 32)}),)
     elif isinstance(command, (SetSyncBlockCommand, RemoveSyncBlockCommand)):
@@ -1240,6 +1248,196 @@ def replace_design(cursor, actor: str, command: ReplaceDesignCommand) -> Mutatio
          "skipped_invalid": outcome["skipped_invalid"], "styles": outcome["styles"],
          "target": outcome["target"], "problems": outcome["problems"]},
         affected_scopes(command),
+    )
+
+
+def remove_design(cursor, actor: str, command: RemoveDesignCommand) -> MutationResult:
+    """Take one design off up to MAX_BULK_STYLES styles of a store, staged and
+    undone through the exact-scope snapshot (assignment_style).
+
+    Safe removal: a design row that is the primary (position 1) of a choice
+    defines that whole selectable choice, so removing it removes the entire
+    option row (its companion positions go too — a choice with no primary is
+    invalid). A design that is only a companion (position 2 or 3) is removed on
+    its own; its primary and the rest of the choice stay. Hiding (default) is
+    reversible; hard=True deletes.
+
+    color_scheme_id, logo_code and location each narrow which of the design's
+    rows count as the target — pass logo_code when a design carries more than
+    one code and only one should go.
+    """
+    store = _clean(command.store, "store")
+    design = _clean(command.design_id, "design_id")
+    scheme = _upper(command.color_scheme_id, "color_scheme_id") if command.color_scheme_id else None
+    code = _upper(command.logo_code, "logo_code") if command.logo_code else None
+    location = _upper(command.location, "location") if command.location else None
+    styles = _clean_styles(command.styles, "styles")
+
+    _bounded_assignment_count(
+        cursor,
+        "fdm4_store = %s AND product_style = ANY(%s) AND design_id::text = %s",
+        (store, styles, design),
+        label="Remove design",
+    )
+
+    # A row is a target when it is this design AND matches every filter given.
+    def design_match(alias: str) -> str:
+        return (
+            f"{alias}.design_id::text = %(design)s"
+            f" AND (%(scheme)s IS NULL OR upper(btrim({alias}.color_scheme_id)) = %(scheme)s)"
+            f" AND (%(code)s IS NULL OR upper(btrim({alias}.logo_code)) = %(code)s)"
+            f" AND (%(loc)s IS NULL OR upper(btrim({alias}.location)) = %(loc)s)"
+        )
+
+    # Rows to remove: every row of an option row whose primary is a target,
+    # plus companion rows that are targets themselves.
+    where = f"""
+        a.fdm4_store = %(store)s AND a.product_style = ANY(%(styles)s)
+        AND (
+            (a.product_style, a.garment_color_code, a.option_row) IN (
+                SELECT p.product_style, p.garment_color_code, p.option_row
+                  FROM logo.assignment p
+                 WHERE p.fdm4_store = %(store)s AND p.product_style = ANY(%(styles)s)
+                   AND p.position = 1 AND {design_match('p')}
+            )
+            OR (a.position > 1 AND {design_match('a')})
+        )
+    """
+    params = {"store": store, "styles": styles, "design": design,
+              "scheme": scheme, "code": code, "loc": location}
+
+    if command.hard:
+        cursor.execute("DELETE FROM logo.assignment AS a WHERE " + where, params)
+    else:
+        cursor.execute(
+            "UPDATE logo.assignment AS a SET active = false, updated_by = %(actor)s, updated_at = now()"
+            " WHERE a.active = true AND " + where,
+            {**params, "actor": actor},
+        )
+    removed = cursor.rowcount
+    if removed == 0:
+        raise NotFound("None of the styles carry that design with those filters (nothing to remove)")
+    _assert_changed_rows_bounded(removed, label="Remove design")
+    return MutationResult(
+        {"ok": True, "removed": removed, "hard": command.hard,
+         "design_id": design, "color_scheme_id": scheme,
+         "logo_code": code, "location": location, "styles": styles},
+        affected_scopes(command),
+    )
+
+
+COLOR_PRICE_MIN = Decimal("0")
+COLOR_PRICE_MAX = Decimal("10000")
+
+
+def _color_price_scope(command) -> tuple:
+    return (MutationScope("color_price_override_row", {
+        "fdm4_store": _clean(command.store, "store"),
+        "style_code": _upper(command.style, "style"),
+    }),)
+
+
+def set_color_prices(cursor, actor: str, command: SetColorPricesCommand) -> MutationResult:
+    """Force a Woo price on specific garment colors of a style at a store, on
+    our side. It is written to woo.color_price_override, which the hourly
+    transform reads as the TOP price precedence, so it survives every reconcile
+    (FDM4/B3B stay unchanged) and a live price rule still applies on top.
+    Staged and undone through the color_price_override_row snapshot. Blocks
+    negative prices and prices over the cap; below-cost / above-list prices are
+    flagged for the reviewer, not blocked.
+    """
+    store = _clean(command.store, "store")
+    style = _upper(command.style, "style")
+    if not command.prices:
+        raise InvalidCommand("Provide at least one color and price")
+    if len(command.prices) > 100:
+        raise InvalidCommand("At most 100 colors at once")
+    note = " ".join(_optional_text(command.note, "note", 1000).split())
+    cursor.execute(
+        """
+        SELECT color_code, max(color) AS color,
+               max((price_levels ->> 'msrp')::numeric)      AS msrp,
+               max((price_levels ->> 'wholesale')::numeric) AS wholesale,
+               max((price_levels ->> 'employee')::numeric)  AS employee
+          FROM woo.store_product_state
+         WHERE fdm4_store = %s AND upper(btrim(style_code)) = %s AND kind = 'variation'
+         GROUP BY color_code
+        """,
+        (store, style),
+    )
+    colors = {str(r["color_code"]): r for r in cursor.fetchall()}
+    if not colors:
+        raise NotFound(f"Style {style} has no variations at {store}")
+
+    warnings: list = []
+    rows: list = []
+    for item in command.prices:
+        code = _clean(item.color_code, "color_code")
+        try:
+            price = Decimal(str(item.price))
+        except (InvalidOperation, ValueError, TypeError):
+            raise InvalidCommand(f"Price for color {code} is not a number")
+        if price < COLOR_PRICE_MIN:
+            raise InvalidCommand(f"Price for color {code} cannot be negative")
+        if price > COLOR_PRICE_MAX:
+            raise InvalidCommand(f"Price for color {code} exceeds the {COLOR_PRICE_MAX} maximum")
+        if code not in colors:
+            raise InvalidCommand(f"Color {code} is not a garment color of {style} at {store}")
+        info = colors[code]
+        msrp = info.get("msrp")
+        floor = info.get("wholesale") if info.get("wholesale") is not None else info.get("employee")
+        label = f"{code} ({info.get('color') or ''})".strip()
+        if msrp is not None and price > Decimal(str(msrp)):
+            warnings.append(f"{label}: {price} is above the FDM4 list price {msrp}")
+        if floor is not None and price < Decimal(str(floor)):
+            warnings.append(f"{label}: {price} is below cost {floor}")
+        rows.append((code, price))
+
+    _assert_changed_rows_bounded(len(rows), label="Set color prices")
+    for code, price in rows:
+        cursor.execute(
+            """
+            INSERT INTO woo.color_price_override
+                (fdm4_store, style_code, color_code, price, note, active, updated_by, updated_at)
+            VALUES (%s, %s, %s, %s, %s, true, %s, now())
+            ON CONFLICT (fdm4_store, style_code, color_code) DO UPDATE SET
+                price = EXCLUDED.price, note = EXCLUDED.note, active = true,
+                updated_by = EXCLUDED.updated_by, updated_at = now()
+            """,
+            (store, style, code, price, note, actor),
+        )
+    return MutationResult(
+        {"ok": True, "store": store, "style": style, "set": len(rows),
+         "prices": {code: str(price) for code, price in rows},
+         "warnings": warnings,
+         "note": "Forced prices reach the website on the next hourly sync; FDM4/B3B are unchanged."},
+        _color_price_scope(command),
+    )
+
+
+def clear_color_prices(cursor, actor: str, command: ClearColorPricesCommand) -> MutationResult:
+    """Remove color price overrides on a style (revert to the FDM4/B3B price).
+    Undone through the color_price_override_row snapshot."""
+    store = _clean(command.store, "store")
+    style = _upper(command.style, "style")
+    codes = [_clean(c, "color_code") for c in (command.color_codes or [])]
+    if codes:
+        cursor.execute(
+            "DELETE FROM woo.color_price_override WHERE fdm4_store=%s AND style_code=%s AND color_code = ANY(%s)",
+            (store, style, codes),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM woo.color_price_override WHERE fdm4_store=%s AND style_code=%s",
+            (store, style),
+        )
+    removed = cursor.rowcount
+    if removed == 0:
+        raise NotFound("No color price overrides to remove for that style")
+    return MutationResult(
+        {"ok": True, "store": store, "style": style, "removed": removed,
+         "note": "Prices revert to the FDM4/B3B value on the next hourly sync."},
+        _color_price_scope(command),
     )
 
 
@@ -2431,6 +2629,9 @@ MUTATION_HANDLERS: Dict[str, Callable] = {
     "copy_style_to_many": copy_style_to_many,
     "paste_logo_set": paste_logo_set,
     "replace_design": replace_design,
+    "remove_design": remove_design,
+    "set_color_prices": set_color_prices,
+    "clear_color_prices": clear_color_prices,
     "reorder_logo_rows": reorder_logo_rows,
     "set_styles_active": set_styles_active,
     "set_logo_name": set_logo_name,

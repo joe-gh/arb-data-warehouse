@@ -18,10 +18,10 @@ from design_resolver import resolve_design
 # cannot raise these limits, and each query asks PostgreSQL for only one row
 # beyond the cap so it can report truncation without materializing the rest.
 STORE_RESULT_LIMIT = 500
-STYLE_SEARCH_RESULT_LIMIT = 100
+STYLE_SEARCH_RESULT_LIMIT = 500
 STYLE_COLOR_RESULT_LIMIT = 500
 STYLE_ASSIGNMENT_RESULT_LIMIT = 5_000
-DESIGN_SEARCH_RESULT_LIMIT = 100
+DESIGN_SEARCH_RESULT_LIMIT = 500
 ASSIGNMENT_PLACEMENT_RESULT_LIMIT = 500
 ASSIGNMENT_BACKGROUND_RESULT_LIMIT = 500
 DESIGN_ASSET_RESULT_LIMIT = 500
@@ -296,9 +296,11 @@ def list_styles(
     active_only: bool = True,
     assigned_only: bool = True,
     method: str = "",
+    offset: int = 0,
 ) -> dict:
     store = _clean(store, "store")
     q = _optional(q, "q")
+    offset = max(0, int(offset))
     method = (method or "").strip().lower()
     if method not in ("", "emb", "scr", "cap"):
         raise QueryValidationError("method must be one of emb, scr, cap")
@@ -389,7 +391,7 @@ def list_styles(
          )
          {' '.join(active_clauses)}
          ORDER BY COALESCE(s.product_style, c.product_style)
-         LIMIT %s
+         OFFSET %s LIMIT %s
         """,
         (
             store,
@@ -398,6 +400,7 @@ def list_styles(
             store,
             _like(q),
             _like(q),
+            offset,
             STYLE_SEARCH_RESULT_LIMIT + 1,
         ),
         STYLE_SEARCH_RESULT_LIMIT,
@@ -405,6 +408,8 @@ def list_styles(
     return {
         "store": store,
         "styles": rows,
+        "offset": offset,
+        "next_offset": (offset + STYLE_SEARCH_RESULT_LIMIT) if truncated else None,
         "truncated": truncated or byte_truncated,
         "truncation": {"rows": truncated, "bytes": byte_truncated},
     }
@@ -2144,10 +2149,42 @@ def list_design_usage(cursor, *, store: str, design_id: str,
          "limit": DESIGN_USAGE_RESULT_LIMIT + 1},
         DESIGN_USAGE_RESULT_LIMIT,
     )
+    # FDM4's decoration method for this design (embroidery vs screen print), so
+    # the caller can tell e.g. a PRINT design from an embroidery one without a
+    # second lookup. Keyed by design_id, so it is one answer for the whole set.
+    cursor.execute(
+        """
+        SELECT bool_or(m ~ 'em') AS is_emb,
+               bool_or(m ~ 'print|screen|scr|sp') AS is_scr,
+               array_to_string(array_agg(DISTINCT btrim(m)) FILTER (WHERE btrim(m) <> ''), ', ') AS raw
+          FROM (
+              SELECT lower(COALESCE(method_id::text, '')) AS m
+                FROM fdm4.design_pool WHERE btrim(design_id::text) = %(design)s
+              UNION ALL
+              SELECT lower(COALESCE(methods_used::text, ''))
+                FROM fdm4.dec_design WHERE btrim(design_id::text) = %(design)s
+          ) src
+        """,
+        {"design": design},
+    )
+    mrow = cursor.fetchone() or {}
+    is_emb, is_scr = bool(mrow.get("is_emb")), bool(mrow.get("is_scr"))
+    if is_scr and not is_emb:
+        method = "screen print"
+    elif is_emb and not is_scr:
+        method = "embroidery"
+    elif is_emb and is_scr:
+        method = "mixed (embroidery + screen print)"
+    else:
+        method = "unknown"
     return {
         "store": store,
         "design_id": design,
         "color_scheme_id": scheme,
+        "method": method,
+        "is_embroidery": is_emb,
+        "is_screen_print": is_scr,
+        "fdm4_method_raw": mrow.get("raw") or "",
         "styles": rows,
         "style_codes": [str(r["product_style"]) for r in rows],
         "total_rows": sum(int(r["rows"]) for r in rows),
@@ -3246,7 +3283,11 @@ def explain_product(cursor, *, store, style):
         findings.append(f"The {'store' if not block['style_code'] else 'style'} has a {block['scope']} sync freeze since {block['updated_at']}; warehouse changes in that scope will not reach the site.")
     if mix.get("mode")=="list" and not mix.get("in_mix"):
         findings.append("The style is excluded from the store's custom product list.")
-    sections = {"state":state,"prices":prices,"stock_rules":stock,"blocks":blocks,"mix":mix}
+    sync = _ops_section(cursor,lambda:get_sync_status(cursor,store=store))
+    for op in sync.get("latest",[]) if isinstance(sync,dict) else []:
+        if op.get("op")=="pull" and op.get("status")!="success":
+            findings.append(f"The last FDM4 warehouse pull is {op.get('status')}; the site may not reflect the newest data yet.")
+    sections = {"state":state,"prices":prices,"stock_rules":stock,"blocks":blocks,"mix":mix,"sync":sync}
     for name,section in {**sections,"wordpress":wordpress}.items():
         if section.get("available") is False:
             findings.append(f"{name.replace('_',' ').capitalize()}: {section.get('reason','unavailable')}.")
@@ -3256,3 +3297,302 @@ def explain_product(cursor, *, store, style):
     stock_mode = modes[0] if modes else ("automatic" if stock.get("available") is not False else None)
     return {"store":store,"style":style,"intent":{"visible":visible,"stock_mode":stock_mode,**sections},
             "wordpress":wordpress,"findings":findings[:200]}
+
+
+# ---------------------------------------------------------------------------
+# Cross-store reads (one design or one method combination across many stores)
+# and price provenance. Added 2026-09 so the agent can diagnose network-wide
+# and explain where a Woo price comes from.
+# ---------------------------------------------------------------------------
+
+CROSS_STORE_RESULT_LIMIT = 1_000
+
+
+def _num(value):
+    """Coerce a DB numeric/text value to float, or None when absent/blank."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+# FDM4 decoration method per design id (embroidery vs screen print). Shared by
+# the method-aware reads; keyed by design_id, so one answer per design.
+_DESIGN_METHOD_CTE = """
+    design_method AS (
+        SELECT design_id,
+               bool_or(m ~ 'em') AS is_emb,
+               bool_or(m ~ 'print|screen|scr|sp') AS is_scr
+          FROM (
+              SELECT btrim(design_id::text) AS design_id, lower(COALESCE(method_id::text, '')) AS m
+                FROM fdm4.design_pool
+              UNION ALL
+              SELECT btrim(design_id::text), lower(COALESCE(methods_used::text, ''))
+                FROM fdm4.dec_design
+          ) src
+         WHERE design_id <> ''
+         GROUP BY design_id
+    )
+"""
+
+
+def _store_list(stores, field: str = "stores"):
+    """Clean an optional list of store codes; None/empty means every store."""
+    if stores in (None, "", []):
+        return None
+    if isinstance(stores, str):
+        stores = [s for s in stores.replace(",", " ").split() if s]
+    cleaned = [_clean(s, field) for s in stores]
+    if len(cleaned) > 200:
+        raise QueryValidationError(f"{field}: at most 200 stores")
+    return cleaned
+
+
+def _design_method_label(cursor, design: str) -> dict:
+    cursor.execute(
+        """
+        SELECT bool_or(m ~ 'em') AS is_emb,
+               bool_or(m ~ 'print|screen|scr|sp') AS is_scr
+          FROM (
+              SELECT lower(COALESCE(method_id::text, '')) AS m FROM fdm4.design_pool WHERE btrim(design_id::text)=%(d)s
+              UNION ALL
+              SELECT lower(COALESCE(methods_used::text, '')) FROM fdm4.dec_design WHERE btrim(design_id::text)=%(d)s
+          ) s
+        """,
+        {"d": design},
+    )
+    r = cursor.fetchone() or {}
+    is_emb, is_scr = bool(r.get("is_emb")), bool(r.get("is_scr"))
+    if is_scr and not is_emb:
+        method = "screen print"
+    elif is_emb and not is_scr:
+        method = "embroidery"
+    elif is_emb and is_scr:
+        method = "mixed (embroidery + screen print)"
+    else:
+        method = "unknown"
+    return {"method": method, "is_embroidery": is_emb, "is_screen_print": is_scr}
+
+
+def find_design_usage(cursor, *, design_id: str, stores=None,
+                      color_scheme_id: Optional[str] = None, offset: int = 0) -> dict:
+    """Where one design is used across every store (or a named set): per store
+    the active row count, style count and a sample of styles, plus the design's
+    FDM4 decoration method. Cross-store companion to list_design_usage; page
+    with offset when `truncated` is true."""
+    design = _clean(design_id, "design_id")
+    scheme = _clean(color_scheme_id, "color_scheme_id").upper() if color_scheme_id not in (None, "") else None
+    store_filter = _store_list(stores)
+    offset = max(0, int(offset))
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        SELECT a.fdm4_store,
+               count(*) FILTER (WHERE a.active)::integer AS active_rows,
+               count(DISTINCT a.product_style) FILTER (WHERE a.active)::integer AS styles,
+               array_to_string((array_agg(DISTINCT a.product_style ORDER BY a.product_style)
+                   FILTER (WHERE a.active))[1:25], ', ') AS sample_styles
+          FROM logo.assignment a
+         WHERE btrim(a.design_id::text) = %(design)s
+           AND (%(scheme)s IS NULL OR upper(btrim(a.color_scheme_id)) = %(scheme)s)
+           AND (%(stores)s IS NULL OR a.fdm4_store = ANY(%(stores)s))
+         GROUP BY a.fdm4_store
+        HAVING count(*) FILTER (WHERE a.active) > 0
+         ORDER BY active_rows DESC, a.fdm4_store
+         OFFSET %(offset)s LIMIT %(limit)s
+        """,
+        {"design": design, "scheme": scheme, "stores": store_filter,
+         "offset": offset, "limit": CROSS_STORE_RESULT_LIMIT + 1},
+        CROSS_STORE_RESULT_LIMIT,
+    )
+    return {
+        "design_id": design,
+        "color_scheme_id": scheme,
+        "scope": "all stores" if store_filter is None else f"{len(store_filter)} stores",
+        **_design_method_label(cursor, design),
+        "stores": rows,
+        "store_count": len(rows),
+        "total_active_rows": sum(int(r["active_rows"]) for r in rows),
+        "offset": offset,
+        "next_offset": (offset + CROSS_STORE_RESULT_LIMIT) if truncated else None,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }
+
+
+def styles_by_method(cursor, *, methods, stores=None, offset: int = 0) -> dict:
+    """Styles whose current logos include ALL of the named decoration methods,
+    across every store (or a named set). methods is any of emb, scr, cap — e.g.
+    ['emb','scr'] returns styles that have both embroidery and screen print.
+    Returns one row per (store, style); page with offset when truncated."""
+    wanted = methods
+    if isinstance(wanted, str):
+        wanted = [m for m in wanted.replace(",", " ").split() if m]
+    wanted = [str(m).strip().lower() for m in (wanted or [])]
+    if not wanted or any(m not in ("emb", "scr", "cap") for m in wanted):
+        raise QueryValidationError("methods must be a non-empty list of emb, scr, cap")
+    need_emb, need_scr, need_cap = ("emb" in wanted), ("scr" in wanted), ("cap" in wanted)
+    store_filter = _store_list(stores)
+    offset = max(0, int(offset))
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        WITH {_DESIGN_METHOD_CTE},
+        per_style AS (
+            SELECT a.fdm4_store, a.product_style,
+                   bool_or(dm.is_emb) AS has_emb,
+                   bool_or(dm.is_scr) AS has_scr,
+                   bool_or(a.location ~* '(cap|hat|beanie|knit|toque)') AS has_cap,
+                   count(*)::integer AS logo_rows
+              FROM logo.assignment a
+              LEFT JOIN design_method dm ON dm.design_id = btrim(a.design_id::text)
+             WHERE a.active AND (%(stores)s IS NULL OR a.fdm4_store = ANY(%(stores)s))
+             GROUP BY a.fdm4_store, a.product_style
+        )
+        SELECT fdm4_store, product_style, has_emb, has_scr, has_cap, logo_rows
+          FROM per_style
+         WHERE (NOT %(need_emb)s OR has_emb)
+           AND (NOT %(need_scr)s OR has_scr)
+           AND (NOT %(need_cap)s OR has_cap)
+         ORDER BY fdm4_store, product_style
+         OFFSET %(offset)s LIMIT %(limit)s
+        """,
+        {"stores": store_filter, "need_emb": need_emb, "need_scr": need_scr,
+         "need_cap": need_cap, "offset": offset, "limit": CROSS_STORE_RESULT_LIMIT + 1},
+        CROSS_STORE_RESULT_LIMIT,
+    )
+    return {
+        "methods": wanted,
+        "scope": "all stores" if store_filter is None else f"{len(store_filter)} stores",
+        "results": rows,
+        "returned": len(rows),
+        "store_count": len({r["fdm4_store"] for r in rows}),
+        "offset": offset,
+        "next_offset": (offset + CROSS_STORE_RESULT_LIMIT) if truncated else None,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }
+
+
+def explain_price(cursor, *, store: str, style: str) -> dict:
+    """Why each variation of a style is priced the way it is on one store:
+    the resolved Woo price and where it comes from — the store catalog's custom
+    price (product or per-color), the FDM4 price level (base/msrp), or a fallback
+    — and whether a custom catalog price is OVERRIDING the FDM4 level. Also lists
+    any active our-side price rule on the style (the allowed way to force a
+    corrected price while FDM4/B3B stay read-only)."""
+    store = _clean(store, "store")
+    style = _clean(style, "style")
+
+    # storeData custom prices (product level + per garment color)
+    cursor.execute(
+        """
+        SELECT (detail_value::jsonb #>> '{product,0,customPrice}') AS product_custom_price
+          FROM fdm4.catalog_product_detail
+         WHERE detail_type='storeData' AND site_id=%(store)s AND product_id=%(style)s
+           AND pg_input_is_valid(detail_value, 'jsonb')
+         LIMIT 1
+        """,
+        {"store": store, "style": style},
+    )
+    prow = cursor.fetchone() or {}
+    prod_custom = _num(prow.get("product_custom_price"))
+    cursor.execute(
+        """
+        SELECT col ->> 'colorCode' AS color_code, NULLIF(col ->> 'customPrice','') AS color_custom
+          FROM fdm4.catalog_product_detail d
+          CROSS JOIN LATERAL jsonb_array_elements(d.detail_value::jsonb #> '{product,0,color}') AS col
+         WHERE d.detail_type='storeData' AND d.site_id=%(store)s AND d.product_id=%(style)s
+           AND pg_input_is_valid(d.detail_value, 'jsonb')
+        """,
+        {"store": store, "style": style},
+    )
+    color_custom = {str(r["color_code"]): _num(r["color_custom"]) for r in cursor.fetchall()}
+
+    # Our-side per-color price overrides (woo.color_price_override) win over
+    # everything and apply on the next hourly sync; surface them here so the
+    # override shows the moment it is set, before store_product_state refreshes.
+    cursor.execute(
+        """
+        SELECT color_code, price FROM woo.color_price_override
+         WHERE fdm4_store=%(store)s AND upper(btrim(style_code))=upper(btrim(%(style)s)) AND active
+        """,
+        {"store": store, "style": style},
+    )
+    overrides = {str(r["color_code"]): _num(r["price"]) for r in cursor.fetchall()}
+
+    rows, truncated, byte_truncated = _bounded_query(
+        cursor,
+        f"""
+        SELECT color_code, color, size_code, sku,
+               price::numeric AS price, base_price::numeric AS base_price,
+               (price_levels ->> 'base')::numeric AS fdm4_base,
+               (price_levels ->> 'msrp')::numeric AS fdm4_msrp
+          FROM woo.store_product_state
+         WHERE fdm4_store=%(store)s AND style_code=%(style)s AND kind='variation'
+         ORDER BY color_code, size_code
+         LIMIT %(limit)s
+        """,
+        {"store": store, "style": style, "limit": STYLE_COLOR_RESULT_LIMIT + 1},
+        STYLE_COLOR_RESULT_LIMIT,
+    )
+    variations = []
+    for r in rows:
+        cc = str(r["color_code"] or "")
+        col_custom = color_custom.get(cc)
+        our_override = overrides.get(cc)
+        price = _num(r["price"])
+        fdm4_base = _num(r["fdm4_base"])
+        override_pending = our_override is not None and (price is None or abs(price - our_override) > 0.001)
+        if our_override is not None:
+            source = "our_override"
+        elif col_custom and col_custom > 0:
+            source = "custom_color"
+        elif prod_custom and prod_custom > 0:
+            source = "custom_product"
+        elif fdm4_base is not None:
+            source = "fdm4_level"
+        else:
+            source = "fallback"
+        overrides_fdm4 = bool(
+            source in ("custom_color", "custom_product")
+            and fdm4_base is not None and price is not None
+            and abs(price - fdm4_base) > 0.001
+        )
+        variations.append({
+            "color_code": cc, "color": r["color"], "size_code": r["size_code"], "sku": r["sku"],
+            "resolved_price": price, "base_price": _num(r["base_price"]),
+            "fdm4_base": fdm4_base, "fdm4_msrp": _num(r["fdm4_msrp"]),
+            "color_custom_price": col_custom, "our_override_price": our_override,
+            "override_pending_next_sync": override_pending,
+            "price_source": source, "overrides_fdm4_level": overrides_fdm4,
+        })
+
+    cursor.execute(
+        """
+        SELECT rule_id, name, active, effect_type, effect_value, price_level_key
+          FROM woo.price_rule
+         WHERE active AND (%(store)s = ANY(stores) OR stores = '{}' OR stores IS NULL)
+           AND (%(style)s = ANY(styles) OR styles = '{}' OR styles IS NULL)
+         LIMIT 20
+        """,
+        {"store": store, "style": style},
+    )
+    rules = [dict(r) for r in cursor.fetchall()]
+
+    return {
+        "store": store, "style": style,
+        "product_custom_price": prod_custom,
+        "override_active": bool(prod_custom and prod_custom > 0) or any(v["overrides_fdm4_level"] for v in variations),
+        "override_note": (
+            "A store custom catalog price is overriding the FDM4 price level for one or more colors. "
+            "FDM4/B3B is read-only here; to force a corrected price on our side, create a price rule "
+            "(save_price_rule) — note price rules target a whole style, not one color."
+            if any(v["overrides_fdm4_level"] for v in variations) else None
+        ),
+        "variations": variations,
+        "active_price_rules": rules,
+        "truncated": truncated or byte_truncated,
+        "truncation": {"rows": truncated, "bytes": byte_truncated},
+    }

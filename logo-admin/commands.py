@@ -147,6 +147,35 @@ class ReplaceDesignCommand(Command):
     styles: List[str] = Field(min_length=1, max_length=50, description="Styles to change; get them from list_design_usage. " + STYLE_LIST_DESC)
 
 
+class RemoveDesignCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    design_id: str = Field(min_length=1, max_length=100, description="Design id to take off the styles (find the styles with list_design_usage).")
+    color_scheme_id: Optional[str] = Field(default=None, max_length=100, description="Only rows with this color scheme are removed; null = every scheme of the design.")
+    logo_code: Optional[str] = Field(default=None, max_length=100, description="Only rows with this logo code are removed; null = every code of the design. Use it when a design carries more than one code (list_design_usage shows them) and you want just one gone.")
+    location: Optional[str] = Field(default=None, max_length=200, description="Only rows at this placement are removed; null = every placement. Match the spelling shown in list_design_usage / get_style.")
+    styles: List[str] = Field(min_length=1, max_length=50, description="Styles to remove the design from. " + STYLE_LIST_DESC)
+    hard: bool = Field(default=False, description="False (default) = hide the rows, reversible. True = permanently delete them. Prefer hiding.")
+
+
+class ColorPrice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    color_code: str = Field(min_length=1, max_length=100, description="FDM4 garment color code, e.g. 1141 (get_style or explain_price lists them).")
+    price: Decimal = Field(description="Forced price for this color: >= 0 (0 = free) and <= 10000.")
+
+
+class SetColorPricesCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    style: str = Field(min_length=1, max_length=100, description="Product style code whose garment-color prices are forced.")
+    prices: List[ColorPrice] = Field(min_length=1, max_length=100, description="The garment colors to force and their prices, e.g. [{\"color_code\":\"1141\",\"price\":165},{\"color_code\":\"1237\",\"price\":165}]. This forces the price on our side and survives the hourly sync; FDM4/B3B stay unchanged. It replaces the catalog price, so a live price rule still applies on top.")
+    note: str = Field(default="", max_length=1000, description="Optional reason, shown on the review card.")
+
+
+class ClearColorPricesCommand(Command):
+    store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
+    style: str = Field(min_length=1, max_length=100, description="Product style code whose color price overrides are removed.")
+    color_codes: List[str] = Field(default_factory=list, max_length=100, description="FDM4 garment color codes to stop overriding (revert to the FDM4/B3B price). Empty = remove every color override on this style.")
+
+
 class ReorderLogoRowsCommand(Command):
     store: str = Field(min_length=1, max_length=100, description=STORE_DESC)
     style: str = Field(min_length=1, max_length=100, description="Product style code.")
@@ -572,6 +601,9 @@ COMMAND_MODELS: Dict[str, Type[Command]] = {
     "copy_style_to_many": CopyStyleToManyCommand,
     "paste_logo_set": PasteLogoSetCommand,
     "replace_design": ReplaceDesignCommand,
+    "remove_design": RemoveDesignCommand,
+    "set_color_prices": SetColorPricesCommand,
+    "clear_color_prices": ClearColorPricesCommand,
     "reorder_logo_rows": ReorderLogoRowsCommand,
     "set_styles_active": SetStylesActiveCommand,
     "set_logo_name": SetLogoNameCommand,

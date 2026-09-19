@@ -38,6 +38,10 @@ class ListStylesCommand(ReadCommand):
         default="",
         description="Optional decoration-method filter on the style's current logos: 'emb' (embroidery), 'scr' (screen print), or 'cap' (a hat/cap placement). Empty = no method filter.",
     )
+    offset: int = Field(
+        default=0, ge=0,
+        description="Skip this many styles before the page (for paging past the cap). Pass the previous result's next_offset to get the next page.",
+    )
 
 
 class GetStyleCommand(ReadCommand):
@@ -163,6 +167,24 @@ class ListDesignUsageCommand(ReadCommand):
     store: str = Field(min_length=1, max_length=100, description=STORE)
     design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id to look for on the store's logo rows.")
     color_scheme_id: Optional[str] = Field(default=None, max_length=100, description="Optional color scheme to narrow to (e.g. BK); null = every scheme.")
+
+
+class FindDesignUsageCommand(ReadCommand):
+    design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id to look for across stores.")
+    stores: Optional[List[str]] = Field(default=None, max_length=200, description="Optional list of store codes to limit to; null/empty = every store.")
+    color_scheme_id: Optional[str] = Field(default=None, max_length=100, description="Optional color scheme to narrow to (e.g. BK); null = every scheme.")
+    offset: int = Field(default=0, ge=0, description="Skip this many stores (for paging); pass the previous result's next_offset.")
+
+
+class StylesByMethodCommand(ReadCommand):
+    methods: List[str] = Field(min_length=1, max_length=3, description="Decoration methods a style must ALL currently have: any of 'emb' (embroidery), 'scr' (screen print), 'cap' (hat/cap). e.g. ['emb','scr'] = both embroidery and screen print.")
+    stores: Optional[List[str]] = Field(default=None, max_length=200, description="Optional list of store codes to limit to; null/empty = every store.")
+    offset: int = Field(default=0, ge=0, description="Skip this many (store, style) rows (for paging); pass the previous result's next_offset.")
+
+
+class ExplainPriceCommand(ReadCommand):
+    store: str = Field(min_length=1, max_length=100, description=STORE)
+    style: str = Field(min_length=1, max_length=100, description=STYLE)
 
 
 class GetProductLinkCommand(ReadCommand):

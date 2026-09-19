@@ -59,6 +59,9 @@ from commands import (
     RemoveSyncBlockCommand,
     ReorderLogoRowsCommand,
     ReplaceDesignCommand,
+    RemoveDesignCommand,
+    SetColorPricesCommand,
+    ClearColorPricesCommand,
     SaveAssignmentCommand,
     SetBrandStockRuleCommand,
     SetColorClassCommand,
@@ -121,6 +124,9 @@ from read_commands import (
     GetStyleCommand,
     ListColorsCommand,
     ListDesignUsageCommand,
+    FindDesignUsageCommand,
+    StylesByMethodCommand,
+    ExplainPriceCommand,
     ListLogoNamesCommand,
     ListPriceRulesCommand,
     ListPricingTiersCommand,
@@ -207,6 +213,9 @@ APPROVED_AGENT_WRITE_NAMES = frozenset({
     "copy_style_to_many",
     "paste_logo_set",
     "replace_design",
+    "remove_design",
+    "set_color_prices",
+    "clear_color_prices",
     "reorder_logo_rows",
     "set_styles_active",
     "set_logo_name",
@@ -273,6 +282,9 @@ APPROVED_AGENT_READ_NAMES = frozenset({
     "list_sync_blocks",
     "get_product_mix",
     "list_design_usage",
+    "find_design_usage",
+    "styles_by_method",
+    "explain_price",
     "get_product_link",
     "get_sync_status",
     "pim_lookup",
@@ -407,6 +419,21 @@ def _get_product_mix(cursor, command, settings):
 def _list_design_usage(cursor, command, settings):
     del settings
     return queries.list_design_usage(cursor, **_model_arguments(command))
+
+
+def _find_design_usage(cursor, command, settings):
+    del settings
+    return queries.find_design_usage(cursor, **_model_arguments(command))
+
+
+def _styles_by_method(cursor, command, settings):
+    del settings
+    return queries.styles_by_method(cursor, **_model_arguments(command))
+
+
+def _explain_price(cursor, command, settings):
+    del settings
+    return queries.explain_price(cursor, **_model_arguments(command))
 
 
 def _get_product_link(cursor, command, settings):
@@ -623,6 +650,9 @@ CANONICAL_AGENT_READ_CONTRACTS = {
     "list_sync_blocks": (ListSyncBlocksCommand, _list_sync_blocks),
     "get_product_mix": (GetProductMixCommand, _get_product_mix),
     "list_design_usage": (ListDesignUsageCommand, _list_design_usage),
+    "find_design_usage": (FindDesignUsageCommand, _find_design_usage),
+    "styles_by_method": (StylesByMethodCommand, _styles_by_method),
+    "explain_price": (ExplainPriceCommand, _explain_price),
     "get_product_link": (GetProductLinkCommand, _get_product_link),
     "get_sync_status": (GetSyncStatusCommand, _get_sync_status),
     "pim_lookup": (PimLookupCommand, _pim_lookup),
@@ -747,6 +777,21 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
             mutations.replace_design,
             "assignment_style",
         ),
+        "remove_design": _canonical_write_contract(
+            RemoveDesignCommand,
+            mutations.remove_design,
+            "assignment_style",
+        ),
+        "set_color_prices": _canonical_write_contract(
+            SetColorPricesCommand,
+            mutations.set_color_prices,
+            "color_price_override_row",
+        ),
+        "clear_color_prices": _canonical_write_contract(
+            ClearColorPricesCommand,
+            mutations.clear_color_prices,
+            "color_price_override_row",
+        ),
         "reorder_logo_rows": _canonical_write_contract(
             ReorderLogoRowsCommand,
             mutations.reorder_logo_rows,
@@ -867,7 +912,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     _read_spec(
         "list_styles",
-        "Find product styles in one store (max 100): style code, product name, how many logos are configured, the design ids of its current logos, and which decoration methods those logos use (has_emb = embroidery, has_scr = screen print, has_cap = a hat/cap placement). Pass method='emb'|'scr'|'cap' to return only styles that currently carry a logo of that method. Use it to get a style code from a product name, or to find every embroidered / screen-printed / hat style in a store.",
+        "Find product styles in one store (up to 500; page with offset): style code, product name, how many logos are configured, the design ids of its current logos, and which decoration methods those logos use (has_emb = embroidery, has_scr = screen print, has_cap = a hat/cap placement). Pass method='emb'|'scr'|'cap' to return only styles that currently carry a logo of that method. Use it to get a style code from a product name, or to find every embroidered / screen-printed / hat style in a store.",
         ListStylesCommand,
         _list_styles,
     ),
@@ -975,9 +1020,27 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     _read_spec(
         "list_design_usage",
-        "Which styles of a store carry a given design (optionally one color scheme): per style the row count, active rows, colors, schemes and logo codes, plus style_codes ready to pass to replace_design. Use it before replacing a design.",
+        "Which styles of a store carry a given design (optionally one color scheme): per style the row count, active rows, colors, schemes and logo codes, plus style_codes ready to pass to replace_design or remove_design. Also returns the design's FDM4 decoration method (screen print vs embroidery) so you can tell them apart without another lookup. Use it before replacing or removing a design.",
         ListDesignUsageCommand,
         _list_design_usage,
+    ),
+    _read_spec(
+        "find_design_usage",
+        "Where one design is used ACROSS STORES (every store, or a list you pass in stores): per store the active row count, style count and a sample of style codes, plus the design's FDM4 method (screen print vs embroidery). The cross-store version of list_design_usage. Page with offset when truncated.",
+        FindDesignUsageCommand,
+        _find_design_usage,
+    ),
+    _read_spec(
+        "styles_by_method",
+        "Styles whose current logos include ALL of the named decoration methods, ACROSS STORES (every store, or a list in stores). methods is any of emb/scr/cap; e.g. ['emb','scr'] returns every style that has both embroidery and screen print, one row per (store, style). Use this for 'across all stores' method questions. Page with offset when truncated.",
+        StylesByMethodCommand,
+        _styles_by_method,
+    ),
+    _read_spec(
+        "explain_price",
+        "Why each variation of a style is priced the way it is on one store: the resolved Woo price and its source (the store catalog custom price product/per-color, the FDM4 price level base/msrp, or a fallback), and whether a custom catalog price is OVERRIDING the FDM4 level. Also lists any active our-side price rule on the style. Use it for 'why is this $X / should be $Y' pricing questions; when a custom price is overriding, the fix on our side is a price rule (save_price_rule), since FDM4/B3B are read-only.",
+        ExplainPriceCommand,
+        _explain_price,
     ),
     _read_spec(
         "get_product_link",
@@ -1116,6 +1179,24 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Swap every logo row that uses one design (optionally one color scheme) for another design + scheme on the named styles (max 50 per call; find them with list_design_usage). Only design, logo code, scheme and image change; placement, cost, order, names and active flags stay. Rows that would be invalid are skipped and reported. Stages a proposal; the person confirms.",
         ReplaceDesignCommand,
         mutations.replace_design,
+    ),
+    _write_spec(
+        "remove_design",
+        "Stage taking one design off up to 50 styles of a store (hiding it, reversible; hard=true permanently deletes). Removing a design that is the primary of a choice removes that whole choice; a companion copy is removed on its own. Use it to strip a screen-print or embroidery design off many products at once. Optional color_scheme_id, logo_code and location each narrow which of the design's rows go — pass logo_code when a design carries more than one code and only one should be removed. Find the styles and codes with list_design_usage. The person confirms the review card before anything changes.",
+        RemoveDesignCommand,
+        mutations.remove_design,
+    ),
+    _write_spec(
+        "set_color_prices",
+        "Stage forcing a price on specific garment colors of a style at a store, on OUR side. Use it when the FDM4/B3B catalog price is wrong and read-only — e.g. a store product custom price is overriding premium colors (diagnose with explain_price). prices maps color_code to the forced price; each must be >= 0 (0 = free) and <= 10000. It replaces the catalog price and survives the hourly sync, and a live price rule still applies on top; below-cost or above-list prices are flagged for the reviewer, not blocked. Find color codes with get_style or explain_price. The person confirms the review card; prices reach the site on the next hourly sync.",
+        SetColorPricesCommand,
+        mutations.set_color_prices,
+    ),
+    _write_spec(
+        "clear_color_prices",
+        "Stage removing per-color price overrides on a style (revert those colors to the FDM4/B3B price). color_codes lists which to clear; empty clears every color override on the style. The person confirms the review card; prices revert on the next hourly sync.",
+        ClearColorPricesCommand,
+        mutations.clear_color_prices,
     ),
     _write_spec(
         "reorder_logo_rows",
