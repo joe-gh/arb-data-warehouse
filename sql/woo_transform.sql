@@ -767,6 +767,25 @@ BEGIN
           AND upper(btrim(b.sku)) = e.sku;
     END IF;
 
+    -- Per-colour price override (our side): woo.color_price_override forces a
+    -- price on specific garment colours of a style at a store when the FDM4/
+    -- B3B catalog price is wrong. It replaces the catalog price HERE, before
+    -- base_price and price rules, so base_price carries the override and any
+    -- live rule still stacks on top. Applied to variations only; the price and
+    -- both price-bearing payloads are updated together so the change flows
+    -- through stockprice_hash / content_hash and reaches the site. No-op when
+    -- the table is empty.
+    UPDATE _base b
+       SET price              = o.price,
+           payload            = jsonb_set(b.payload,            '{price}', to_jsonb(o.price::text)),
+           stockprice_payload = jsonb_set(b.stockprice_payload, '{price}', to_jsonb(o.price::text))
+      FROM woo.color_price_override o
+     WHERE o.active
+       AND b.kind = 'variation'
+       AND o.fdm4_store = b.fdm4_store
+       AND upper(btrim(o.style_code)) = upper(btrim(b.style_code))
+       AND o.color_code = b.color_code;
+
     -- Price rules (woo.price_rule via woo.eval_price_rules - the SAME function
     -- the app preview uses): applied AFTER the tier fallback and BEFORE hashing,
     -- so rule prices flow through stockprice_hash / the engine fast path

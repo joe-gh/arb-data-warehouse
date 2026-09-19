@@ -177,6 +177,16 @@ RESTORE_COLUMN_CONTRACTS = {
         "updated_by": ("text", False, "''"),
         "updated_at": ("timestamp with time zone", False, "now()"),
     },
+    "woo.color_price_override": {
+        "fdm4_store": ("text", False, None),
+        "style_code": ("text", False, None),
+        "color_code": ("text", False, None),
+        "price": ("numeric(10,2)", False, None),
+        "note": ("text", False, "''"),
+        "active": ("boolean", False, "true"),
+        "updated_by": ("text", False, "''"),
+        "updated_at": ("timestamp with time zone", False, "now()"),
+    },
     "woo.brand_stock_rule": {
         "mill_code": ("text", False, None),
         "brand_name": ("text", False, "''"),
@@ -476,6 +486,7 @@ EXPECTED_PRIMARY_KEYS = {
     ),
     "logo.color_class": ("color_class_pkey", ("color_code",)),
     "woo.stock_override": ("stock_override_pkey", ("style_code",)),
+    "woo.color_price_override": ("color_price_override_pkey", ("fdm4_store", "style_code", "color_code")),
     "woo.brand_stock_rule": ("brand_stock_rule_pkey", ("mill_code",)),
     "woo.sync_exclusion": (
         "sync_exclusion_pkey",
@@ -918,6 +929,7 @@ TABLE_POLICIES = {
     "woo.app_flag": CRUD_ALLOWED,
     "woo.brand_stock_rule": CRUD_ALLOWED,
     "woo.stock_override": CRUD_ALLOWED,
+    "woo.color_price_override": CRUD_ALLOWED,
     "woo.virtual_catalog_store": CRUD_ALLOWED,
     # Category editor (catmgr): snapshots are app-owned; audit is append-only.
     "catmgr.snapshot": CRUD_ALLOWED,

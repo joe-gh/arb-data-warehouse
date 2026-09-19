@@ -174,6 +174,21 @@ SIMPLE_ROW_SCOPES = {
             "updated_by": "text", "updated_at": "ts",
         },
     },
+    # The scope is one store's style; rows are that style's overridden colours.
+    "color_price_override_row": {
+        "table": "woo.color_price_override",
+        "key": ("fdm4_store", "style_code"),
+        "pk": ("fdm4_store", "style_code", "color_code"),
+        "columns": (
+            "fdm4_store", "style_code", "color_code", "price", "note",
+            "active", "updated_by", "updated_at",
+        ),
+        "types": {
+            "fdm4_store": "text", "style_code": "text", "color_code": "text",
+            "price": "num", "note": "text", "active": "bool",
+            "updated_by": "text", "updated_at": "ts",
+        },
+    },
     "brand_stock_rule_row": {
         "table": "woo.brand_stock_rule",
         "key": ("mill_code",),
