@@ -2114,7 +2114,7 @@ DESIGN_USAGE_RESULT_LIMIT = 500
 
 
 def list_design_usage(cursor, *, store: str, design_id: str,
-                      color_scheme_id: Optional[str] = None) -> dict:
+                      color_scheme_id: Optional[str] = None, offset: int = 0) -> dict:
     """Styles in one store whose logo rows carry a design (optionally one
     color scheme): row counts, colors and schemes per style. Feeds
     replace_design, which needs the style list up front."""
@@ -2124,6 +2124,7 @@ def list_design_usage(cursor, *, store: str, design_id: str,
         _clean(color_scheme_id, "color_scheme_id").upper()
         if color_scheme_id not in (None, "") else None
     )
+    offset = max(0, int(offset))
     rows, truncated, byte_truncated = _bounded_query(
         cursor,
         f"""
@@ -2143,9 +2144,9 @@ def list_design_usage(cursor, *, store: str, design_id: str,
            AND (%(scheme)s IS NULL OR upper(btrim(a.color_scheme_id)) = %(scheme)s)
          GROUP BY a.product_style
          ORDER BY a.product_style
-         LIMIT %(limit)s
+         OFFSET %(offset)s LIMIT %(limit)s
         """,
-        {"store": store, "design": design, "scheme": scheme,
+        {"store": store, "design": design, "scheme": scheme, "offset": offset,
          "limit": DESIGN_USAGE_RESULT_LIMIT + 1},
         DESIGN_USAGE_RESULT_LIMIT,
     )
@@ -2188,6 +2189,8 @@ def list_design_usage(cursor, *, store: str, design_id: str,
         "styles": rows,
         "style_codes": [str(r["product_style"]) for r in rows],
         "total_rows": sum(int(r["rows"]) for r in rows),
+        "offset": offset,
+        "next_offset": (offset + DESIGN_USAGE_RESULT_LIMIT) if truncated else None,
         "truncated": truncated or byte_truncated,
         "truncation": {"rows": truncated, "bytes": byte_truncated},
     }
@@ -2324,12 +2327,13 @@ def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_
     if rule.get("excl_categories"):
         where.append("NOT (s.category = ANY(%(xcats)s))")
         params["xcats"] = rule["excl_categories"]
-    cursor.execute("SET LOCAL statement_timeout = '120s'")
+    cursor.execute("SET LOCAL statement_timeout = '75s'")
     cursor.execute(
         f"""
         WITH cand AS (
             SELECT s.fdm4_store, s.style_code, s.sku, s.color, s.size,
                    COALESCE(s.base_price, s.price) AS price,
+                   s.price AS live_price,
                    s.price_levels, s.brand, s.category, s.def_cost,
                    (s.price_levels ->> 'msrp')::numeric AS msrp
               FROM woo.store_product_state s
@@ -2349,10 +2353,10 @@ def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_
                count(*)                                                        AS affected,
                count(DISTINCT fdm4_store)                                      AS stores,
                count(*) FILTER (WHERE msrp IS NOT NULL AND final_price > msrp) AS above_msrp,
-               count(*) FILTER (WHERE final_price <> price)                    AS changed,
-               round(min(final_price - price), 4)                              AS min_delta,
-               round(max(final_price - price), 4)                              AS max_delta,
-               round(avg(final_price - price), 4)                              AS avg_delta
+               count(*) FILTER (WHERE final_price <> live_price)               AS changed,
+               round(min(final_price - live_price), 4)                         AS min_delta,
+               round(max(final_price - live_price), 4)                         AS max_delta,
+               round(avg(final_price - live_price), 4)                         AS avg_delta
           FROM hits
         """,
         params,
@@ -2363,6 +2367,7 @@ def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_
         WITH cand AS (
             SELECT s.fdm4_store, s.style_code, s.sku, s.color, s.size,
                    COALESCE(s.base_price, s.price) AS price,
+                   s.price AS live_price,
                    s.price_levels, s.brand, s.category, s.def_cost,
                    (s.price_levels ->> 'msrp')::numeric AS msrp
               FROM woo.store_product_state s
@@ -2371,7 +2376,7 @@ def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_
              LIMIT %(lim)s
         )
         SELECT c.fdm4_store, c.style_code, c.sku, c.color, c.size,
-               c.price AS before_price, rp.final_price AS after_price, c.msrp,
+               c.live_price AS before_price, c.price AS base_price, rp.final_price AS after_price, c.msrp,
                (c.msrp IS NOT NULL AND rp.final_price > c.msrp) AS over_msrp,
                rp.applied_rule_ids
           FROM cand c
@@ -2380,7 +2385,7 @@ def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_
               c.price, c.price_levels, c.def_cost,
               current_date, ARRAY[%(rid)s]::bigint[], NULL) rp
          WHERE rp.final_price IS NOT NULL AND %(rid)s = ANY(rp.applied_rule_ids)
-         ORDER BY abs(rp.final_price - c.price) DESC, c.fdm4_store, c.style_code, c.sku
+         ORDER BY abs(rp.final_price - c.live_price) DESC, c.fdm4_store, c.style_code, c.sku
          LIMIT %(sample)s
         """,
         {**params, "sample": sample_limit},
@@ -2391,6 +2396,7 @@ def price_rule_impact(cursor, rule_id: int, sample_limit: int = 200, *, include_
         WITH cand AS (
             SELECT s.fdm4_store, s.style_code,
                    COALESCE(s.base_price, s.price) AS price,
+                   s.price AS live_price,
                    s.price_levels, s.brand,
                    s.category, s.def_cost
               FROM woo.store_product_state s
@@ -2778,7 +2784,7 @@ def cat_plan_check(cursor, *, env: str, blog_ids: Optional[list[int]] = None, li
     limit = max(1, min(int(limit), 200))
     if blog_ids is not None and len(blog_ids) > 200:
         raise QueryValidationError("At most 200 stores per plan check")
-    cursor.execute("SET LOCAL statement_timeout = '120s'")
+    cursor.execute("SET LOCAL statement_timeout = '75s'")
     result = categories_planner.preview(cursor, env, blog_ids)
     bounded = _bounded_category_value(result, limit)
     bounded["truncated"] = bounded != result
@@ -2966,7 +2972,7 @@ def audit_store_prices(cursor, *, store, limit=50):
     limit = max(1, min(int(limit),200))
     if _catalog_for_store(cursor,store) is None:
         raise QueryNotFound("Store not found")
-    cursor.execute("SET LOCAL statement_timeout = '120s'")
+    cursor.execute("SET LOCAL statement_timeout = '75s'")
     cte = """WITH cand AS MATERIALIZED (
         SELECT s.sku, s.style_code, s.color, s.size, s.fdm4_store, s.brand, s.category,
                coalesce(s.base_price,s.price) AS before_price, s.price_levels, s.def_cost
@@ -3305,7 +3311,7 @@ def explain_product(cursor, *, store, style):
 # and explain where a Woo price comes from.
 # ---------------------------------------------------------------------------
 
-CROSS_STORE_RESULT_LIMIT = 1_000
+CROSS_STORE_RESULT_LIMIT = 400
 
 
 def _num(value):
@@ -3522,19 +3528,26 @@ def explain_price(cursor, *, store: str, style: str) -> dict:
     )
     overrides = {str(r["color_code"]): _num(r["price"]) for r in cursor.fetchall()}
 
+    catalog = _catalog_for_store(cursor, store)
     rows, truncated, byte_truncated = _bounded_query(
         cursor,
         f"""
-        SELECT color_code, color, size_code, sku,
+        SELECT color_code, color, size_code, sku, is_active,
                price::numeric AS price, base_price::numeric AS base_price,
                (price_levels ->> 'base')::numeric AS fdm4_base,
-               (price_levels ->> 'msrp')::numeric AS fdm4_msrp
+               (price_levels ->> 'msrp')::numeric AS fdm4_msrp,
+               (price_levels ->> 'wholesale')::numeric AS fdm4_wholesale,
+               (price_levels ->> 'employee')::numeric AS fdm4_employee,
+               def_cost::numeric AS def_cost
           FROM woo.store_product_state
-         WHERE fdm4_store=%(store)s AND style_code=%(style)s AND kind='variation'
+         WHERE fdm4_store=%(store)s AND upper(btrim(style_code))=upper(btrim(%(style)s))
+           AND kind='variation'
+           AND (%(catalog)s IS NULL OR catalog_id = %(catalog)s)
          ORDER BY color_code, size_code
          LIMIT %(limit)s
         """,
-        {"store": store, "style": style, "limit": STYLE_COLOR_RESULT_LIMIT + 1},
+        {"store": store, "style": style, "catalog": catalog,
+         "limit": STYLE_COLOR_RESULT_LIMIT + 1},
         STYLE_COLOR_RESULT_LIMIT,
     )
     variations = []
@@ -3543,8 +3556,12 @@ def explain_price(cursor, *, store: str, style: str) -> dict:
         col_custom = color_custom.get(cc)
         our_override = overrides.get(cc)
         price = _num(r["price"])
+        base_price = _num(r["base_price"])
         fdm4_base = _num(r["fdm4_base"])
-        override_pending = our_override is not None and (price is None or abs(price - our_override) > 0.001)
+        # Pending compares the override to the PRE-rule base (base_price), which
+        # is what the override sets — so a valid rule adjusting the final price
+        # does not read as "still pending".
+        override_pending = our_override is not None and (base_price is None or abs(base_price - our_override) > 0.001)
         if our_override is not None:
             source = "our_override"
         elif col_custom and col_custom > 0:
@@ -3557,24 +3574,35 @@ def explain_price(cursor, *, store: str, style: str) -> dict:
             source = "fallback"
         overrides_fdm4 = bool(
             source in ("custom_color", "custom_product")
-            and fdm4_base is not None and price is not None
-            and abs(price - fdm4_base) > 0.001
+            and fdm4_base is not None and base_price is not None
+            and abs(base_price - fdm4_base) > 0.001
         )
         variations.append({
             "color_code": cc, "color": r["color"], "size_code": r["size_code"], "sku": r["sku"],
-            "resolved_price": price, "base_price": _num(r["base_price"]),
+            "is_active": bool(r["is_active"]),
+            "resolved_price": price, "base_price": base_price,
             "fdm4_base": fdm4_base, "fdm4_msrp": _num(r["fdm4_msrp"]),
+            "def_cost": _num(r["def_cost"]),
             "color_custom_price": col_custom, "our_override_price": our_override,
             "override_pending_next_sync": override_pending,
             "price_source": source, "overrides_fdm4_level": overrides_fdm4,
         })
 
+    # Rules that TARGET this store+style and are in their active date window and
+    # not excluded. Whether a rule actually changes a given variation still
+    # depends on its tier/brand/category targeting, evaluated by the transform.
     cursor.execute(
         """
-        SELECT rule_id, name, active, effect_type, effect_value, price_level_key
+        SELECT rule_id, name, active, effect_type, effect_value, price_level_key,
+               effective_from, effective_until
           FROM woo.price_rule
-         WHERE active AND (%(store)s = ANY(stores) OR stores = '{}' OR stores IS NULL)
-           AND (%(style)s = ANY(styles) OR styles = '{}' OR styles IS NULL)
+         WHERE active
+           AND (effective_from IS NULL OR current_date >= effective_from)
+           AND (effective_until IS NULL OR current_date <= effective_until)
+           AND (%(store)s = ANY(stores) OR COALESCE(array_length(stores, 1), 0) = 0)
+           AND (upper(%(style)s) = ANY(styles) OR COALESCE(array_length(styles, 1), 0) = 0)
+           AND NOT (%(store)s = ANY(COALESCE(excl_stores, '{}')))
+           AND NOT (upper(%(style)s) = ANY(COALESCE(excl_styles, '{}')))
          LIMIT 20
         """,
         {"store": store, "style": style},
@@ -3592,7 +3620,7 @@ def explain_price(cursor, *, store: str, style: str) -> dict:
             if any(v["overrides_fdm4_level"] for v in variations) else None
         ),
         "variations": variations,
-        "active_price_rules": rules,
+        "candidate_price_rules": rules,
         "truncated": truncated or byte_truncated,
         "truncation": {"rows": truncated, "bytes": byte_truncated},
     }

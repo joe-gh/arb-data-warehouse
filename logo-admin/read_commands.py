@@ -167,6 +167,7 @@ class ListDesignUsageCommand(ReadCommand):
     store: str = Field(min_length=1, max_length=100, description=STORE)
     design_id: str = Field(min_length=1, max_length=100, description="FDM4 design id to look for on the store's logo rows.")
     color_scheme_id: Optional[str] = Field(default=None, max_length=100, description="Optional color scheme to narrow to (e.g. BK); null = every scheme.")
+    offset: int = Field(default=0, ge=0, description="Skip this many styles before the page (for paging past the cap). Pass the previous result's next_offset for the next page.")
 
 
 class FindDesignUsageCommand(ReadCommand):
