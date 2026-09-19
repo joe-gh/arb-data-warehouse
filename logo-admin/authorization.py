@@ -73,16 +73,22 @@ def agent_access_allowed(
     user: Mapping[str, str] | None,
     settings: Settings | None = None,
 ) -> bool:
-    """Return true only for an enabled, explicitly allow-listed operator."""
+    """Return true for an enabled, authenticated operator.
+
+    AGENT_ALLOWED_USERS is an optional narrowing: when it is empty the agent is
+    open to every authenticated app user (app login is the access boundary);
+    when it lists logins, only those may use it.
+    """
 
     if user is None:
         return False
     login = str(user.get("user_login", "")).strip().lower()
     active_settings = settings or get_settings()
+    allowed = active_settings.agent_allowed_users
     return bool(
         active_settings.agent_enabled
         and login
-        and login in active_settings.agent_allowed_users
+        and (not allowed or login in allowed)
     )
 
 
