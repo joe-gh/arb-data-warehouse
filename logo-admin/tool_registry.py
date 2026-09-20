@@ -706,7 +706,7 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
         "set_external_mix_store": _canonical_write_contract(SetExternalMixStoreCommand, mutations.set_external_mix_store, "virtual_catalog_store_row", "store_mix_store_row"),
         "remove_external_mix_store": _canonical_write_contract(RemoveExternalMixStoreCommand, mutations.remove_external_mix_store, "virtual_catalog_store_row"),
         "save_price_rule": _canonical_write_contract(SavePriceRuleCommand, mutations.save_price_rule, "price_rule_row"),
-        "fill_missing_colors": _canonical_write_contract(FillMissingColorsCommand, mutations.fill_missing_colors, "assignment_store"),
+        "fill_missing_colors": _canonical_write_contract(FillMissingColorsCommand, mutations.fill_missing_colors, "assignment_style"),
         "save_assignment": _canonical_write_contract(
             SaveAssignmentCommand,
             mutations.save_assignment,
@@ -836,7 +836,7 @@ CANONICAL_AGENT_WRITE_CONTRACTS: Mapping[str, AgentWriteContract] = (
             SetStoreExtraCustomersCommand, mutations.set_store_extra_customers, "store_settings_row",
         ),
         "bulk_apply": _canonical_write_contract(
-            BulkApplyCommand, mutations.bulk_apply, "assignment_store",
+            BulkApplyCommand, mutations.bulk_apply, "assignment_store", "assignment_style",
         ),
         "set_logo_default_cost": _canonical_write_contract(
             SetLogoDefaultCostCommand, mutations.set_logo_default_cost, "default_cost_row",

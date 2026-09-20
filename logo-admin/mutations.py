@@ -177,8 +177,8 @@ COMMAND_SCOPE_KINDS: Dict[str, frozenset[ScopeKind]] = {
     "remove_sync_block": frozenset({"sync_exclusion_row"}),
     "set_logo_cost": frozenset({"assignment_style"}),
     "set_store_extra_customers": frozenset({"store_settings_row"}),
-    "bulk_apply": frozenset({"assignment_store"}),
-    "fill_missing_colors": frozenset({"assignment_store"}),
+    "bulk_apply": frozenset({"assignment_store", "assignment_style"}),
+    "fill_missing_colors": frozenset({"assignment_style"}),
     "save_price_rule": frozenset({"price_rule_row"}),
     "set_logo_default_cost": frozenset({"default_cost_row"}),
     "set_price_rule_active": frozenset({"price_rule_row"}),
@@ -662,8 +662,15 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
         scopes = _style_scopes(command.store, command.styles)
     elif isinstance(command, SetStoreExtraCustomersCommand):
         scopes = (MutationScope("store_settings_row", {"fdm4_store": command.store.strip()}),)
-    elif isinstance(command, (BulkApplyCommand, FillMissingColorsCommand)):
-        scopes = (assignment_store_scope(command.store),)
+    elif isinstance(command, BulkApplyCommand):
+        # Named styles touch only those styles' assignment rows, so snapshot per
+        # style (the store is still ancestor-locked). A store-wide apply (no
+        # styles) can touch any style, so it keeps the whole-store scope.
+        scopes = (_style_scopes(command.store, command.styles)
+                  if command.styles else (assignment_store_scope(command.store),))
+    elif isinstance(command, FillMissingColorsCommand):
+        # Always operates on the named entry styles only.
+        scopes = _style_scopes(command.store, [entry.style for entry in command.entries])
     elif isinstance(command, SetLogoDefaultCostCommand):
         scopes = (MutationScope("default_cost_row", {
             "logo_code": _upper(command.logo_code, "logo_code"),
@@ -720,13 +727,14 @@ def affected_scopes(command: MutationCommand) -> tuple[MutationScope, ...]:
     )
     declared = COMMAND_SCOPE_KINDS.get(command_name or "")
     actual = frozenset(scope.kind for scope in scopes)
-    # Category commands discover their scopes from the draft when staged (a
-    # cascade delete may reach no rule rows, a move may resequence no
-    # siblings), so they may use a subset of the declared kinds but never a
-    # kind outside them. Their handlers return exactly the discovered scopes
-    # and _category_begin refuses to apply when a fresh discovery differs, so
-    # the row-level guarantee lives there rather than in this kind check.
-    if declared is None or not actual or (not actual <= declared if isinstance(command, CatCommand) else actual != declared):
+    # Some commands report a subset of their declared kinds depending on input,
+    # never a kind outside them. Category commands discover scopes from the
+    # draft (a cascade delete may reach no rule rows, a move may resequence no
+    # siblings). bulk_apply reports assignment_style for named styles and
+    # assignment_store for a whole-store apply. For these, a subset is valid;
+    # every other command must match its single declared kind exactly.
+    subset_ok = isinstance(command, CatCommand) or command_name == "bulk_apply"
+    if declared is None or not actual or (not actual <= declared if subset_ok else actual != declared):
         raise InvalidCommand("mutation scope contract mismatch")
     return scopes
 
@@ -2198,11 +2206,13 @@ def fill_missing_colors(cursor, actor: str, command: FillMissingColorsCommand) -
     _clean_styles(styles, "styles")
     if len(styles) != len(set(styles)):
         raise InvalidCommand("Each style must appear only once")
-    _bounded_assignment_count(cursor, "fdm4_store = %s", (store,), label="Store")
+    _bounded_assignment_count(cursor, "fdm4_store = %s AND product_style = ANY(%s)",
+                              (store, styles), label="Fill missing colors")
     outcome = fill_gaps(cursor, fdm4_store=store,
                         entries=[entry.model_dump() for entry in command.entries],
                         overwrite=command.overwrite, actor=actor)
-    _bounded_assignment_count(cursor, "fdm4_store = %s", (store,), label="Store")
+    _bounded_assignment_count(cursor, "fdm4_store = %s AND product_style = ANY(%s)",
+                              (store, styles), label="Fill missing colors")
     return MutationResult(outcome, affected_scopes(command))
 
 

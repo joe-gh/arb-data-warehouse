@@ -10,7 +10,7 @@ import pytest
 from db import database
 from domain import InvalidCommand, NotFound
 from mutations import MutationScope
-from snapshots import compact_scopes, snapshot_scopes, states_equal
+from snapshots import MAX_SNAPSHOT_ROWS_PER_SCOPE, compact_scopes, snapshot_scopes, states_equal
 from staging import apply_change_set, new_change_set, stage_write, undo_change_set
 from tests.conftest import TEST_ADMIN_DSN
 
@@ -110,3 +110,85 @@ def test_states_equal_ignores_row_order_within_a_scope():
     assert states_equal(left, right)
     changed = [{"scope": scope, "table": "logo.assignment", "rows": [b, {**a, "x": 9}]}]
     assert not states_equal(left, changed)
+
+
+def _style_rows(style):
+    return _admin(
+        "SELECT garment_color_code, option_row, position, logo_code, active"
+        " FROM logo.assignment WHERE fdm4_store='S_TEST' AND product_style=%s"
+        " ORDER BY 1,2,3",
+        (style,),
+    )
+
+
+def test_named_style_bulk_and_fill_report_per_style_scope():
+    """#10: named-style bulk_apply and fill_missing_colors snapshot only their
+    styles (assignment_style); a whole-store apply keeps the store scope."""
+    from mutations import affected_scopes
+    from commands import (
+        BulkApplyCommand, FillMissingColorsCommand, FillMissingColorsEntry,
+    )
+
+    named = affected_scopes(BulkApplyCommand(
+        store="S_TEST", logo_code="c1", color_scheme_id="scheme-1",
+        location="Left Chest", target="colors", color_codes=["RED"],
+        styles=["STYLE-1", "STYLE-2"], option_row=1))
+    assert {s.kind for s in named} == {"assignment_style"}
+    assert {(s.key["fdm4_store"], s.key["product_style"]) for s in named} == {
+        ("S_TEST", "STYLE-1"), ("S_TEST", "STYLE-2")}
+
+    wide = affected_scopes(BulkApplyCommand(
+        store="S_TEST", logo_code="c1", color_scheme_id="scheme-1",
+        location="Left Chest", target="light_dark", color_class="dark",
+        styles=[], option_row=1))
+    assert {s.kind for s in wide} == {"assignment_store"}
+
+    fill = affected_scopes(FillMissingColorsCommand(
+        store="S_TEST", entries=[
+            FillMissingColorsEntry(style="STYLE-1", source_color="RED"),
+            FillMissingColorsEntry(style="STYLE-2", source_color="BLU")]))
+    assert {s.kind for s in fill} == {"assignment_style"}
+    assert {s.key["product_style"] for s in fill} == {"STYLE-1", "STYLE-2"}
+
+
+def test_named_style_bulk_apply_stages_and_undoes_in_a_large_store():
+    """#10: a store with more than the per-scope snapshot cap of assignment rows
+    on unrelated styles used to make any bulk_apply fail. A named-style apply now
+    snapshots only that style, so it stages, applies and undoes cleanly."""
+    _classes()
+    _admin(
+        """
+        INSERT INTO logo.assignment
+            (fdm4_store, product_style, garment_color_code, option_row, position,
+             design_id, logo_code, color_scheme_id, location, optional, background,
+             cost_override, sort_order, image_url, active, updated_by)
+        SELECT 'S_TEST', 'PAD-' || g, 'RED', 1, 1, 'DESIGN-1', 'C1', 'SCHEME-1',
+               '', false, '', NULL, 0, '', true, 'seed'
+          FROM generate_series(1, %s) g
+        """,
+        (MAX_SNAPSHOT_ROWS_PER_SCOPE + 100,),
+    )
+    try:
+        # The whole-store scope now exceeds the exact-snapshot row cap.
+        with database.cursor() as cursor:
+            with pytest.raises(InvalidCommand):
+                snapshot_scopes(cursor, (STORE,))
+
+        before = _style_rows("STYLE-1")
+        change_set = new_change_set(_session(), USER)
+        args = {"store": "S_TEST", "logo_code": "c1", "color_scheme_id": "scheme-1",
+                "design_id": None, "location": "Left Chest", "target": "colors",
+                "color_codes": ["BLU"], "styles": ["STYLE-1"], "option_row": 1,
+                "cost_override": None, "overwrite": False}
+        staged = stage_write(change_set["id"], "bulk_apply", args, "bulk-apply",
+                             USER, max_items=50)
+        assert staged["preview_results"][0]["styles"] == ["STYLE-1"]
+        # Snapshot scope is exactly STYLE-1, not the store.
+
+        apply_change_set(change_set["id"], USER, revision=staged["revision"],
+                         confirmed_hash=staged["preview_hash"],
+                         acknowledge_hard_delete=False)
+        assert undo_change_set(change_set["id"], USER)["status"] == "undone"
+        assert _style_rows("STYLE-1") == before  # undo reverted STYLE-1 exactly
+    finally:
+        _admin("DELETE FROM logo.assignment WHERE fdm4_store='S_TEST' AND product_style LIKE %s", ("PAD-%",))
