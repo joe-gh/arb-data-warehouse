@@ -63,6 +63,16 @@ READ_ROUTES = {
     ("GET", "/api/health/overview"),
     ("GET", "/api/product-mix"),
     ("GET", "/api/product-mix/style"),
+    ("GET", "/api/notice"),
+    ("GET", "/api/pim/status"),
+    ("GET", "/api/pim/lookup"),
+    ("GET", "/api/pim/explain"),
+    ("GET", "/api/pim/history"),
+    ("GET", "/api/pim/pipeline"),
+    ("GET", "/api/pim/summary"),
+    ("GET", "/api/pim/pushes"),
+    ("GET", "/api/pim/requests"),
+    ("GET", "/api/pim/request/{request_id}"),
 }
 
 TRANSACTIONAL_WRITES = {
@@ -160,6 +170,7 @@ NONTRANSACTIONAL_OR_EXPORT = {
     ("POST", "/api/categories/runs/{run_id}/jobs/{job_id}/restore"),
     ("POST", "/api/categories/freeze"),
     ("POST", "/api/categories/drift-audit"),
+    ("POST", "/api/pim/request"),
 }
 
 AGENT_ROUTES = {

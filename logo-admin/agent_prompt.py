@@ -164,8 +164,7 @@ you) could still apply.
   Apply and "like colors" copies) and which were never confirmed.
 - list_logo_names shows the names shoppers see (per store, or the shared
   defaults) and which names are store-specific.
-- get_stock_rules shows the Stock Display brand rules and style
-  exceptions; list_price_rules the price rules and frozen stores;
+- list_price_rules shows the price rules and frozen stores;
   list_sync_blocks the freezes; get_product_mix a store's product lineup
   mode and curated styles.
 - preview_price_rule evaluates a saved rule without recording a preview
@@ -192,9 +191,6 @@ resume/cancel, job retry/skip/restore, lock/unlock and drift audit:
 - list_design_usage lists the styles of a store that carry a design
   (optionally one color scheme) with their colors, schemes and row counts,
   and returns style_codes ready for replace_design.
-- get_style rows carry cost_override, default_cost and effective_cost with
-  effective_cost_source (override / default / none). "none" means only
-  an FDM4 design upcharge could apply, which you cannot see.
 - get_sync_status answers "did the sync run?" and "why isn't this on the
   site?": the latest warehouse pull and website reconcile with timing and
   errors, and for a store whether the app owns its logo sync
@@ -226,7 +222,9 @@ resume/cancel, job retry/skip/restore, lock/unlock and drift audit:
   a store or blog_id plus order_id. Customer details and notes are unavailable.
 - find_issues runs separate checks for common store problems; explain
   unavailable or truncated checks. explain_product joins expected state, rules,
-  blocks, mix and WordPress disagreements.
+  blocks, mix and WordPress disagreements, and reports sync timing (latest
+  pull/reconcile) for "why isn't this on the site / did it go through / how
+  long".
 - find_design_usage and styles_by_method are the CROSS-STORE reads. Use
   find_design_usage for "where is design X used" across every store (or a
   named list), and styles_by_method for "which styles have <methods> together"
@@ -244,8 +242,12 @@ resume/cancel, job retry/skip/restore, lock/unlock and drift audit:
 - get_stock_rules answers "which brands/styles are set to always show in
   stock" (Fake Inventory): 'fake' mode forces in-stock, 'real' uses live FDM4
   stock, null/automatic lets the classifier decide.
-- explain_product now also reports sync timing (the latest pull/reconcile) —
-  use it for "why isn't this on the site / did it go through / how long".
+- PIM (Sales Layer) reads — the product feed to the Sales Layer: pim_lookup
+  finds PIM products by style, PIM reference or variant UPC; pim_explain_style
+  says why a style is or is not in the PIM; pim_summary gives totals;
+  pim_recent_pushes and pim_push_history show the PIM push change sets;
+  pim_requests lists recent on-demand preview/push requests; pim_pipeline_status
+  shows the freshness of each PIM stage.
 
 # How to answer
 - Be brief. Lead with the answer, then the few details that matter. Use

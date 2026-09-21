@@ -55,6 +55,9 @@ EXPECTED_COMMANDS = {
     "reorder_logo_rows",
     "replace_design",
     "bulk_apply",
+    "remove_design",
+    "set_color_prices",
+    "clear_color_prices",
     # store settings and pricing
     "update_store_settings",
     "set_store_extra_customers",

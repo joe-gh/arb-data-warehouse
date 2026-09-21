@@ -74,8 +74,12 @@ def test_build_instructions_appends_context_last():
 
 
 def test_prompt_size_is_reasonable_for_every_turn():
+    # Upper bound tracks the write-mode prompt: the app knowledge base plus a
+    # description of every write tool. It grows with the tool catalog (57 writes
+    # + cross-store/pricing/PIM reads), so the ceiling is a runaway-growth guard,
+    # not a fixed target. Raise it deliberately when the tool surface grows.
     words = len(agent_prompt.build_instructions(writes_enabled=True).split())
-    assert 900 < words < 3_200
+    assert 900 < words < 4_400
 
 
 SCREEN = {

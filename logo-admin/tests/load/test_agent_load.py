@@ -109,7 +109,7 @@ async def test_four_real_route_streams_share_pool_and_fifth_is_bounded_busy(
     started = 0
     started_lock = asyncio.Lock()
 
-    async def blocked_turn(context, replay, settings, *, session_id=None):
+    async def blocked_turn(context, replay, settings, *, session_id=None, screen=None):
         nonlocal started
         del context, replay, settings, session_id
         async with started_lock:
@@ -168,7 +168,7 @@ async def test_route_emits_heartbeat_before_a_slow_provider_and_nginx_is_unbuffe
 ):
     provider_release = asyncio.Event()
 
-    async def slow_turn(context, replay, settings, *, session_id=None):
+    async def slow_turn(context, replay, settings, *, session_id=None, screen=None):
         del context, replay, settings, session_id
         await provider_release.wait()
         yield {

@@ -45,7 +45,7 @@ BEGIN
            'ingest_event', 'product_state', 'media_object',
            'product_placement', 'media_rendition', 'api_product',
            'api_variant', 'api_image', 'api_pull_state',
-           'push_change_set', 'push_change_row'
+           'push_change_set', 'push_change_row', 'woo_presence'
        ]);
     IF unlisted IS NOT NULL THEN
         RAISE EXCEPTION
