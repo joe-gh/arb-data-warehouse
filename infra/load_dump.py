@@ -36,6 +36,7 @@ REQUIRED_TABLES = frozenset({
     "item-balance", "inv-balance", "catalog_product",
     "catalog_product_detail", "mill", "vendor", "dec_design",
     "design_pool", "cust_art_file", "price-categ",
+    "customer_art", "customer_art_cust",
 })
 
 
@@ -202,6 +203,16 @@ def main():
         set_load_flag(False, "raw fdm4 swap committed")
 
         with conn.cursor() as cur:
+            # Design ownership by art customer (logo.design_customer) is
+            # materialized from the freshly swapped fdm4.* tables. Optional
+            # until sql/migrations/2026-09-22-design-customer.sql is applied.
+            cur.execute("SELECT to_regprocedure('logo.refresh_design_customer()') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute("SELECT logo.refresh_design_customer()")
+                print(f"  refreshed logo.design_customer: {int(cur.fetchone()[0]):,} rows")
+            else:
+                print("note: logo.refresh_design_customer() not installed; design ownership not refreshed")
+
             cur.execute("SELECT to_regprocedure('woo.refresh_product_state()') IS NOT NULL")
             if not cur.fetchone()[0]:
                 raise RuntimeError(

@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import legacy_import
 from color_classify import classify_store_colors
-from design_resolver import resolve_design
+from design_resolver import resolve_design, store_customer
 
 
 # Every collection-returning query has a fixed service-owned cap.  Callers
@@ -904,9 +904,14 @@ def search_designs(
             # by shared art customers, which reads as "all stores' logos".
             where = "COALESCE(u.uses, 0) > 0"
         else:
+            # Art links are precise (only arts FDM4 attached to this store),
+            # unlike an account-wide expansion.
             where = (
                 "(COALESCE(u.uses, 0) > 0 OR "
-                "btrim(d.cust_number) IN (SELECT cn FROM store_custs))"
+                "btrim(d.cust_number) IN (SELECT cn FROM store_custs) OR "
+                "EXISTS (SELECT 1 FROM logo.design_customer dcx "
+                "         WHERE dcx.design_id = btrim(d.design_id) "
+                "           AND dcx.cust_number = %(store_cust)s))"
                 if store_value
                 else "COALESCE(g.uses, 0) > 0"
             )
@@ -1028,6 +1033,7 @@ def search_designs(
             "pattern": _like(q),
             "store": store_value,
             "exact": q,
+            "store_cust": store_customer(store_value) if store_value else "",
             "limit": DESIGN_SEARCH_RESULT_LIMIT + 1,
         },
         DESIGN_SEARCH_RESULT_LIMIT,
@@ -1247,8 +1253,10 @@ def get_design(
     *,
     design_id: str,
     fdm4_art_base: str,
+    store: str = "",
 ) -> dict:
     design_id = _clean(design_id, "design_id")
+    store = _optional(store, "store").upper()
     cursor.execute(
         """
         SELECT left(btrim(design_id), 256) AS design_id,
@@ -1292,40 +1300,50 @@ def get_design(
                ) AS assignment_image_url
           FROM fdm4.cust_art_file caf
           LEFT JOIN LATERAL (
-              SELECT image_url
-                FROM logo.assignment la
-               WHERE (btrim(la.design_id) = btrim(caf.art_id)
-                      OR btrim(la.design_id) IN (
-                          SELECT btrim(dp.design_id) FROM fdm4.design_pool dp
-                           WHERE btrim(dp.art_id) = btrim(caf.art_id)
-                      ))
-                 AND upper(btrim(la.color_scheme_id)) = upper(btrim(caf.color_scheme_id))
-                 AND NULLIF(la.image_url, '') IS NOT NULL
-               ORDER BY la.updated_at DESC
-               LIMIT 1
+              -- The picture a new row should carry: the store's own image for
+              -- this design + scheme first, then the store's newest row image,
+              -- then the newest row image anywhere.
+              SELECT c.image_url FROM (
+                  SELECT di.image_url, 0 AS rank, now() AS updated_at
+                    FROM logo.design_image di
+                   WHERE %(store)s <> '' AND di.fdm4_store = %(store)s
+                     AND btrim(di.design_id) = %(design_id)s
+                     AND upper(btrim(di.color_scheme_id)) = upper(btrim(caf.color_scheme_id))
+                  UNION ALL
+                  SELECT la.image_url,
+                         CASE WHEN %(store)s <> '' AND la.fdm4_store = %(store)s THEN 1 ELSE 2 END,
+                         la.updated_at
+                    FROM logo.assignment la
+                   WHERE (btrim(la.design_id) = btrim(caf.art_id)
+                          OR btrim(la.design_id) IN (
+                              SELECT btrim(dp.design_id) FROM fdm4.design_pool dp
+                               WHERE btrim(dp.art_id) = btrim(caf.art_id)
+                          ))
+                     AND upper(btrim(la.color_scheme_id)) = upper(btrim(caf.color_scheme_id))
+                     AND NULLIF(la.image_url, '') IS NOT NULL
+              ) c
+              ORDER BY c.rank, c.updated_at DESC
+              LIMIT 1
           ) a ON true
          WHERE btrim(caf.art_id) IN (
                    -- The design's art number(s) per design_pool, falling back
                    -- to the design number itself (legacy same-number art).
                    SELECT btrim(dp.art_id) FROM fdm4.design_pool dp
-                    WHERE btrim(dp.design_id) = %s
+                    WHERE btrim(dp.design_id) = %(design_id)s
                       AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
                    UNION ALL
-                   SELECT %s
+                   SELECT %(design_id)s
                     WHERE NOT EXISTS (
                         SELECT 1 FROM fdm4.design_pool mapped
-                         WHERE btrim(mapped.design_id) = %s
+                         WHERE btrim(mapped.design_id) = %(design_id)s
                            AND NULLIF(btrim(mapped.art_id), '') IS NOT NULL
                     )
                )
          ORDER BY upper(btrim(caf.color_scheme_id)),
                   upper(btrim(caf.resource_type)), caf.target_filename
-         LIMIT %s
+         LIMIT %(limit)s
         """,
-        (
-            design_id, design_id, design_id,
-            DESIGN_ASSET_RESULT_LIMIT + 1,
-        ),
+        {"design_id": design_id, "store": store, "limit": DESIGN_ASSET_RESULT_LIMIT + 1},
         DESIGN_ASSET_RESULT_LIMIT,
     )
     scheme_map: dict[str, dict[str, Any]] = {}
@@ -1413,6 +1431,156 @@ def get_design(
             "placements_bytes": placements_byte_truncated,
         },
     }
+
+
+LOGO_IMAGE_FILTERS = ("", "mixed", "unset")
+
+
+def list_logo_images(cursor, *, store: str, q: str = "", flt: str = "",
+                     limit: int = 50, offset: int = 0, fdm4_art_base: str) -> dict:
+    """One card per (design, color scheme) the store's ACTIVE assignments use,
+    with the store's own image (logo.design_image) when set, the image the
+    most rows carry otherwise, every distinct row image (with counts) and the
+    FDM4 art files on record for that scheme. Store-scoped by design: a store
+    image never leaks to another store that shares the design id."""
+    store = _clean(store, "store").upper()
+    if _catalog_for_store(cursor, store) is None:
+        raise QueryNotFound("Store not found")
+    term = _optional(q, "q", 200)
+    if flt not in LOGO_IMAGE_FILTERS:
+        raise QueryValidationError("Unknown filter")
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    params = {"store": store, "q": term, "pattern": f"%{term}%", "flt": flt,
+              "limit": limit, "offset": offset}
+    cursor.execute(
+        """
+        WITH used AS (
+            SELECT a.fdm4_store,
+                   btrim(a.design_id) AS design_id,
+                   upper(btrim(a.color_scheme_id)) AS color_scheme_id,
+                   array_remove(array_agg(DISTINCT upper(btrim(a.logo_code))), '') AS logo_codes,
+                   count(*) FILTER (WHERE a.active) AS row_count,
+                   count(*) FILTER (WHERE NOT a.active) AS inactive_rows,
+                   count(DISTINCT a.product_style) FILTER (WHERE a.active) AS styles,
+                   count(DISTINCT NULLIF(btrim(a.image_url), '')) FILTER (WHERE a.active) AS image_variants
+              FROM logo.assignment a
+             WHERE a.fdm4_store = %(store)s
+               AND NULLIF(btrim(a.design_id), '') IS NOT NULL
+             GROUP BY 1, 2, 3
+            HAVING count(*) FILTER (WHERE a.active) > 0
+        ), top_image AS (
+            SELECT DISTINCT ON (x.design_id, x.color_scheme_id)
+                   x.design_id, x.color_scheme_id, x.image_url
+              FROM (
+                  SELECT btrim(design_id) AS design_id, upper(btrim(color_scheme_id)) AS color_scheme_id,
+                         btrim(image_url) AS image_url, count(*) AS n
+                    FROM logo.assignment
+                   WHERE fdm4_store = %(store)s AND active
+                     AND NULLIF(btrim(image_url), '') IS NOT NULL
+                   GROUP BY 1, 2, 3
+              ) x
+             ORDER BY x.design_id, x.color_scheme_id, x.n DESC, x.image_url
+        )
+        SELECT u.design_id, u.color_scheme_id, u.logo_codes, u.row_count, u.inactive_rows, u.styles,
+               (u.image_variants > 1) AS mixed,
+               di.image_url AS store_image, di.source, di.updated_by, di.updated_at,
+               COALESCE(di.image_url, t.image_url, '') AS current_image,
+               COALESCE(dn_s.name, dn_g.name, '') AS name,
+               left(COALESCE(NULLIF(btrim(d.web_description), ''), btrim(d.description), ''), 1024) AS fdm4_description,
+               count(*) OVER () AS total
+          FROM used u
+          LEFT JOIN top_image t ON t.design_id = u.design_id AND t.color_scheme_id = u.color_scheme_id
+          LEFT JOIN logo.design_image di ON btrim(di.design_id) = u.design_id
+               AND upper(btrim(di.color_scheme_id)) = u.color_scheme_id AND di.fdm4_store = %(store)s
+          LEFT JOIN logo.display_name dn_s ON btrim(dn_s.design_id) = u.design_id
+               AND upper(btrim(dn_s.color_scheme_id)) = u.color_scheme_id AND dn_s.fdm4_store = %(store)s
+          LEFT JOIN logo.display_name dn_g ON btrim(dn_g.design_id) = u.design_id
+               AND upper(btrim(dn_g.color_scheme_id)) = u.color_scheme_id AND dn_g.fdm4_store = ''
+          LEFT JOIN fdm4.dec_design d ON btrim(d.design_id) = u.design_id
+         WHERE (%(q)s = '' OR u.design_id ILIKE %(pattern)s
+                OR COALESCE(dn_s.name, dn_g.name, '') ILIKE %(pattern)s
+                OR EXISTS (SELECT 1 FROM unnest(u.logo_codes) c WHERE c ILIKE %(pattern)s))
+           AND (%(flt)s = '' OR (%(flt)s = 'mixed' AND u.image_variants > 1)
+                OR (%(flt)s = 'unset' AND di.design_id IS NULL))
+         ORDER BY u.design_id, u.color_scheme_id
+         LIMIT %(limit)s OFFSET %(offset)s
+        """,
+        params,
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    total = int(rows[0]["total"]) if rows else 0
+    design_ids = sorted({r["design_id"] for r in rows})
+    row_images: dict = {}
+    art_options: dict = {}
+    if design_ids:
+        cursor.execute(
+            """
+            SELECT btrim(a.design_id) AS design_id, upper(btrim(a.color_scheme_id)) AS color_scheme_id,
+                   btrim(a.image_url) AS url, count(*) AS n
+              FROM logo.assignment a
+             WHERE a.fdm4_store = %s AND a.active AND btrim(a.design_id) = ANY(%s)
+               AND NULLIF(btrim(a.image_url), '') IS NOT NULL
+             GROUP BY 1, 2, 3
+             ORDER BY 1, 2, n DESC, 3
+            """,
+            (store, design_ids),
+        )
+        for r in cursor.fetchall():
+            row_images.setdefault((r["design_id"], r["color_scheme_id"]), []).append(
+                {"url": str(r["url"])[:READ_URL_CHAR_LIMIT], "rows": int(r["n"])})
+        cursor.execute(
+            """
+            SELECT p.design_id, upper(btrim(caf.color_scheme_id)) AS color_scheme_id,
+                   upper(btrim(caf.resource_type)) AS resource_type,
+                   COALESCE(NULLIF(btrim(caf.target_web_path), ''),
+                            NULLIF(ltrim(btrim(caf.target_filename), '/'), '')) AS asset_file
+              FROM (
+                  SELECT btrim(dp.design_id) AS design_id, btrim(dp.art_id) AS art_id
+                    FROM fdm4.design_pool dp
+                   WHERE btrim(dp.design_id) = ANY(%s) AND NULLIF(btrim(dp.art_id), '') IS NOT NULL
+                  UNION
+                  SELECT d, d FROM unnest(%s) AS d
+              ) p
+              JOIN fdm4.cust_art_file caf ON btrim(caf.art_id) = p.art_id
+             WHERE upper(btrim(caf.resource_type)) IN ('PREVIEW', 'THUMB')
+               AND COALESCE(NULLIF(btrim(caf.target_web_path), ''), NULLIF(btrim(caf.target_filename), '')) IS NOT NULL
+             ORDER BY 1, 2, (upper(btrim(caf.resource_type)) = 'PREVIEW') DESC, 4
+            """,
+            (design_ids, design_ids),
+        )
+        for r in cursor.fetchall():
+            asset = str(r["asset_file"] or "")
+            if not asset:
+                continue
+            art_options.setdefault((r["design_id"], r["color_scheme_id"]), []).append({
+                "url": (fdm4_art_base + asset.lstrip("/"))[:READ_URL_CHAR_LIMIT],
+                "resource_type": str(r["resource_type"]),
+                "filename": asset,
+            })
+    out = []
+    for r in rows:
+        key = (r["design_id"], r["color_scheme_id"])
+        out.append({
+            "design_id": r["design_id"],
+            "color_scheme_id": r["color_scheme_id"],
+            "logo_codes": sorted(str(c) for c in (r["logo_codes"] or []) if c),
+            "name": str(r["name"] or ""),
+            "fdm4_description": str(r["fdm4_description"] or ""),
+            "rows": int(r["row_count"]),
+            "inactive_rows": int(r["inactive_rows"]),
+            "styles": int(r["styles"]),
+            "mixed": bool(r["mixed"]),
+            "locked": r["store_image"] is not None,
+            "store_image": r["store_image"],
+            "source": r["source"],
+            "updated_by": r["updated_by"],
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            "current_image": str(r["current_image"] or "")[:READ_URL_CHAR_LIMIT],
+            "row_images": row_images.get(key, []),
+            "art_options": art_options.get(key, []),
+        })
+    return {"store": store, "rows": out, "total": total}
 
 
 def get_store_settings(cursor, *, store: str) -> dict:
@@ -3214,6 +3382,27 @@ def find_issues(cursor, *, store=None, checks=None, limit=50, category_access=Fa
         "uncategorized_products": ("""SELECT u.env,u.blog_id,u.product_id,u.sku FROM catmgr.wp_uncategorized_product u
             JOIN catmgr.snapshot s ON s.env=u.env AND s.blog_id=u.blog_id AND s.version=u.snapshot_version
             WHERE (%(store)s='' OR EXISTS(SELECT 1 FROM woo.store_blog_map m WHERE m.blog_id=u.blog_id AND m.fdm4_store=%(store)s))""", "Review the latest category snapshot and assign product categories."),
+        "design_conflicts": ("""SELECT k.fdm4_store AS store, k.logo_code, k.scheme, k.location, k.designs, k.row_count AS rows
+            FROM (
+              SELECT a.fdm4_store, upper(btrim(a.logo_code)) AS logo_code, upper(btrim(a.color_scheme_id)) AS scheme,
+                     lower(btrim(a.location)) AS location,
+                     string_agg(DISTINCT btrim(a.design_id), ', ' ORDER BY btrim(a.design_id)) AS designs,
+                     count(*) AS row_count
+                FROM logo.assignment a
+               WHERE a.active AND NULLIF(btrim(a.design_id),'') IS NOT NULL AND NULLIF(btrim(a.logo_code),'') IS NOT NULL
+                 AND (%(store)s='' OR a.fdm4_store=%(store)s)
+                 AND ( EXISTS (SELECT 1 FROM logo.design_customer dc
+                              WHERE dc.design_id = btrim(a.design_id)
+                                AND (dc.cust_number = substring(a.fdm4_store from 3)
+                                     OR dc.cust_number = ANY(COALESCE((SELECT ss.extra_customers FROM logo.store_settings ss
+                                                                        WHERE ss.fdm4_store = a.fdm4_store), ARRAY[]::text[]))))
+                       OR EXISTS (SELECT 1 FROM fdm4.dec_design own
+                              WHERE btrim(own.design_id) = btrim(a.design_id)
+                                AND (btrim(own.cust_number) = substring(a.fdm4_store from 3)
+                                     OR btrim(own.cust_number) = ANY(COALESCE((SELECT ss.extra_customers FROM logo.store_settings ss
+                                                                        WHERE ss.fdm4_store = a.fdm4_store), ARRAY[]::text[])))) )
+               GROUP BY 1,2,3,4 HAVING count(DISTINCT btrim(a.design_id)) > 1
+            ) k""", "Make each logo and placement use one design in Logo Configuration; until then the website sync leaves that logo out of FDM4 order stamping."),
     }
     names = list(dict.fromkeys(checks or [*definitions,"wordpress_mismatch"]))
     if set(names)-set(definitions)-{"wordpress_mismatch"}:

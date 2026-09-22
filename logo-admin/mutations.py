@@ -2745,23 +2745,35 @@ def bulk_apply_execute(cursor, *, fdm4_store, logo_code, color_scheme, placement
     if cursor.fetchone() is None:
         raise ValueError(f"design {design_id} is not on file in FDM4")
 
-    # Use an explicit image_url when provided (validated), else derive one from
-    # an existing active sibling assignment in the same store (same logo + scheme).
+    # Use an explicit image_url when provided (validated); else the store's own
+    # image for this design/scheme (logo.design_image); else an existing active
+    # sibling assignment in the same store (same logo + scheme).
     provided_url = _image_url(image_url) if image_url else ""
     if provided_url:
         image_url = provided_url
     else:
         cursor.execute(
             """
-            SELECT image_url FROM logo.assignment
-             WHERE fdm4_store = %s AND logo_code = %s AND color_scheme_id = %s
-               AND active AND NULLIF(btrim(image_url), '') IS NOT NULL
-             LIMIT 1
+            SELECT image_url FROM logo.design_image
+             WHERE fdm4_store = %s AND btrim(design_id) = %s AND upper(btrim(color_scheme_id)) = %s
             """,
-            (fdm4_store, logo_code, scheme),
+            (fdm4_store, design_id, scheme),
         )
-        sib = cursor.fetchone()
-        image_url = sib["image_url"] if sib else ""
+        store_image = cursor.fetchone()
+        if store_image:
+            image_url = store_image["image_url"]
+        else:
+            cursor.execute(
+                """
+                SELECT image_url FROM logo.assignment
+                 WHERE fdm4_store = %s AND logo_code = %s AND color_scheme_id = %s
+                   AND active AND NULLIF(btrim(image_url), '') IS NOT NULL
+                 LIMIT 1
+                """,
+                (fdm4_store, logo_code, scheme),
+            )
+            sib = cursor.fetchone()
+            image_url = sib["image_url"] if sib else ""
 
     cursor.execute(
         """
@@ -2876,7 +2888,7 @@ def bulk_apply_undo(cursor, *, batch_id: int, actor: str) -> dict:
     del actor
     cursor.execute(
         """
-        SELECT fdm4_store, undone_at
+        SELECT fdm4_store, undone_at, target
           FROM logo.bulk_batch
          WHERE batch_id = %s
          FOR UPDATE
@@ -2942,8 +2954,12 @@ def bulk_apply_undo(cursor, *, batch_id: int, actor: str) -> dict:
         else:
             _restore_row(cursor, r["before_row"])
         restored += 1
+    target = b.get("target") or {}
+    result = {"restored": restored, "skipped": skipped, "batch_id": batch_id}
+    if isinstance(target, dict) and target.get("kind") == "design_image":
+        result["design_image_restored"] = _restore_design_image(cursor, target)
     cursor.execute("UPDATE logo.bulk_batch SET undone_at=now() WHERE batch_id=%s", (batch_id,))
-    return {"restored": restored, "skipped": skipped, "batch_id": batch_id}
+    return result
 
 
 def set_color_class(cursor, *, color_code: str, light_dark: str, actor: str) -> dict:
@@ -3841,7 +3857,9 @@ def plan_design_swap(cursor, *, fdm4_store, from_design_id, from_color_scheme_id
     else drops the row). It is replaced by the store's newest active image
     for the NEW design/scheme when one exists, otherwise cleared - and
     validation runs against that new value, so a cleared row without FDM4
-    art is reported invalid rather than vanishing from the storefront.
+    art is reported invalid rather than vanishing from the storefront. The
+    store's own image for the NEW design/scheme wins over the newest row
+    image.
     """
     store, from_design, from_scheme, style_filter = _swap_source(
         fdm4_store, from_design_id, from_color_scheme_id, styles)
@@ -3882,6 +3900,14 @@ def plan_design_swap(cursor, *, fdm4_store, from_design_id, from_color_scheme_id
               "logo_code": logo_code, "logo_code_derived": derived}
     cursor.execute(
         """
+        SELECT image_url FROM logo.design_image
+         WHERE fdm4_store = %s AND btrim(design_id) = %s AND upper(btrim(color_scheme_id)) = %s
+        """,
+        (store, to_design, to_scheme),
+    )
+    store_image = cursor.fetchone()
+    cursor.execute(
+        """
         SELECT image_url FROM logo.assignment
          WHERE fdm4_store = %s AND btrim(design_id) = %s
            AND upper(btrim(color_scheme_id)) = %s
@@ -3892,7 +3918,7 @@ def plan_design_swap(cursor, *, fdm4_store, from_design_id, from_color_scheme_id
         (store, to_design, to_scheme),
     )
     sibling = cursor.fetchone()
-    replacement = str(sibling["image_url"]) if sibling else ""
+    replacement = str(store_image["image_url"]) if store_image else (str(sibling["image_url"]) if sibling else "")
     where, params = _swap_where(store, from_design, from_scheme, style_filter)
     cursor.execute(
         f"""
@@ -4032,3 +4058,220 @@ def design_swap(cursor, *, fdm4_store, from_design_id, from_color_scheme_id,
         "styles": plan["styles"], "target": target, "counts": plan["counts"],
         "problems": problems[:50],
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-store logo image (logo.design_image). Setting it rewrites the store's
+# matching assignment rows (the storefront reads the row's own image_url), all
+# journaled in one bulk batch; undo restores the rows AND the previous store
+# image (bulk_apply_undo, kind 'design_image').
+# ---------------------------------------------------------------------------
+
+DESIGN_IMAGE_SOURCES = ("art", "store_row", "upload", "link")
+
+
+def design_image_styles(cursor, *, fdm4_store: str, design_id: str, color_scheme_id: str) -> list:
+    """Styles whose rows a set_design_image call would touch (for lock scopes)."""
+    cursor.execute(
+        """
+        SELECT DISTINCT product_style FROM logo.assignment
+         WHERE fdm4_store = %s AND btrim(design_id) = %s
+           AND upper(btrim(color_scheme_id)) = %s
+         ORDER BY product_style
+         LIMIT %s
+        """,
+        (_clean(fdm4_store, "fdm4_store"), _clean(design_id, "design_id", 64),
+         _clean(color_scheme_id, "color_scheme_id", 64).upper(),
+         MAX_ASSIGNMENT_MUTATION_ROWS + 1),
+    )
+    return [str(r["product_style"]) for r in cursor.fetchall()]
+
+
+def _lock_design_image_key(cursor, *, store: str, design: str, scheme: str) -> None:
+    """Advisory-lock the (store, design, scheme) store-image key unconditionally,
+    before any read of logo.design_image. A `SELECT ... FOR UPDATE` on that
+    table locks nothing when the row is absent, so without this, two
+    concurrent first-time sets (or a set racing a clear) for a design/scheme
+    the store does not have assignment rows for yet (design_image_styles
+    returns [], so no assignment_style scope is taken either) could both read
+    previous=None and journal it; a later undo of the loser's batch would then
+    DELETE the row instead of restoring it.
+
+    "design_image_row" is deliberately NOT registered as a MutationScope kind:
+    it is not an agent-write scope (set_design_image/clear_design_image are
+    HTTP-only mutations, like design_swap/reorder_option_rows, not canonical
+    agent commands), and tool_registry._validate_mutation_contracts requires
+    snapshots.SNAPSHOT_SCOPE_KINDS / RESTORE_SCOPE_KINDS / SCOPE_TABLE_BY_KIND
+    to equal EXACTLY the scope kinds used by CANONICAL_AGENT_WRITE_CONTRACTS;
+    adding an unused kind there would fail that startup check. A raw
+    transaction-scoped advisory lock gets the same mutual exclusion without
+    touching that registry.
+    """
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+        (f"design_image|{store}|{design}|{scheme}",),
+    )
+
+
+def set_design_image(cursor, *, fdm4_store: str, design_id: str, color_scheme_id: str,
+                     image_url: str, source: str, actor: str,
+                     media_base: str, art_base: str) -> dict:
+    store = _clean(fdm4_store, "fdm4_store")
+    design = _clean(design_id, "design_id", 64)
+    scheme = _clean(color_scheme_id, "color_scheme_id", 64).upper()
+    _lock_design_image_key(cursor, store=store, design=design, scheme=scheme)
+    url = _image_url(image_url)
+    if not url:
+        raise InvalidCommand("image_url is required")
+    if not (url.startswith(media_base) or url.startswith(art_base)):
+        raise InvalidCommand(
+            "The image must be one we host: pick FDM4 art on file, upload a file, or paste a link so it is downloaded"
+        )
+    if source not in DESIGN_IMAGE_SOURCES:
+        raise InvalidCommand("source must be one of art, store_row, upload, link")
+    if _catalog_for_store(cursor, store) is None:
+        raise NotFound("Store not found")
+    cursor.execute("SELECT 1 FROM fdm4.dec_design WHERE btrim(design_id) = %s LIMIT 1", (design,))
+    if cursor.fetchone() is None:
+        raise InvalidCommand(f"unknown design_id {design}")
+    if not design_available_to_store(cursor, store, design):
+        raise InvalidCommand(
+            f"design {design} belongs to a different FDM4 customer account and is not available to this store"
+        )
+    cursor.execute(
+        """
+        SELECT product_style, garment_color_code, option_row, position, image_url, active
+          FROM logo.assignment
+         WHERE fdm4_store = %s AND btrim(design_id) = %s AND upper(btrim(color_scheme_id)) = %s
+         ORDER BY product_style, garment_color_code, option_row, position
+         LIMIT %s
+        """,
+        (store, design, scheme, MAX_ASSIGNMENT_MUTATION_ROWS + 1),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    if len(rows) > MAX_ASSIGNMENT_MUTATION_ROWS:
+        raise InvalidCommand(
+            f"This design is on more than {MAX_ASSIGNMENT_MUTATION_ROWS} rows in the store; set it in smaller stores or ask an administrator"
+        )
+    if not rows and not validate_design_asset(cursor, store=store, design_id=design, scheme=scheme):
+        raise InvalidCommand(f"design {design} has no color scheme {scheme} in this store or in FDM4")
+    cursor.execute(
+        """
+        SELECT to_jsonb(di) AS j FROM logo.design_image di
+         WHERE design_id = %s AND color_scheme_id = %s AND fdm4_store = %s
+         FOR UPDATE
+        """,
+        (design, scheme, store),
+    )
+    previous_row = cursor.fetchone()
+    previous = previous_row["j"] if previous_row is not None else None
+    batch_id = _open_batch(cursor, fdm4_store=store, actor=actor, target={
+        "kind": "design_image", "fdm4_store": store, "design_id": design,
+        "color_scheme_id": scheme, "image_url": url, "source": source,
+        "previous": previous,
+    })
+    cursor.execute(
+        """
+        INSERT INTO logo.design_image
+            (design_id, color_scheme_id, fdm4_store, image_url, source, locked, updated_at, updated_by)
+        VALUES (%s, %s, %s, %s, %s, true, now(), %s)
+        ON CONFLICT (design_id, color_scheme_id, fdm4_store) DO UPDATE SET
+            image_url = EXCLUDED.image_url, source = EXCLUDED.source, locked = true,
+            updated_at = now(), updated_by = EXCLUDED.updated_by
+        """,
+        (design, scheme, store, url, source, actor),
+    )
+    updated = 0
+    unchanged = 0
+    styles = set()
+    for row in rows:
+        if str(row["image_url"] or "").strip() == url:
+            unchanged += 1
+            continue
+        key = {"fdm4_store": store, "product_style": row["product_style"],
+               "garment_color_code": row["garment_color_code"],
+               "option_row": int(row["option_row"]), "position": int(row["position"])}
+        _journal_before(cursor, batch_id, key)
+        cursor.execute(
+            """
+            UPDATE logo.assignment
+               SET image_url = %s, updated_by = %s, updated_at = now()
+             WHERE fdm4_store = %s AND product_style = %s AND garment_color_code = %s
+               AND option_row = %s AND position = %s
+            """,
+            (url, actor, key["fdm4_store"], key["product_style"], key["garment_color_code"],
+             key["option_row"], key["position"]),
+        )
+        _journal_after(cursor, batch_id, key)
+        updated += 1
+        if row["active"]:
+            styles.add(str(row["product_style"]))
+    _close_batch(cursor, batch_id, updated)
+    return {"ok": True, "batch_id": batch_id, "updated_rows": updated,
+            "unchanged_rows": unchanged, "styles": len(styles), "image_url": url}
+
+
+def clear_design_image(cursor, *, fdm4_store: str, design_id: str, color_scheme_id: str, actor: str) -> dict:
+    """Remove the store image; rows keep whatever image they carry."""
+    del actor  # the audit trigger records the session actor
+    store = _clean(fdm4_store, "fdm4_store")
+    design = _clean(design_id, "design_id", 64)
+    scheme = _clean(color_scheme_id, "color_scheme_id", 64).upper()
+    _lock_design_image_key(cursor, store=store, design=design, scheme=scheme)
+    cursor.execute(
+        """
+        DELETE FROM logo.design_image
+         WHERE design_id = %s AND color_scheme_id = %s AND fdm4_store = %s
+        """,
+        (design, scheme, store),
+    )
+    if cursor.rowcount == 0:
+        raise NotFound("This store has no image set for that design and color scheme")
+    return {"ok": True}
+
+
+def _restore_design_image(cursor, target: Mapping[str, Any]) -> bool:
+    """Put the store image back to what this batch replaced - but only when the
+    live row is still the one this batch wrote.
+
+    Undo is per-batch and can run out of order: undoing batch 1 after batch 2
+    set a different image on the same key must leave batch 2's image alone
+    (its rows are already skipped by the after_row comparison, so resetting
+    the store image here would leave the two disagreeing). Returns whether the
+    store image was changed."""
+    previous = target.get("previous")
+    design = str(target.get("design_id", ""))
+    scheme = str(target.get("color_scheme_id", ""))
+    store = str(target.get("fdm4_store", ""))
+    key = (design, scheme, store)
+    _lock_design_image_key(cursor, store=store, design=design, scheme=scheme)
+    cursor.execute(
+        """
+        SELECT image_url, source FROM logo.design_image
+         WHERE design_id = %s AND color_scheme_id = %s AND fdm4_store = %s
+         FOR UPDATE
+        """,
+        key,
+    )
+    current = cursor.fetchone()
+    if current is None or str(current["image_url"] or "") != str(target.get("image_url") or ""):
+        # Someone (another batch, a clear, a later set) has moved on from what
+        # this batch wrote; leave their state alone.
+        return False
+    if previous:
+        cursor.execute(
+            """
+            INSERT INTO logo.design_image
+            SELECT * FROM jsonb_populate_record(NULL::logo.design_image, %s::jsonb)
+            ON CONFLICT (design_id, color_scheme_id, fdm4_store) DO UPDATE SET
+                image_url = EXCLUDED.image_url, source = EXCLUDED.source, locked = EXCLUDED.locked,
+                updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+            """,
+            (_journal_json(previous),),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM logo.design_image WHERE design_id = %s AND color_scheme_id = %s AND fdm4_store = %s",
+            key,
+        )
+    return True

@@ -182,6 +182,14 @@ def test_editor_preference_table_is_guarded():
     assert "logo.style_color_order," in source
 
 
+def test_design_image_table_is_guarded():
+    source = ROLE_SQL.read_text()
+    assert "'logo.design_image'" in source
+    assert "logo.design_image," in source
+    assert "'logo_design_image_audit'" in source
+    assert "'design_image_feed_bump'" in source
+
+
 def test_runtime_retention_hash_matches_migration_body():
     match = re.search(
         r"CREATE OR REPLACE FUNCTION logo\.prune_agent_history\(\).*?"

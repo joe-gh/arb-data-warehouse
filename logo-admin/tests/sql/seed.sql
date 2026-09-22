@@ -49,6 +49,50 @@ INSERT INTO fdm4.cust_art_file (
     ('DESIGN-2', 'SCHEME-2', 'PREVIEW', 'test/design-2.png', 'C2_SCHEME-2.png'),
     ('B9H-TEST-DESIGN', 'WH', 'PREVIEW', 'logos/B9H_WH.png', 'B9H_WH.png');
 
+-- Art-level ownership fixture (the Lewis 3816 shape): DESIGN-3 is filed under
+-- customer OTHER but its artwork ART-3 v2 lists TEST as an art customer, so
+-- S_TEST may use it. DESIGN-4 / ART-4 belong to OTHER only and stay foreign.
+INSERT INTO fdm4.dec_design (
+    design_id, description, web_description, methods_used,
+    design_categ_id, cust_number
+) VALUES
+    ('DESIGN-3', 'Shared-art logo', 'Shared Art Logo', 'print', 'LOGO', 'OTHER'),
+    ('DESIGN-4', 'Foreign logo', 'Foreign Logo', 'EMB', 'LOGO', 'OTHER');
+
+INSERT INTO fdm4.design_pool (design_pool_num, design_id, art_id, art_version_id, location_id)
+VALUES ('1', 'DESIGN-3', 'ART-3', '2', 'lc'),
+       ('1', 'DESIGN-4', 'ART-4', '1', 'lc');
+
+INSERT INTO fdm4.cust_art_file (
+    art_id, color_scheme_id, resource_type, target_web_path, target_filename
+) VALUES
+    ('ART-3', 'SCHEME-3', 'PREVIEW', 'test/design-3.png', 'C3_SCHEME-3.png'),
+    ('ART-4', 'SCHEME-4', 'PREVIEW', 'test/design-4.png', 'C4_SCHEME-4.png');
+
+INSERT INTO fdm4.customer_art (art_id, art_version_id, cust_number, cust_type, art_status, active)
+VALUES ('ART-3', '2', 'OTHER', 'l', 'approved', 'True'),
+       ('ART-4', '1', 'OTHER', 'L', 'approved', 'True');
+
+INSERT INTO fdm4.customer_art_cust (art_id, art_version_id, cust_number)
+VALUES ('ART-3', '2', 'OTHER'),
+       ('ART-3', '2', 'TEST'),
+       ('ART-4', '1', 'OTHER');
+
+-- Blank design-level owner but art linked to a customer: stays usable by
+-- every store (design_available_to_store) and stays a wildcard candidate.
+INSERT INTO fdm4.dec_design (design_id, description, web_description, methods_used, design_categ_id, cust_number)
+VALUES ('DESIGN-5', 'Unowned logo', 'Unowned Logo', 'EMB', 'LOGO', NULL);
+INSERT INTO fdm4.design_pool (design_pool_num, design_id, art_id, art_version_id, location_id)
+VALUES ('1', 'DESIGN-5', 'ART-5', '1', 'lc');
+INSERT INTO fdm4.cust_art_file (art_id, color_scheme_id, resource_type, target_web_path, target_filename)
+VALUES ('ART-5', 'SCHEME-5', 'PREVIEW', 'test/design-5.png', 'C5_SCHEME-5.png');
+INSERT INTO fdm4.customer_art (art_id, art_version_id, cust_number, cust_type, art_status, active)
+VALUES ('ART-5', '1', 'OTHER', 'L', 'approved', 'True');
+INSERT INTO fdm4.customer_art_cust (art_id, art_version_id, cust_number)
+VALUES ('ART-5', '1', 'OTHER');
+
+SELECT logo.refresh_design_customer();
+
 INSERT INTO logo.display_name (
     design_id, color_scheme_id, name, source, locked, uses,
     fdm4_description, updated_by, fdm4_store

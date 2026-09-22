@@ -424,6 +424,14 @@ EXPECTED_TRIGGERS = frozenset({
         "logo", "display_name_feed_bump",
     ),
     (
+        "logo.design_image", "logo_design_image_audit", 29, "O",
+        "logo", "audit_design_image_row",
+    ),
+    (
+        "logo.design_image", "design_image_feed_bump", 29, "O",
+        "logo", "design_image_feed_bump",
+    ),
+    (
         "logo.default_cost", "default_cost_feed_bump", 29, "O",
         "logo", "default_cost_feed_bump",
     ),
@@ -902,6 +910,7 @@ TABLE_POLICIES = {
     # with sql/logo_admin_role.sql and the SQL write preflight.
     "logo.assignment": CRUD_ALLOWED,
     "logo.art_record": READ_ALLOWED,
+    "logo.design_customer": READ_ALLOWED,
     "logo.store_settings": CRUD_ALLOWED,
     "logo.placement_vocab": CRUD_ALLOWED,
     "logo.color_class": CRUD_ALLOWED,
@@ -911,6 +920,7 @@ TABLE_POLICIES = {
     "logo.default_cost": CRUD_ALLOWED,
     "logo.design_ipc": CRUD_ALLOWED,
     "logo.display_name": CRUD_ALLOWED,
+    "logo.design_image": CRUD_ALLOWED,
     "logo.admin_session": CRUD_ALLOWED,
     "logo.image_import": CRU_ALLOWED,
     "logo.import_report": APPEND_ALLOWED,

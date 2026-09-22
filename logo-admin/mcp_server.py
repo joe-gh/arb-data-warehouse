@@ -578,6 +578,37 @@ def set_style_color_order(product_style: str, colors: List[str]) -> Any:
 
 
 @mcp.tool()
+def list_logo_images(fdm4_store: str, q: str = "", filter: str = "", limit: int = 50, offset: int = 0) -> Any:
+    """A store's logo versions with the picture each shows: the store's own
+    image when set, the most-used row image otherwise, every distinct row
+    image with counts, and FDM4 art on file. filter: '' | mixed | unset."""
+    return _call("GET", "/api/logo-images", params={
+        "store": fdm4_store, "q": q, "filter": filter, "limit": limit, "offset": offset,
+    })
+
+
+@mcp.tool()
+def set_logo_image(fdm4_store: str, design_id: str, color_scheme_id: str, image_url: str, source: str) -> Any:
+    """Set the picture ONE store shows for a design + color scheme and put it
+    on every matching row of that store (journaled; undo through
+    bulk_apply_undo(batch_id)). image_url must be self-hosted (MEDIA_BASE or
+    FDM4 art base); source: art | store_row | upload | link."""
+    return _call("PUT", "/api/logo-images", json_body={
+        "fdm4_store": fdm4_store, "design_id": design_id, "color_scheme_id": color_scheme_id,
+        "image_url": image_url, "source": source,
+    })
+
+
+@mcp.tool()
+def clear_logo_image(fdm4_store: str, design_id: str, color_scheme_id: str) -> Any:
+    """Remove a store's picture for a design + color scheme; rows keep the
+    picture they carry."""
+    return _call("DELETE", "/api/logo-images", json_body={
+        "fdm4_store": fdm4_store, "design_id": design_id, "color_scheme_id": color_scheme_id,
+    })
+
+
+@mcp.tool()
 def paste_assignments(fdm4_store: str, product_style: str, colors: List[str],
                       rows: List[Dict[str, Any]], overwrite: bool = False,
                       as_new_rows: bool = False) -> Any:

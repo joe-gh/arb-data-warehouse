@@ -322,7 +322,7 @@ def feed_logos(
                            'placement', NULLIF(a.location, ''),
                            'price', COALESCE(a.cost_override, dc.cost)::text,
                            'color_scheme', NULLIF(a.color_scheme_id, ''),
-                           'image_url', NULLIF(a.image_url, ''),
+                           'image_url', COALESCE(NULLIF(a.image_url, ''), di.image_url),
                            'background', NULLIF(a.background, ''),
                            'optional', a.optional,
                            'sort_order', a.sort_order
@@ -336,6 +336,10 @@ def feed_logos(
                         ON dn_g.design_id = a.design_id
                        AND dn_g.color_scheme_id = a.color_scheme_id
                        AND dn_g.fdm4_store = ''
+                  LEFT JOIN logo.design_image di
+                        ON di.fdm4_store = a.fdm4_store
+                       AND di.design_id = a.design_id
+                       AND upper(btrim(di.color_scheme_id)) = upper(btrim(a.color_scheme_id))
                   LEFT JOIN logo.default_cost dc
                         ON dc.logo_code = a.logo_code
                        AND dc.color_scheme_id = a.color_scheme_id

@@ -150,6 +150,7 @@ WITH writable_table(schema_name, table_name) AS (
         ('logo', 'image_import'),
         ('logo', 'import_report'),
         ('logo', 'display_name'),
+        ('logo', 'design_image'),
         ('logo', 'audit_log'),
         ('woo', 'price_rule'),
         ('woo', 'price_rule_audit'),
@@ -224,7 +225,7 @@ WITH writable_table(schema_name, table_name) AS (
     VALUES
         ('logo', 'assignment'), ('logo', 'store_settings'),
         ('logo', 'placement_vocab'), ('logo', 'image_import'),
-        ('logo', 'import_report'), ('logo', 'display_name'),
+        ('logo', 'import_report'), ('logo', 'display_name'), ('logo', 'design_image'),
         ('logo', 'audit_log'), ('logo', 'color_class'),
         ('logo', 'bulk_batch'), ('logo', 'bulk_batch_row'),
         ('logo', 'style_color_order'),
@@ -274,7 +275,7 @@ WITH writable_table(schema_name, table_name) AS (
     VALUES
         ('logo', 'assignment'), ('logo', 'store_settings'),
         ('logo', 'placement_vocab'), ('logo', 'image_import'),
-        ('logo', 'import_report'), ('logo', 'display_name'),
+        ('logo', 'import_report'), ('logo', 'display_name'), ('logo', 'design_image'),
         ('logo', 'audit_log'), ('logo', 'color_class'),
         ('logo', 'bulk_batch'), ('logo', 'bulk_batch_row'),
         ('logo', 'style_color_order'),
@@ -312,7 +313,7 @@ WITH writable_table(schema_name, table_name) AS (
     VALUES
         ('logo', 'assignment'), ('logo', 'store_settings'),
         ('logo', 'placement_vocab'), ('logo', 'image_import'),
-        ('logo', 'import_report'), ('logo', 'display_name'),
+        ('logo', 'import_report'), ('logo', 'display_name'), ('logo', 'design_image'),
         ('logo', 'audit_log'), ('logo', 'color_class'),
         ('logo', 'bulk_batch'), ('logo', 'bulk_batch_row'),
         ('logo', 'style_color_order'),
@@ -587,6 +588,7 @@ WITH table_policy(schema_name, table_name, policy) AS (
     VALUES
         ('logo', 'assignment', 'crud'),
         ('logo', 'art_record', 'read'),
+        ('logo', 'design_customer', 'read'),
         ('logo', 'store_settings', 'crud'),
         ('logo', 'placement_vocab', 'crud'),
         ('logo', 'color_class', 'crud'),
@@ -599,6 +601,7 @@ WITH table_policy(schema_name, table_name, policy) AS (
         ('logo', 'image_import', 'cru'),
         ('logo', 'import_report', 'append'),
         ('logo', 'display_name', 'crud'),
+        ('logo', 'design_image', 'crud'),
         ('logo', 'audit_log', 'append'),
         ('woo', 'price_rule', 'crud'),
         ('woo', 'price_rule_audit', 'append'),
@@ -711,6 +714,7 @@ WITH table_policy(schema_name, table_name, policy) AS (
     VALUES
         ('logo', 'assignment', 'crud'),
         ('logo', 'art_record', 'read'),
+        ('logo', 'design_customer', 'read'),
         ('logo', 'store_settings', 'crud'),
         ('logo', 'placement_vocab', 'crud'),
         ('logo', 'color_class', 'crud'),
@@ -723,6 +727,7 @@ WITH table_policy(schema_name, table_name, policy) AS (
         ('logo', 'image_import', 'cru'),
         ('logo', 'import_report', 'append'),
         ('logo', 'display_name', 'crud'),
+        ('logo', 'design_image', 'crud'),
         ('logo', 'audit_log', 'append'),
         ('woo', 'price_rule', 'crud'),
         ('woo', 'price_rule_audit', 'append'),
@@ -1062,6 +1067,7 @@ WITH execution_contract AS (
     VALUES
         ('logo', 'assignment', 'crud', true),
         ('logo', 'art_record', 'read', true),
+        ('logo', 'design_customer', 'read', true),
         ('logo', 'store_settings', 'crud', true),
         ('logo', 'placement_vocab', 'crud', true),
         ('logo', 'color_class', 'crud', true),
@@ -1074,6 +1080,7 @@ WITH execution_contract AS (
         ('logo', 'image_import', 'cru', true),
         ('logo', 'import_report', 'append', true),
         ('logo', 'display_name', 'crud', true),
+        ('logo', 'design_image', 'crud', true),
         ('logo', 'audit_log', 'append', true),
         ('woo', 'price_rule', 'crud', true),
         ('woo', 'price_rule_audit', 'append', true),
@@ -1923,7 +1930,7 @@ restore_column_inventory AS (
     -- logo.default_cost (29 = AFTER INSERT OR UPDATE OR DELETE), and the one
     -- reviewed constraint trigger on woo.store_mix_item (9 = AFTER DELETE,
     -- deferred to COMMIT).
-    SELECT count(*) = 12
+    SELECT count(*) = 14
            AND count(*) FILTER (
                WHERE schema_name = 'logo'
                  AND table_name = 'assignment'
@@ -1958,6 +1965,16 @@ restore_column_inventory AS (
                WHERE schema_name = 'logo'
                  AND table_name = 'display_name'
                  AND trigger_name = 'display_name_feed_bump'
+           ) = 1
+           AND count(*) FILTER (
+               WHERE schema_name = 'logo'
+                 AND table_name = 'design_image'
+                 AND trigger_name = 'logo_design_image_audit'
+           ) = 1
+           AND count(*) FILTER (
+               WHERE schema_name = 'logo'
+                 AND table_name = 'design_image'
+                 AND trigger_name = 'design_image_feed_bump'
            ) = 1
            AND count(*) FILTER (
                WHERE schema_name = 'logo'
@@ -2016,6 +2033,15 @@ restore_column_inventory AS (
                        THEN trigger_type = 29
                             AND function_schema = 'logo'
                             AND function_name = 'audit_display_name_row'
+                   WHEN schema_name = 'logo' AND table_name = 'design_image'
+                    AND trigger_name = 'design_image_feed_bump'
+                       THEN trigger_type = 29
+                            AND function_schema = 'logo'
+                            AND function_name = 'design_image_feed_bump'
+                   WHEN schema_name = 'logo' AND table_name = 'design_image'
+                       THEN trigger_type = 29
+                            AND function_schema = 'logo'
+                            AND function_name = 'audit_design_image_row'
                    WHEN schema_name = 'woo' AND table_name = 'price_rule'
                        THEN trigger_type = 29
                             AND function_schema = 'woo'

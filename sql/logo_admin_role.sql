@@ -90,6 +90,7 @@ BEGIN
       FROM unnest(ARRAY[
           'logo.assignment',
           'logo.art_record',
+          'logo.design_customer',
           'logo.audit_log',
           'logo.bulk_batch',
           'logo.bulk_batch_row',
@@ -98,6 +99,7 @@ BEGIN
           'logo.default_cost',
           'logo.design_ipc',
           'logo.display_name',
+          'logo.design_image',
           'logo.image_import',
           'logo.import_report',
           'logo.placement_vocab',
@@ -210,7 +212,8 @@ BEGIN
             'logo.assignment', 'logo.audit_log', 'logo.bulk_batch',
             'logo.bulk_batch_row', 'logo.style_color_order',
             'logo.color_class', 'logo.default_cost',
-            'logo.design_ipc', 'logo.display_name', 'logo.image_import',
+            'logo.design_ipc', 'logo.display_name', 'logo.design_image',
+            'logo.image_import',
             'logo.import_report', 'logo.placement_vocab', 'logo.store_settings',
             'logo.admin_session', 'logo.agent_chat_session',
             'logo.agent_chat_message', 'logo.agent_change_set',
@@ -287,6 +290,10 @@ BEGIN
             -- (migrations/2026-09-06-logo-feed-dependency-bumps.sql).
             ('logo.display_name', 'display_name_feed_bump', 29, 'O',
              'logo', 'display_name_feed_bump'),
+            ('logo.design_image', 'logo_design_image_audit', 29, 'O',
+             'logo', 'audit_design_image_row'),
+            ('logo.design_image', 'design_image_feed_bump', 29, 'O',
+             'logo', 'design_image_feed_bump'),
             ('logo.default_cost', 'default_cost_feed_bump', 29, 'O',
              'logo', 'default_cost_feed_bump'),
             ('woo.price_rule', 'price_rule_audit', 29, 'O',
@@ -609,6 +616,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     logo.default_cost,
     logo.design_ipc,
     logo.display_name,
+    logo.design_image,
     logo.placement_vocab,
     logo.admin_session,
     logo.agent_chat_session,
@@ -629,6 +637,7 @@ GRANT SELECT, INSERT ON TABLE
     TO logo_admin;
 GRANT SELECT, INSERT, UPDATE ON TABLE logo.image_import TO logo_admin;
 GRANT SELECT ON TABLE logo.art_record TO logo_admin;
+GRANT SELECT ON TABLE logo.design_customer TO logo_admin;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     woo.price_rule,

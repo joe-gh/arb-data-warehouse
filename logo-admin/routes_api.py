@@ -191,6 +191,20 @@ class LogoNameBody(BaseModel):
     fdm4_store: str = Field(default="", max_length=100)
 
 
+class LogoImageBody(BaseModel):
+    fdm4_store: str = Field(min_length=1, max_length=100)
+    design_id: str = Field(min_length=1, max_length=64)
+    color_scheme_id: str = Field(min_length=1, max_length=64)
+    image_url: str = Field(min_length=1, max_length=2048)
+    source: Literal["art", "store_row", "upload", "link"]
+
+
+class LogoImageKeyBody(BaseModel):
+    fdm4_store: str = Field(min_length=1, max_length=100)
+    design_id: str = Field(min_length=1, max_length=64)
+    color_scheme_id: str = Field(min_length=1, max_length=64)
+
+
 class RepullBody(BaseModel):
     design_id: str = Field(min_length=1, max_length=64)
     force: bool = False
@@ -735,6 +749,7 @@ def assignment_vocab(user: Dict[str, str] = Depends(require_user)):
 @router.get("/designs/{design_id}")
 def design_detail(
     design_id: str,
+    store: str = Query("", max_length=100),
     user: Dict[str, str] = Depends(require_user),
 ):
     del user
@@ -742,6 +757,7 @@ def design_detail(
         read_queries.get_design,
         design_id=design_id,
         fdm4_art_base=get_settings().fdm4_art_base,
+        store=store,
     )
 
 
@@ -3300,6 +3316,88 @@ def logo_names(
     }
 
 
+@router.get("/logo-images")
+def logo_images(
+    store: str = Query(..., min_length=1, max_length=100),
+    q: str = Query("", max_length=200),
+    flt: str = Query("", alias="filter", max_length=16),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: Dict[str, str] = Depends(require_user),
+):
+    """A store's designs with the image each one shows, for the Logo Images page."""
+    del user
+    return _read_service(
+        read_queries.list_logo_images,
+        store=store, q=q, flt=flt, limit=limit, offset=offset,
+        fdm4_art_base=get_settings().fdm4_art_base,
+    )
+
+
+@router.put("/logo-images")
+def set_logo_image(body: LogoImageBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Set the image one store shows for a design + color scheme and put it
+    on every matching row of that store. One journaled batch; undo via
+    /api/bulk-apply/undo (restores the rows and the previous store image)."""
+    settings = get_settings()
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        try:
+            styles = mutations.design_image_styles(
+                cursor, fdm4_store=body.fdm4_store, design_id=body.design_id,
+                color_scheme_id=body.color_scheme_id,
+            )
+            lock_scopes(cursor, [mutations.assignment_style_scope(body.fdm4_store, s) for s in styles])
+            return mutations.set_design_image(
+                cursor, fdm4_store=body.fdm4_store, design_id=body.design_id,
+                color_scheme_id=body.color_scheme_id, image_url=body.image_url,
+                source=body.source, actor=user["user_login"],
+                media_base=settings.media_base, art_base=settings.fdm4_art_base,
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+@router.delete("/logo-images")
+def clear_logo_image(body: LogoImageKeyBody, user: Dict[str, str] = Depends(require_csrf)):
+    with database.cursor(write=True, actor=user["user_login"]) as cursor:
+        try:
+            return mutations.clear_design_image(
+                cursor, fdm4_store=body.fdm4_store, design_id=body.design_id,
+                color_scheme_id=body.color_scheme_id, actor=user["user_login"],
+            )
+        except (NotFound, Conflict, InvalidCommand) as exc:
+            raise _editor_errors(exc) from None
+
+
+class LogoImageFetchBody(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+@router.post("/logo-images/fetch")
+def fetch_logo_image(body: LogoImageFetchBody, user: Dict[str, str] = Depends(require_csrf)):
+    """Download a linked image into our storage so a store image is never a
+    hotlink. Same SSRF-guarded fetcher and content checks as the legacy mirror."""
+    del user
+    settings = get_settings()
+    try:
+        data = _fetch_legacy_image(body.url, settings.max_upload_bytes)
+    except (http.client.HTTPException, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Couldn't download that image ({type(exc).__name__}). Check the link, or upload the file instead.",
+        ) from None
+    detected = _detect_image(data)
+    if detected is None:
+        raise HTTPException(status_code=422, detail="The link did not return a PNG, JPEG, GIF, or WebP image")
+    extension, media_type, width, height = detected
+    try:
+        filename = _store_image_bytes(data, extension, settings)
+    except OSError:
+        raise HTTPException(status_code=500, detail="Unable to store image") from None
+    return {"ok": True, "filename": filename, "url": settings.media_base + filename,
+            "media_type": media_type, "size": len(data), "width": width, "height": height}
+
+
 @router.put("/logo-names")
 def set_logo_name(body: LogoNameBody, user: Dict[str, str] = Depends(require_csrf)):
     """Shared with the assistant (mutations.set_logo_name): '' = the global
@@ -3793,6 +3891,39 @@ def _fetch_legacy_image(url: str, max_bytes: int) -> bytes:
     raise ValueError("unresolvable URL")
 
 
+def _store_image_bytes(data: bytes, extension: str, settings) -> str:
+    """Store image bytes content-hash-named under UPLOAD_DIR; idempotent.
+
+    Shared by the legacy image mirror and the Logo Images link fetch so a
+    re-fetched identical file never duplicates on disk or on the media box.
+    Raises OSError when the file cannot be written.
+    """
+    filename = hashlib.sha256(data).hexdigest()[:32] + "." + extension
+    final_path = settings.upload_dir / filename
+    if not final_path.is_symlink() and final_path.is_file():
+        try:
+            if (final_path.stat().st_size == len(data)
+                    and hashlib.sha256(final_path.read_bytes()).digest() == hashlib.sha256(data).digest()):
+                return filename
+        except OSError:
+            pass
+    settings.upload_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", prefix=".import-", dir=settings.upload_dir, delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(data)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_path, 0o640)
+        os.replace(temporary_path, final_path)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+    return filename
+
+
 @router.post("/legacy-import-images")
 def legacy_import_images(
     limit: int = Form(50),
@@ -3858,35 +3989,11 @@ def legacy_import_images(
             failures.append({"url": url, "reason": "not a valid image"})
             continue
         extension = detected[0]
-        filename = hashlib.sha256(data).hexdigest()[:32] + "." + extension
-        final_path = settings.upload_dir / filename
-        existing_file_is_exact = False
-        if not final_path.is_symlink() and final_path.is_file():
-            try:
-                existing_file_is_exact = (
-                    final_path.stat().st_size == len(data)
-                    and hashlib.sha256(final_path.read_bytes()).digest()
-                    == hashlib.sha256(data).digest()
-                )
-            except OSError:
-                existing_file_is_exact = False
-        if not existing_file_is_exact:
-            temporary_path: Optional[Path] = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb", prefix=".import-", dir=settings.upload_dir, delete=False
-                ) as temporary:
-                    temporary_path = Path(temporary.name)
-                    temporary.write(data)
-                    temporary.flush()
-                    os.fsync(temporary.fileno())
-                os.chmod(temporary_path, 0o640)
-                os.replace(temporary_path, final_path)
-            except OSError:
-                if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
-                failures.append({"url": url, "reason": "unable to store image"})
-                continue
+        try:
+            filename = _store_image_bytes(data, extension, settings)
+        except OSError:
+            failures.append({"url": url, "reason": "unable to store image"})
+            continue
         downloaded[url] = filename
 
     # Phase 3 (write): record the mapping and repoint every assignment that
@@ -4095,7 +4202,8 @@ def order_status(order_id: int = Query(ge=1), store: Optional[str] = Query(None,
 
 
 @router.get("/issues")
-def issues(store: Optional[str] = Query(None,max_length=100), checks: Optional[List[str]] = Query(None,max_length=7), limit: int = Query(50,ge=1,le=200), user: Dict[str,str] = Depends(require_user)):
+def issues(store: Optional[str] = Query(None,max_length=100), checks: Optional[List[str]] = Query(None,max_length=8), limit: int = Query(50,ge=1,le=200), user: Dict[str,str] = Depends(require_user)):
+    # max_length=8: one slot per default check incl. wordpress_mismatch; keep in step with find_issues definitions
     login = AccessContext.from_session(user).user_login
     return _read_service(read_queries.find_issues,store=store,checks=checks,limit=limit,category_access=catmgr_visible(login))
 

@@ -140,3 +140,17 @@ def test_missing_read_proxies_use_existing_get_routes(monkeypatch):
         ("GET", "/api/sync-blocks", {}),
         ("GET", "/api/product-mix", {"params": {"store": "S_TEST", "q": "STYLE", "limit": 10, "offset": 20}}),
     ]
+
+
+def test_logo_image_tools_exist_and_shape(monkeypatch):
+    assert {"list_logo_images", "set_logo_image", "clear_logo_image"} <= set(mcp_server.tool_names())
+    calls = _recorder(monkeypatch)
+    mcp_server.list_logo_images("S_TEST", q="C1", filter="mixed", limit=10, offset=0)
+    assert calls[0][0:2] == ("GET", "/api/logo-images")
+    assert calls[0][2]["params"] == {"store": "S_TEST", "q": "C1", "filter": "mixed", "limit": 10, "offset": 0}
+    mcp_server.set_logo_image("S_TEST", "DESIGN-2", "SCHEME-2", "https://media.test/warehouse/x.png", "upload")
+    assert calls[1][0:2] == ("PUT", "/api/logo-images")
+    assert calls[1][2]["json_body"] == {"fdm4_store": "S_TEST", "design_id": "DESIGN-2", "color_scheme_id": "SCHEME-2",
+                                        "image_url": "https://media.test/warehouse/x.png", "source": "upload"}
+    mcp_server.clear_logo_image("S_TEST", "DESIGN-2", "SCHEME-2")
+    assert calls[2][0:2] == ("DELETE", "/api/logo-images")

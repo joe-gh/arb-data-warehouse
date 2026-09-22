@@ -1289,3 +1289,41 @@ small { font-size: max(.75rem, .85em); }
 .method-chip--scr { color: #7a4b12; background: #f6e6c8; }
 .method-chip--cap { color: #3a3a86; background: #e2e2f5; }
 .batch-design-ids { color: var(--ink-soft); font-size: 0.72rem; }
+
+/* Help: Logo Images + assistant tool catalog. */
+.help-catalog dt { font-weight: 650; margin-top: .6rem; }
+.help-catalog dd { margin: .15rem 0 0; }
+.help-tools { display: block; margin-top: .2rem; }
+.help-tools code { font-size: .72rem; margin-right: .25rem; }
+
+/* Logo images: one card per logo version a store uses, and the set-picture
+   dialog. Appended at the end of the sheet so .chip--warn / .chip--ok win
+   over the .chip base rule they refine. */
+#images-search { width: 100%; }
+.image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; padding: 0 1.2rem 1.2rem; }
+.image-card { display: flex; flex-direction: column; gap: .6rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--white); padding: .9rem; box-shadow: var(--shadow-sm); }
+.image-card__thumb { display: grid; place-items: center; min-height: 7rem; border-radius: var(--radius-sm); overflow: hidden; }
+.image-card__thumb img { max-width: 100%; max-height: 8rem; object-fit: contain; }
+.image-card__meta { display: grid; gap: .15rem; }
+.image-card__meta code { font-size: .78rem; color: var(--ink-soft); }
+.image-card__badges { display: flex; gap: .35rem; flex-wrap: wrap; min-height: 1.4rem; }
+.image-card__actions { display: flex; gap: .4rem; margin-top: auto; }
+.chip--warn { background: var(--amber-100); color: var(--amber-800); }
+.chip--ok { background: var(--forest-100); color: var(--forest-800); }
+.image-tabs { display: flex; gap: .35rem; border-bottom: 1px solid var(--line); }
+.image-tab { border: 0; background: transparent; padding: .55rem .8rem; font: inherit; font-weight: 650; color: var(--ink-soft); cursor: pointer; border-bottom: 2px solid transparent; }
+.image-tab.is-active { color: var(--forest-900); border-bottom-color: var(--forest-700); }
+.image-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: .6rem; }
+.image-option { display: grid; gap: .3rem; padding: .45rem; border: 2px solid var(--line); border-radius: var(--radius-sm); background: var(--white); cursor: pointer; font: inherit; text-align: center; }
+.image-option img { max-width: 100%; max-height: 5rem; object-fit: contain; }
+.image-option.is-selected { border-color: var(--forest-700); box-shadow: var(--focus); }
+.image-preview-row { display: flex; gap: .9rem; align-items: center; }
+.image-preview img { max-width: 8rem; max-height: 6rem; object-fit: contain; }
+/* .assignment-image is a fixed 3.65rem chip; these wrappers fill their box so
+   the caps above are what actually sizes the picture. */
+.image-card__thumb { width: 100%; height: auto; }
+/* The preview is a flex item of .image-preview-row and inherits flex: 0 0 auto
+   from .assignment-image, so it must state its own size or it eats the row and
+   collapses the impact line beside it. */
+.image-preview { flex: 0 0 8rem; width: 8rem; height: 6rem; }
+.image-option .assignment-image { width: 100%; height: 5.5rem; }

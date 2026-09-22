@@ -257,7 +257,20 @@ def test_wordpress_issues_positive_clean_and_sql_failure_isolated(mapped_store,m
         assert queries.get_product_state(cursor,store='S_TEST',style='STYLE-1')['found']
     start=time.monotonic()
     result=_read('find_issues',{'store':'S_TEST'})
-    assert len(result['checks'])==7 and time.monotonic()-start<10
+    assert len(result['checks'])==8 and time.monotonic()-start<10
+
+
+def test_issues_route_accepts_every_default_check_name_at_once(client_as):
+    # Regression guard for the /issues route's Query(max_length=...) item
+    # cap: it must accept ALL default check names in one call, not just the
+    # count that happened to match when the cap was last set.
+    client=client_as()
+    default=client.get('/api/issues',params={'store':'S_TEST'})
+    assert default.status_code==200,default.text
+    names=[c['check'] for c in default.json()['checks']]
+    explicit=client.get('/api/issues',params={'store':'S_TEST','checks':names})
+    assert explicit.status_code==200,explicit.text
+    assert {c['check'] for c in explicit.json()['checks']}==set(names)
 
 
 def test_external_store_both_scopes_preview_apply_undo_and_delete():

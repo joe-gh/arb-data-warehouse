@@ -160,3 +160,43 @@ def test_a_bump_writes_one_audit_row_per_assignment(feed_client):
     # Accepted cost of the bump: the assignment audit trigger sees row_version
     # move, so one history line per bumped assignment.
     assert _audit_count() == before + 1
+
+
+def test_setting_a_store_image_serves_and_moves_the_cursor(feed_client):
+    # Seed position 2 (DESIGN-2 / SCHEME-2) has no image of its own.
+    before = _logo_version(feed_client)
+    _admin(
+        "INSERT INTO logo.design_image (design_id, color_scheme_id, fdm4_store, image_url, source)"
+        " VALUES ('DESIGN-2', 'SCHEME-2', %s, 'https://media.test/warehouse/store2.png', 'upload')",
+        (STORE,),
+    )
+    assert _logo_version(feed_client) > before
+    served = _served(feed_client, before)
+    assert served[2]["payload"]["image_url"] == "https://media.test/warehouse/store2.png"
+    assert 1 not in served   # position 1 serves nothing new (no image, other design)
+
+
+def test_a_row_with_its_own_image_outranks_a_new_store_image(feed_client):
+    """T13: the /feed/logos image fallback is a fallback. A row carrying its
+    own image keeps it when a store image appears for the same design and
+    scheme, and its feed cursor does not move - the bump trigger only re-stamps
+    rows whose image_url is empty."""
+    own = "https://media.test/warehouse/own.png"
+    start = _logo_version(feed_client)
+    _admin(
+        "UPDATE logo.assignment SET image_url = %s"
+        " WHERE fdm4_store = %s AND product_style = 'STYLE-1'"
+        "   AND garment_color_code = 'RED' AND position = 2",
+        (own, STORE),
+    )
+    assert _served(feed_client, start)[2]["payload"]["image_url"] == own
+    before = _logo_version(feed_client)
+    _admin(
+        "INSERT INTO logo.design_image (design_id, color_scheme_id, fdm4_store, image_url, source)"
+        " VALUES ('DESIGN-2', 'SCHEME-2', %s, 'https://media.test/warehouse/store2.png', 'upload')",
+        (STORE,),
+    )
+    # The row still serves its own image, and its cursor never moved past the
+    # version taken before the store image appeared.
+    assert _served(feed_client, start)[2]["payload"]["image_url"] == own
+    assert 2 not in _served(feed_client, before)

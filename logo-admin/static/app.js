@@ -601,7 +601,7 @@
   function syncStorePickers() {
     syncHeaderStore();
     const label = state.store ? `${storeDisplayFor(state.store)} (${state.store})` : "";
-    [["#store-search", null], ["#names-store-search", "#names-store"], ["#mix-store-search", "#mix-store"]].forEach(([searchSel, hiddenSel]) => {
+    [["#store-search", null], ["#names-store-search", "#names-store"], ["#images-store-search", "#images-store"], ["#mix-store-search", "#mix-store"]].forEach(([searchSel, hiddenSel]) => {
       const searchEl = $(searchSel);
       if (searchEl && document.activeElement !== searchEl) searchEl.value = label;
       if (hiddenSel) { const hiddenEl = $(hiddenSel); if (hiddenEl) hiddenEl.value = state.store || ""; }
@@ -650,6 +650,7 @@
     setOptionsOpen(els.styleSearch, els.styleOptions, false);
     updateUrl();
     if (document.body.dataset.view === "names") { namesState.offset = 0; loadNames(); }
+    if (document.body.dataset.view === "images") { imagesState.offset = 0; loadImages(); }
     if (store && (mixState.store || "") !== store) {
       if (document.body.dataset.view === "mix") {
         mixSelectStore(store);
@@ -1443,7 +1444,7 @@
     els.selectedDesignMeta.textContent = `Design ${id}${designCode(selected) ? ` · ${designCode(selected)}` : ""}`;
     els.designPreview.replaceChildren(document.createTextNode("Loading preview..."));
     try {
-      const payload = await api(`/api/designs/${encodeURIComponent(id)}`);
+      const payload = await api(`/api/designs/${encodeURIComponent(id)}${state.store ? `?store=${encodeURIComponent(state.store)}` : ""}`);
       if (sequence !== state.requestSequence.designDetail || els.designId.value !== id) return;
       state.designDetail = payload;
       const design = payload.design || selected || {};
@@ -2292,10 +2293,12 @@
     return document.body.dataset.wpHost || "WordPress";
   }
 
-  async function sync(scope) {
+  async function sync(scope, button = null) {
     if (!state.store) return;
     const styleScope = scope === "style" ? [state.style] : [];
-    const button = scope === "style" ? $("#sync-style-button") : $("#sync-store-button");
+    // Pages outside Logo Configuration pass their own Sync button so the
+    // control the person actually pressed is the one that goes busy.
+    button = button || (scope === "style" ? $("#sync-style-button") : $("#sync-store-button"));
     const sibling = scope === "style" ? $("#sync-store-button") : $("#sync-style-button");
     if (scope === "store") {
       const accepted = await confirmAction({
@@ -2339,6 +2342,12 @@
       : result.owned === false
       ? '<div class="notice notice--warning"><span class="notice__icon">!</span><div><strong>This store is not on the new logo system yet</strong><br>The website accepted the sync anyway, so the result cannot be trusted. Ask an administrator to switch this store over before relying on it.</div></div>'
       : `<div class="notice notice--success"><span class="notice__icon">✓</span><div><strong>Sync finished</strong><br>${escapeHtml(wpTargetHost())} accepted the update.</div></div>`;
+    // Conflicts the website reported while stamping FDM4 order data: the sync
+    // itself succeeded, so these ride above the result rather than replacing it.
+    const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
+    const warningBlock = warnings.length
+      ? `<div class="notice notice--warning"><span class="notice__icon">!</span><div><strong>Some logos were left out of FDM4 order stamping</strong><br>${warnings.map((w) => escapeHtml(w)).join("<br>")}</div></div>`
+      : "";
     // Friendly labels for the stat keys the sync returns; anything unknown
     // falls back to the de-underscored key.
     const STAT_LABELS = {
@@ -2351,7 +2360,7 @@
       styles: "styles",
       would_change: "would change",
     };
-    els.syncResults.innerHTML = `${ownership}<p>Scope: <strong>${escapeHtml(scope === "style" ? `${storeDisplayFor(state.store)} / ${state.style}` : `${storeDisplayFor(state.store)} / all configured styles`)}</strong></p><div class="result-summary">${numeric.map(([key, value]) => `<div class="stat"><strong>${escapeHtml(value)}</strong><small>${escapeHtml(STAT_LABELS[key] || key.replaceAll("_", " "))}</small></div>`).join("") || '<p class="muted">No numeric stats were returned.</p>'}</div>`;
+    els.syncResults.innerHTML = `${warningBlock}${ownership}<p>Scope: <strong>${escapeHtml(scope === "style" ? `${storeDisplayFor(state.store)} / ${state.style}` : `${storeDisplayFor(state.store)} / all configured styles`)}</strong></p><div class="result-summary">${numeric.map(([key, value]) => `<div class="stat"><strong>${escapeHtml(value)}</strong><small>${escapeHtml(STAT_LABELS[key] || key.replaceAll("_", " "))}</small></div>`).join("") || '<p class="muted">No numeric stats were returned.</p>'}</div>`;
   }
 
   // ===== Allowlisted in-app assistant =====
@@ -4627,6 +4636,7 @@
         if (target.kind === "paste") return `<strong>Paste</strong><br><small>${escapeHtml(target.style)} · ${escapeHtml(plural("color", (target.colors || []).length))}</small>`;
         if (target.kind === "paste_batch") return `<strong>Paste to many styles</strong><br><small>${escapeHtml(plural("style", (target.styles || []).length))} · ${escapeHtml(scopeWords[target.color_scope] || target.color_scope)}</small>`;
         if (target.kind === "copy_style_batch") return `<strong>Copy one style's logos</strong><br><small>${escapeHtml(target.source_style)} → ${escapeHtml(plural("style", (target.styles || []).length))} · ${escapeHtml(target.color_match)} · ${escapeHtml(target.mode)}</small>`;
+        if (target.kind === "design_image") return `<strong>Logo picture</strong><br><small>D${escapeHtml(text(target.design_id))} · ${escapeHtml(schemeLabel(target.color_scheme_id))}</small>`;
         if (target.kind === "design_swap") return `<strong>Replace design</strong><br><small>${escapeHtml(target.from.design_id)}${target.from.color_scheme_id ? `/${escapeHtml(target.from.color_scheme_id)}` : ""} → ${escapeHtml(target.to.logo_code)}-${escapeHtml(target.to.color_scheme_id)} (${escapeHtml(target.to.design_id)}) · ${escapeHtml(plural("style", (target.styles || []).length))}</small>`;
         return `<strong>Bulk apply</strong><br><small><code>${escapeHtml(batch.logo_code)}-${escapeHtml(batch.color_scheme)}</code> · ${escapeHtml(batch.placement)}</small>`;
       };
@@ -5535,7 +5545,7 @@
     $("#sync-store-button").addEventListener("click", () => sync("store"));
 
     $$(".dialog-close").forEach((button) => button.addEventListener("click", () => closeDialog(button.closest("dialog"))));
-    const backdropCloseExempt = new Set(["confirm-dialog", "assignment-dialog", "pr-dialog", "mix-style-dialog", "legacy-dialog", "copy-dialog"]);
+    const backdropCloseExempt = new Set(["confirm-dialog", "assignment-dialog", "image-dialog", "pr-dialog", "mix-style-dialog", "legacy-dialog", "copy-dialog"]);
     $$('dialog').forEach((dialog) => {
       // Close on backdrop click only when both the press and the release land
       // on the backdrop - a text-selection drag that ends outside an input
@@ -8216,7 +8226,7 @@
     }
   }
 
-  const VIEWS = ["dashboard", "logo", "bulk", "pricing", "names", "colors", "prices", "blocks", "mix", "stock", "categories", "pim", "health", "help"];
+  const VIEWS = ["dashboard", "logo", "bulk", "pricing", "names", "images", "colors", "prices", "blocks", "mix", "stock", "categories", "pim", "health", "help"];
   function switchView(name) {
     if (!VIEWS.includes(name)) name = "dashboard";
     VIEWS.forEach((v) => { const el = $(`#view-${v}`); if (el) el.hidden = v !== name; });
@@ -8236,6 +8246,7 @@
     if (name === "bulk") initBulkView();
     if (name === "pricing") loadPricing();
     if (name === "names") loadNames();
+    if (name === "images") loadImages();
     if (name === "colors") loadColors();
     if (name === "prices") loadPriceRules();
     if (name === "blocks") loadSyncBlocks();
@@ -8634,6 +8645,224 @@
       toast(resp.changed ? `Updated ${plural("name", resp.changed)} from FDM4.` : "Nothing changed - the name either already matches FDM4, was hand-edited (kept), or FDM4 has no description for it.");
       loadNames();
     } catch (e) { toast(e.message, "error"); } finally { setBusy(button, false); }
+  }
+
+  // ----- Logo images (per-store picture for a design + color scheme) -----
+  // One card per (design, color scheme) the store uses. The picture is stored
+  // against the store, so two stores sharing a design keep separate pictures;
+  // `generation` fences slow responses exactly as the names list does.
+
+  const imagesState = { q: "", filter: "", limit: 50, offset: 0, total: 0, generation: 0 };
+  const imageDialogState = { card: null, url: "", source: "", tab: "pick", generation: 0 };
+
+  function syncImagesStoreSelect() {
+    attachStoreCombobox({
+      search: "#images-store-search", hidden: "#images-store", options: "#images-store-options",
+      allLabel: "",
+      onPick: (code) => selectStore(code),
+    });
+    const hidden = $("#images-store"), searchEl = $("#images-store-search");
+    if (hidden) hidden.value = state.store || "";
+    if (searchEl && document.activeElement !== searchEl) {
+      searchEl.value = state.store ? `${storeDisplayFor(state.store)} (${state.store})` : "";
+    }
+  }
+
+  async function loadImages() {
+    const box = $("#images-list");
+    syncImagesStoreSelect();
+    const context = $("#images-context");
+    if (!state.store) {
+      if (context) context.textContent = "Pick a store to see the pictures its logos use.";
+      box.innerHTML = '<div class="grid-empty">Pick a store first.</div>';
+      $("#images-pager").hidden = true;
+      return;
+    }
+    if (context) context.textContent = `Showing the logos used by ${storeDisplayFor(state.store)}. A picture you set here applies to this store only.`;
+    box.innerHTML = '<div class="grid-empty">Loading...</div>';
+    $("#images-prev").disabled = true;
+    $("#images-next").disabled = true;
+    const generation = ++imagesState.generation;
+    try {
+      const params = new URLSearchParams({ store: state.store, q: imagesState.q, filter: imagesState.filter, limit: imagesState.limit, offset: imagesState.offset });
+      const resp = await api(`/api/logo-images?${params}`);
+      if (generation !== imagesState.generation) return;
+      imagesState.total = resp.total || 0;
+      renderImages(envelope(resp, "rows"));
+    } catch (e) {
+      if (generation !== imagesState.generation) return;
+      renderErrorState(box, friendlyLoadError("the logo pictures", e), loadImages);
+      $("#images-pager").hidden = true;
+    }
+  }
+
+  function renderImages(rows) {
+    const box = $("#images-list");
+    if (!rows.length) {
+      box.innerHTML = `<div class="grid-empty">${imagesState.q || imagesState.filter ? "No logos match." : "This store has no logos yet."}</div>`;
+      $("#images-pager").hidden = true;
+      return;
+    }
+    box.innerHTML = rows.map((r, i) => {
+      const img = text(r.current_image).trim();
+      const thumb = /^https?:\/\//i.test(img)
+        ? `<img src="${escapeHtml(img)}" alt="" loading="lazy">`
+        : '<span class="muted">No picture</span>';
+      const badges = [
+        r.mixed ? '<span class="chip chip--warn" title="Products in this store show different pictures for this logo">Mixed pictures</span>' : "",
+        r.locked ? '<span class="chip chip--ok" title="A picture is set for this store">Set for this store</span>' : "",
+      ].join("");
+      const codes = (r.logo_codes || []).join(", ");
+      return `<article class="image-card" data-index="${i}">
+        <div class="image-card__thumb assignment-image img-shade--neutral">${thumb}</div>
+        <div class="image-card__meta">
+          <strong>${escapeHtml(r.name || r.fdm4_description || codes || "Unnamed logo")}</strong>
+          <code title="FDM4 design number and color scheme">D${escapeHtml(r.design_id)} · ${escapeHtml(schemeLabel(r.color_scheme_id))}</code>
+          <small class="muted">${escapeHtml(codes)} · ${escapeHtml(plural("product", r.styles))}${r.inactive_rows ? ` · ${escapeHtml(plural("paused row", r.inactive_rows))}` : ""}</small>
+          <div class="image-card__badges">${badges}</div>
+        </div>
+        <div class="image-card__actions">
+          <button type="button" class="button button--primary button--small image-set">${r.locked ? "Replace" : "Set picture"}</button>
+          ${r.locked ? '<button type="button" class="button button--ghost button--small image-clear">Clear</button>' : ""}
+        </div>
+      </article>`;
+    }).join("");
+    $$(".image-set", box).forEach((b) => b.addEventListener("click", () => openImageDialog(rows[Number(b.closest(".image-card").dataset.index)])));
+    $$(".image-clear", box).forEach((b) => b.addEventListener("click", () => clearImage(rows[Number(b.closest(".image-card").dataset.index)], b)));
+    const start = imagesState.offset + 1, end = imagesState.offset + rows.length;
+    $("#images-range").textContent = `${start}-${end} of ${imagesState.total}`;
+    $("#images-prev").disabled = imagesState.offset === 0;
+    $("#images-next").disabled = end >= imagesState.total;
+    $("#images-pager").hidden = false;
+  }
+
+  function imageDialogTab(name) {
+    imageDialogState.tab = name;
+    $$(".image-tab").forEach((t) => { const on = t.dataset.tab === name; t.classList.toggle("is-active", on); t.setAttribute("aria-selected", on ? "true" : "false"); });
+    ["pick", "upload", "link"].forEach((n) => { $(`#image-tab-${n}`).hidden = n !== name; });
+  }
+
+  function setImageChoice(url, source) {
+    imageDialogState.url = text(url).trim();
+    imageDialogState.source = source;
+    const preview = $("#image-preview");
+    preview.hidden = !imageDialogState.url;
+    if (imageDialogState.url) preview.src = imageDialogState.url;
+    $$(".image-option").forEach((o) => o.classList.toggle("is-selected", o.dataset.url === imageDialogState.url));
+    $("#image-save").disabled = !imageDialogState.url;
+  }
+
+  function renderImageOptions(card) {
+    const seen = new Set();
+    const options = [];
+    (card.row_images || []).forEach((i) => { if (!seen.has(i.url)) { seen.add(i.url); options.push({ url: i.url, source: "store_row", label: `Used on ${plural("row", i.rows)} here` }); } });
+    (card.art_options || []).forEach((a) => { if (!seen.has(a.url)) { seen.add(a.url); options.push({ url: a.url, source: "art", label: `FDM4 ${a.resource_type === "THUMB" ? "thumbnail" : "art"}` }); } });
+    const box = $("#image-options");
+    box.innerHTML = options.length
+      ? options.map((o) => `<button type="button" class="image-option" data-url="${escapeHtml(o.url)}" data-source="${escapeHtml(o.source)}"><span class="assignment-image img-shade--neutral"><img src="${escapeHtml(o.url)}" alt="" loading="lazy"></span><small>${escapeHtml(o.label)}</small></button>`).join("")
+      : '<p class="muted text-small">No pictures on file yet. Upload one or fetch it from a link.</p>';
+    $$(".image-option", box).forEach((o) => o.addEventListener("click", () => setImageChoice(o.dataset.url, o.dataset.source)));
+  }
+
+  function openImageDialog(card) {
+    // Every open voids the in-flight upload/fetch of the previous card, so a
+    // late result can never stage its picture against the card now on screen.
+    imageDialogState.generation += 1;
+    imageDialogState.card = card;
+    $("#image-dialog-title").textContent = `${card.locked ? "Replace" : "Set"} the picture · D${card.design_id} · ${schemeLabel(card.color_scheme_id)}`;
+    $("#image-dialog-scope").textContent = `${storeDisplayFor(state.store)} only`;
+    $("#image-impact").textContent = `Updates ${plural("product", card.styles)} (${plural("logo row", card.rows)}) in ${storeDisplayFor(state.store)}.`;
+    $("#image-upload-file").value = "";
+    $("#image-upload-status").textContent = "";
+    $("#image-link-url").value = "";
+    $("#image-link-status").textContent = "";
+    setBusy($("#image-link-fetch"), false);
+    renderImageOptions(card);
+    imageDialogTab("pick");
+    setImageChoice(card.store_image || "", card.store_image ? (card.source || "upload") : "");
+    openDialog($("#image-dialog"));
+  }
+
+  async function uploadDialogImage() {
+    const file = $("#image-upload-file").files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    $("#image-upload-status").innerHTML = '<span class="spinner" aria-hidden="true"></span> Uploading...';
+    const generation = imageDialogState.generation;
+    try {
+      const result = await api("/api/upload", { method: "POST", body: form });
+      if (generation !== imageDialogState.generation) return; // dialog was reused
+      const url = text(result.url).trim();
+      if (!url) throw new Error("The upload succeeded but returned no image URL.");
+      setImageChoice(url, "upload");
+      $("#image-upload-status").textContent = file.name;
+    } catch (error) {
+      if (generation !== imageDialogState.generation) return;
+      $("#image-upload-status").textContent = "";
+      toast(error.message, "error");
+    }
+  }
+
+  async function fetchImageLink() {
+    const url = $("#image-link-url").value.trim();
+    if (!url) { toast("Paste a link first.", "error"); return; }
+    const button = $("#image-link-fetch");
+    setBusy(button, true, "Fetching...");
+    const generation = imageDialogState.generation;
+    try {
+      const result = await api("/api/logo-images/fetch", { method: "POST", body: { url } });
+      if (generation !== imageDialogState.generation) return; // dialog was reused
+      const fetched = text(result.url).trim();
+      if (!fetched) throw new Error("The download succeeded but returned no image URL.");
+      setImageChoice(fetched, "link");
+      $("#image-link-status").textContent = "Picture downloaded and stored.";
+    } catch (error) {
+      if (generation !== imageDialogState.generation) return;
+      $("#image-link-status").textContent = "";
+      toast(error.message, "error");
+    } finally { if (generation === imageDialogState.generation) setBusy(button, false); }
+  }
+
+  async function saveImage() {
+    const card = imageDialogState.card;
+    if (!card || !imageDialogState.url) return;
+    const button = $("#image-save");
+    setBusy(button, true, "Saving...");
+    try {
+      const result = await api("/api/logo-images", { method: "PUT", body: {
+        fdm4_store: state.store, design_id: card.design_id, color_scheme_id: card.color_scheme_id,
+        image_url: imageDialogState.url, source: imageDialogState.source || "store_row",
+      } });
+      closeDialog($("#image-dialog"));
+      // `styles` counts the live products that changed; a design used only by
+      // paused rows updates rows without touching a single product.
+      const summary = result.updated_rows && result.styles
+        ? `Picture set for ${plural("product", result.styles)} in ${storeDisplayFor(state.store)}. Press Sync store to update the website.`
+        : result.updated_rows
+        ? `Picture set for ${storeDisplayFor(state.store)}. It updated ${plural("paused logo row", result.updated_rows)}; live products already showed it.`
+        : `Picture set for ${storeDisplayFor(state.store)}. Products already showed it; new products will use it.`;
+      toastUndo(summary, () => api("/api/bulk-apply/undo", { method: "POST", body: { batch_id: result.batch_id } }).then(loadImages), { seconds: 15 });
+      loadImages();
+    } catch (error) {
+      toast(error.message, "error");
+    } finally { setBusy(button, false); }
+  }
+
+  async function clearImage(card, button) {
+    const ok = await confirmAction({
+      title: "Clear this store's picture?",
+      message: `Products keep the picture they show now; the store just stops locking it, so future refreshes can change it. This affects ${storeDisplayFor(state.store)} only.`,
+      actionLabel: "Clear",
+      danger: false,
+    });
+    if (!ok) return;
+    setBusy(button, true, "Clearing...");
+    try {
+      await api("/api/logo-images", { method: "DELETE", body: { fdm4_store: state.store, design_id: card.design_id, color_scheme_id: card.color_scheme_id } });
+      toast("Store picture cleared.");
+      loadImages();
+    } catch (error) { toast(error.message, "error"); } finally { setBusy(button, false); }
   }
 
   // ----- Colors review -----
@@ -10388,6 +10617,25 @@
     namesState.offset = next;
     loadNames();
   });
+
+  let imagesSearchTimer = null;
+  $("#images-search").addEventListener("input", () => {
+    clearTimeout(imagesSearchTimer);
+    imagesSearchTimer = setTimeout(() => { imagesState.q = $("#images-search").value; imagesState.offset = 0; loadImages(); }, 250);
+  });
+  $("#images-filter").addEventListener("change", () => { imagesState.filter = $("#images-filter").value; imagesState.offset = 0; loadImages(); });
+  $("#images-prev").addEventListener("click", () => { if (imagesState.offset > 0) { imagesState.offset = Math.max(0, imagesState.offset - imagesState.limit); loadImages(); } });
+  $("#images-next").addEventListener("click", () => {
+    const next = imagesState.offset + imagesState.limit;
+    if (imagesState.total && next >= imagesState.total) return;
+    imagesState.offset = next;
+    loadImages();
+  });
+  $("#images-sync-store").addEventListener("click", (e) => sync("store", e.currentTarget));
+  $$(".image-tab").forEach((t) => t.addEventListener("click", () => imageDialogTab(t.dataset.tab)));
+  $("#image-upload-file").addEventListener("change", uploadDialogImage);
+  $("#image-link-fetch").addEventListener("click", fetchImageLink);
+  $("#image-save").addEventListener("click", saveImage);
 
   let colorSearchTimer = null;
   $("#color-search").addEventListener("input", () => {

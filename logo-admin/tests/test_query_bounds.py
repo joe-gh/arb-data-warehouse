@@ -172,7 +172,7 @@ def test_design_caps_assets_and_placements_independently(monkeypatch):
         "assets_bytes": False,
         "placements_bytes": False,
     }
-    assert cursor.executed[1][1][-1] == 3
+    assert cursor.executed[1][1]["limit"] == 3
     assert cursor.executed[2][1][-1] == 2
 
 

@@ -141,19 +141,35 @@ def store_customers(cursor, store: str) -> Tuple[str, ...]:
 
 
 def design_available_to_store(cursor, store: str, design_id: str) -> bool:
-    """Whether the design belongs to the store's customer family (or is unowned)."""
+    """Whether the store may use the design.
+
+    True when the design's own FDM4 customer, or a customer FDM4 attaches to
+    ANY artwork inside the design (logo.design_customer, refreshed from
+    customer_art / customer_art_cust each load), is in the store's family
+    (own number + store_settings.extra_customers); designs FDM4 files under
+    no customer at all stay usable. The design-level rule is kept OR-ed in so
+    an empty or stale design_customer table can never refuse a design the old
+    rule accepted.
+    """
     customers = list(store_customers(cursor, store)) or [""]
+    design = str(design_id).strip()
     cursor.execute(
         """
-        SELECT 1 FROM fdm4.dec_design
-         WHERE btrim(design_id) = %s
-           AND (
-               btrim(cust_number) = ANY(%s)
-               OR NULLIF(btrim(cust_number), '') IS NULL
-           )
-         LIMIT 1
+        SELECT 1
+         WHERE EXISTS (
+                   SELECT 1 FROM logo.design_customer dc
+                    WHERE dc.design_id = %s AND dc.cust_number = ANY(%s)
+               )
+            OR EXISTS (
+                   SELECT 1 FROM fdm4.dec_design d
+                    WHERE btrim(d.design_id) = %s
+                      AND (
+                          btrim(d.cust_number) = ANY(%s)
+                          OR NULLIF(btrim(d.cust_number), '') IS NULL
+                      )
+               )
         """,
-        (design_id, customers),
+        (design, customers, design, customers),
     )
     return cursor.fetchone() is not None
 
@@ -211,18 +227,37 @@ def load_design_index(cursor) -> DesignIndex:
         raise DesignIndexTooLarge(
             f"FDM4 design index exceeds the {MAX_DESIGN_INDEX_ROWS}-row limit"
         )
+    # Art-level customer links, one small grouped read (~6k designs) instead of
+    # a join inside DESIGN_INDEX_SQL.
+    allowed: Dict[str, Tuple[str, ...]] = {}
+    cursor.execute(
+        "SELECT design_id, array_agg(DISTINCT cust_number) AS customers"
+        "  FROM logo.design_customer GROUP BY design_id"
+    )
+    for row in cursor.fetchall():
+        design = str(row["design_id"] or "").strip()
+        customers = tuple(
+            str(c).strip() for c in (row["customers"] or []) if str(c).strip()
+        )
+        if design and customers:
+            allowed[design] = customers
     for row in index_rows:
         prefix = str(row["logo_prefix"] or "").upper()
         scheme = str(row["color_scheme_id"] or "").upper()
         design_id = str(row["design_id"] or "").strip()
-        customer = str(row["customer"] or "").strip()
         if not prefix or not design_id:
             continue
-        # A customer-owned design must never become a wildcard candidate for
-        # another store. Only genuinely unowned legacy rows use the fallback.
-        owner = customer or "*"
-        by_key.setdefault((owner, prefix, scheme), set()).add(design_id)
-        by_key.setdefault((owner, prefix, "*"), set()).add(design_id)
+        # A design with no design-level owner stays a wildcard candidate even
+        # when its art is linked to customers (parity with
+        # design_available_to_store); owned designs are indexed under the
+        # owner and every art customer. Customers are expanded here rather
+        # than in SQL so the row cap counts art files, not art files x
+        # customers.
+        owner = str(row["customer"] or "").strip()
+        owners = ("*",) if not owner else tuple(set(allowed.get(design_id, ())) | {owner})
+        for key_owner in owners:
+            by_key.setdefault((key_owner, prefix, scheme), set()).add(design_id)
+            by_key.setdefault((key_owner, prefix, "*"), set()).add(design_id)
         if str(row["resource_type"] or "").upper() in {"PREVIEW", "THUMB"} and row[
             "asset_file"
         ]:

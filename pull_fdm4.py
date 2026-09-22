@@ -41,6 +41,8 @@ DEFAULT_TABLES = [
     "design_pool",    # per-decoration detail: design_id -> method/location/art_id/color/stitch.
     "cust_art_file",  # art assets: art_id -> resource_type + target_filename (preview PNG / .dst).
     "price-categ",    # price-level labels: price-categ 1 = Corp1;Corp2;Corp3;Wholesale;Employee;MSRP.
+    "customer_art",       # art master: art_id + art_version_id -> primary cust_number / cust_type ('Multiple Customers' = has secondaries).
+    "customer_art_cust",  # FDM4 "Art Customers": every customer attached to an art version (primary + secondaries). Drives logo.design_customer.
 ]
 
 BATCH = 5000

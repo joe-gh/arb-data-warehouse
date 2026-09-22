@@ -340,7 +340,7 @@ class GetOrderStatusCommand(ReadCommand):
 
 class FindIssuesCommand(ReadCommand):
     store: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional store code; required for WordPress comparisons.")
-    checks: Optional[list[Annotated[str, Field(pattern="^(no_logos|colors_unclassified|rules_expiring|stores_frozen|stock_overrides_stale|uncategorized_products|wordpress_mismatch)$")]]] = Field(default=None, min_length=1, max_length=7, description="Checks to run; null runs all checks. Category data requires category access.")
+    checks: Optional[list[Annotated[str, Field(pattern="^(no_logos|colors_unclassified|rules_expiring|stores_frozen|stock_overrides_stale|uncategorized_products|design_conflicts|wordpress_mismatch)$")]]] = Field(default=None, min_length=1, max_length=8, description="Checks to run; null runs all checks. Category data requires category access.")
     limit: int = Field(default=50, ge=1, le=200, description="Maximum examples per check.")
 
 

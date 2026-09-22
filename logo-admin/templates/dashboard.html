@@ -30,12 +30,13 @@
     </a>
     <nav class="main-nav" aria-label="Sections">
       <button class="main-nav__link" type="button" data-view="dashboard">Dashboard</button>
-      <div class="main-nav__group" data-group="logo,names,colors,bulk">
+      <div class="main-nav__group" data-group="logo,names,images,colors,bulk">
         <button class="main-nav__trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="nav-menu-logos">Logos<span class="main-nav__caret" aria-hidden="true"></span></button>
         <div class="main-nav__menu" id="nav-menu-logos" role="menu" aria-label="Logos" hidden>
           <button class="main-nav__item" type="button" role="menuitem" data-view="logo">Logo Configuration</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="bulk">Bulk Operations</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="names">Logo Names</button>
+          <button class="main-nav__item" type="button" role="menuitem" data-view="images">Logo Images</button>
           <button class="main-nav__item" type="button" role="menuitem" data-view="colors">Logo Colors</button>
         </div>
       </div>
@@ -123,6 +124,10 @@
             <button class="dash-card" type="button" data-view="names">
               <span class="dash-card__title">Logo Names</span>
               <span class="dash-card__desc">Edit the name shoppers see for each logo, or refresh it from FDM4's description.</span>
+            </button>
+            <button class="dash-card" type="button" data-view="images">
+              <span class="dash-card__title">Logo Images</span>
+              <span class="dash-card__desc">Fix the picture shoppers see for a logo in one store, and put it on every product there that uses it.</span>
             </button>
             <button class="dash-card" type="button" data-view="colors">
               <span class="dash-card__title">Logo Colors</span>
@@ -773,6 +778,42 @@
       </div>
     </section>
 
+    <section id="view-images" class="view" hidden aria-label="Logo images">
+      <div class="pricing">
+        <div class="pricing__head">
+          <p class="eyebrow">Logo images</p>
+          <h1>Logo pictures per store</h1>
+          <p class="muted">Each card is one logo version this store uses. Set its picture once and every product in this store that carries it is updated; other stores that share the design keep their own picture. Press Sync store to push the change to the website.</p>
+        </div>
+        <section class="card">
+          <div class="card__header card__header--compact">
+            <div><p class="eyebrow">Find</p><h3>This store's logos</h3></div>
+            <div class="inline-row"><button id="images-sync-store" class="button button--primary button--small" type="button">Sync store</button></div>
+          </div>
+          <div class="card__body">
+            <p id="images-context" class="muted" role="status"></p>
+            <div class="form-row">
+              <label class="field combobox"><span class="field__label">Store</span><input id="images-store-search" type="search" placeholder="Pick a store" autocomplete="off" aria-autocomplete="list" aria-controls="images-store-options" aria-expanded="false"><input type="hidden" id="images-store"><div id="images-store-options" class="combobox__options" role="listbox" hidden></div></label>
+              <label class="field"><span class="field__label">Show</span><select id="images-filter"><option value="">All logos</option><option value="mixed">Mixed pictures (needs a fix)</option><option value="unset">No store picture set</option></select></label>
+              <div class="field field--grow">
+                <span class="field__label">Search</span>
+                <div class="input-with-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5Zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14Z"/></svg>
+                  <input id="images-search" type="search" placeholder="Search by logo name, logo code, or design number..." autocomplete="off">
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="images-list" class="image-grid" aria-live="polite"></div>
+          <div id="images-pager" class="pager" hidden>
+            <button id="images-prev" class="button button--ghost button--small" type="button">Previous</button>
+            <span id="images-range" class="muted"></span>
+            <button id="images-next" class="button button--ghost button--small" type="button">Next</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
     <!-- System health -->
     {% if categories_enabled %}
     <!-- Category editor -->
@@ -1216,9 +1257,11 @@
           <a href="#help-big-picture">The big picture</a>
           <a href="#help-logos">Logos on products</a>
           <a href="#help-bulk">Bulk operations</a>
+          <a href="#help-images">Logo pictures</a>
           <a href="#help-onboarding">Onboarding a store</a>
           <a href="#help-store">Prices, products, stock</a>
           <a href="#help-categories">Categories</a>
+          <a href="#help-assistant">Asking the assistant</a>
           <a href="#help-situations">Common situations</a>
         </nav>
         </div>
@@ -1314,6 +1357,19 @@
           </div>
         </section>
         <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Logos</p><h3 id="help-images">Fixing a logo's picture for one store</h3></div></div>
+          <div class="card__body stack">
+            <p><button type="button" class="link-button help-link" data-view="images">Logo Images</button> (Logos menu) shows every logo version a store uses with the picture shoppers see. When a picture is mapped wrong, set the right one there once: every product in that store that carries the logo is updated, and products added later pick it up automatically.</p>
+            <ul class="help-rules">
+              <li><strong>Per store.</strong> Lewis and Davey can share the same design number in FDM4; a picture you set for Lewis never shows on Davey.</li>
+              <li><strong>Three ways to choose:</strong> pick a picture already on file (FDM4 art or one this store already shows), upload a file, or paste a link — a link is downloaded and stored with our other logo images.</li>
+              <li><strong>Undo</strong> is offered right after saving and puts every product back the way it was.</li>
+              <li><strong>Sync</strong> pushes the change to the website, like any other logo edit. Until you sync, only this app has changed.</li>
+              <li>"Mixed pictures" marks logos whose products currently show different pictures — the usual sign of a wrong mapping.</li>
+            </ul>
+          </div>
+        </section>
+        <section class="card">
           <div class="card__header card__header--compact"><div><p class="eyebrow">Categories</p><h3 id="help-categories">Reorganising the categories</h3></div></div>
           <div class="card__body">
             <p>The {% if categories_enabled %}<button type="button" class="link-button help-link" data-view="categories">Categories</button>{% else %}<strong>Categories</strong>{% endif %} tool (under Tools) rebuilds the product categories on every store from a draft kept here. Nothing changes on a website until you press Apply, every store is copied first so it can be restored, and a store that someone edited in the meantime is refused rather than overwritten.</p>
@@ -1326,6 +1382,38 @@
               <li><strong>Runs</strong> - watch progress, retry or skip a store, lock category editing on the website during a run, restore a store, and confirm the stores still match.</li>
             </ol>
             <p>Right now applies go to the development site only.</p>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card__header card__header--compact"><div><p class="eyebrow">Assistant</p><h3 id="help-assistant">What you can ask the assistant</h3></div></div>
+          <div class="card__body stack">
+            <p>The assistant answers questions from the same data this app shows and can prepare changes for you to confirm. Every change is staged for your review first, and can be undone. Nothing goes live on its own.</p>
+            <h4>Look things up</h4>
+            <dl class="help-catalog">
+              <dt>Logos on a product</dt><dd>"Which logos are on style 460510 at Lewis?" · "What placements can I use, and how are they spelled?" <span class="help-tools"><code data-tool="get_style">get_style</code> <code data-tool="list_styles">list_styles</code> <code data-tool="get_design">get_design</code> <code data-tool="search_designs">search_designs</code> <code data-tool="get_assignment_vocab">get_assignment_vocab</code> <code data-tool="get_store_settings">get_store_settings</code></span></dd>
+              <dt>Across every store</dt><dd>"Which stores use design 4706?" · "Which styles have embroidery and screen print?" · "Which styles still have no logo?" <span class="help-tools"><code data-tool="find_design_usage">find_design_usage</code> <code data-tool="styles_by_method">styles_by_method</code> <code data-tool="list_design_usage">list_design_usage</code> <code data-tool="find_similar_styles">find_similar_styles</code> <code data-tool="store_logo_coverage">store_logo_coverage</code></span></dd>
+              <dt>Pricing</dt><dd>"Why is this style $100 and not $165?" · "What price rules apply to Lewis, and what would this one change?" <span class="help-tools"><code data-tool="explain_price">explain_price</code> <code data-tool="check_price_rules">check_price_rules</code> <code data-tool="list_price_rules">list_price_rules</code> <code data-tool="preview_price_rule">preview_price_rule</code> <code data-tool="audit_store_prices">audit_store_prices</code> <code data-tool="list_pricing_tiers">list_pricing_tiers</code> <code data-tool="list_store_pricing_tiers">list_store_pricing_tiers</code> <code data-tool="list_price_rule_dimensions">list_price_rule_dimensions</code></span></dd>
+              <dt>Stock and inventory</dt><dd>"What's the live stock on this item?" · "Which brands are set to always show in stock?" <span class="help-tools"><code data-tool="get_stock">get_stock</code> <code data-tool="get_stock_rules">get_stock_rules</code> <code data-tool="get_product_state">get_product_state</code></span></dd>
+              <dt>Colors</dt><dd>"Is Slate light or dark on this store, and who set it?" <span class="help-tools"><code data-tool="list_colors">list_colors</code></span></dd>
+              <dt>Product lineup</dt><dd>"What products does this store carry?" · "Which stores carry style 246?" <span class="help-tools"><code data-tool="get_product_mix">get_product_mix</code> <code data-tool="get_style_mix">get_style_mix</code></span></dd>
+              <dt>"Why isn't this live?"</dt><dd>"Did the sync run, and why isn't this product on the site yet?" · "Run the checks on this store — what's wrong?" <span class="help-tools"><code data-tool="get_sync_status">get_sync_status</code> <code data-tool="explain_product">explain_product</code> <code data-tool="find_issues">find_issues</code> <code data-tool="wp_product_check">wp_product_check</code> <code data-tool="wp_store_check">wp_store_check</code> <code data-tool="get_health_overview">get_health_overview</code> <code data-tool="get_product_link">get_product_link</code></span></dd>
+              <dt>History</dt><dd>"Who changed this logo, and when?" · "What couldn't import from the legacy sheets?" <span class="help-tools"><code data-tool="get_audit_log">get_audit_log</code> <code data-tool="get_change_history">get_change_history</code> <code data-tool="get_import_report">get_import_report</code></span></dd>
+              <dt>Orders</dt><dd>"What's the status and sync state of order 12345?" <span class="help-tools"><code data-tool="get_order_status">get_order_status</code></span></dd>
+              <dt>PIM / Sales Layer</dt><dd>"Is style X in the PIM, and if not, why?" · "When did the last PIM push run?" <span class="help-tools"><code data-tool="pim_lookup">pim_lookup</code> <code data-tool="pim_explain_style">pim_explain_style</code> <code data-tool="pim_summary">pim_summary</code> <code data-tool="pim_pipeline_status">pim_pipeline_status</code> <code data-tool="pim_push_history">pim_push_history</code> <code data-tool="pim_recent_pushes">pim_recent_pushes</code> <code data-tool="pim_requests">pim_requests</code></span></dd>
+            </dl>
+            <h4>Make changes (staged for your confirmation, undoable)</h4>
+            <dl class="help-catalog">
+              <dt>Add, move and swap logos</dt><dd>"Put design 4706 (black) left chest on style 460510." · "Copy this style's logo setup to these 12 styles." · "Swap design 4706 for 5188 on these styles." <span class="help-tools"><code data-tool="save_assignment">save_assignment</code> <code data-tool="apply_to_colors">apply_to_colors</code> <code data-tool="copy_style">copy_style</code> <code data-tool="copy_style_to_many">copy_style_to_many</code> <code data-tool="paste_logo_set">paste_logo_set</code> <code data-tool="reorder_logo_rows">reorder_logo_rows</code> <code data-tool="replace_design">replace_design</code> <code data-tool="remove_design">remove_design</code></span></dd>
+              <dt>Show or hide logos</dt><dd>"Hide the sleeve logo on this color." · "Turn off all logos on these 20 styles." <span class="help-tools"><code data-tool="deactivate_assignment">deactivate_assignment</code> <code data-tool="deactivate_color">deactivate_color</code> <code data-tool="set_style_active">set_style_active</code> <code data-tool="set_styles_active">set_styles_active</code> <code data-tool="hard_delete_assignment">hard_delete_assignment</code> <code data-tool="hard_delete_color">hard_delete_color</code></span></dd>
+              <dt>Bulk apply and fill gaps</dt><dd>"Put the white chest logo on every dark color in this store." · "Fill the missing colors on these styles from Navy." <span class="help-tools"><code data-tool="bulk_apply">bulk_apply</code> <code data-tool="fill_missing_colors">fill_missing_colors</code></span></dd>
+              <dt>Per-color pricing</dt><dd>"Set Slate and Conifer to $165 on this style." <span class="help-tools"><code data-tool="set_color_prices">set_color_prices</code> <code data-tool="clear_color_prices">clear_color_prices</code></span></dd>
+              <dt>Price rules and levels</dt><dd>"Create a 10% off rule for this brand and turn it on." · "Put this store on Level 2 pricing." <span class="help-tools"><code data-tool="save_price_rule">save_price_rule</code> <code data-tool="set_price_rule_active">set_price_rule_active</code> <code data-tool="delete_price_rule">delete_price_rule</code> <code data-tool="set_store_pricing_tier">set_store_pricing_tier</code> <code data-tool="delete_store_pricing_tier">delete_store_pricing_tier</code></span></dd>
+              <dt>Logo names and cost</dt><dd>"Rename this logo to "Lewis Tree Care" on Lewis." · "Make this logo free on this store." <span class="help-tools"><code data-tool="set_logo_name">set_logo_name</code> <code data-tool="clear_logo_name">clear_logo_name</code> <code data-tool="set_logo_cost">set_logo_cost</code> <code data-tool="set_logo_default_cost">set_logo_default_cost</code> <code data-tool="set_color_class">set_color_class</code></span></dd>
+              <dt>Stock display</dt><dd>"Make this brand always show in stock." · "Force this style to show real FDM4 stock." <span class="help-tools"><code data-tool="set_brand_stock_rule">set_brand_stock_rule</code> <code data-tool="remove_brand_stock_rule">remove_brand_stock_rule</code> <code data-tool="set_stock_override">set_stock_override</code> <code data-tool="remove_stock_override">remove_stock_override</code></span></dd>
+              <dt>Product mix</dt><dd>"Add these 30 styles to this store's lineup." · "Switch this store back to the full FDM4 catalog." <span class="help-tools"><code data-tool="set_product_mix">set_product_mix</code> <code data-tool="disable_product_mix">disable_product_mix</code> <code data-tool="add_mix_styles">add_mix_styles</code> <code data-tool="remove_mix_styles">remove_mix_styles</code> <code data-tool="set_external_mix_store">set_external_mix_store</code> <code data-tool="remove_external_mix_store">remove_external_mix_store</code></span></dd>
+              <dt>Freezes and store settings</dt><dd>"Freeze prices on this store so the sync leaves them alone." · "Turn off the "No logo" option for this store." <span class="help-tools"><code data-tool="set_sync_block">set_sync_block</code> <code data-tool="remove_sync_block">remove_sync_block</code> <code data-tool="update_store_settings">update_store_settings</code> <code data-tool="set_store_extra_customers">set_store_extra_customers</code></span></dd>
+            </dl>
+            <p>You can also attach a CSV or XLSX to stage many changes at once. When something can't be done in chat, the assistant tells you where in the app to do it.</p>
           </div>
         </section>
         <section class="card">
@@ -1674,6 +1762,43 @@
       </section>
     </div>
     <div class="dialog__footer"><span class="muted text-small">Nothing reaches the website until you press Sync on this store.</span><button class="button button--primary dialog-close" type="button">Done</button></div>
+  </dialog>
+
+  <dialog id="image-dialog" class="dialog" aria-labelledby="image-dialog-title">
+    <div class="dialog__header">
+      <div>
+        <p class="eyebrow">This store only</p>
+        <h2 id="image-dialog-title">Set the picture</h2>
+        <p id="image-dialog-scope" class="muted text-small"></p>
+      </div>
+      <button class="icon-button dialog-close" type="button" aria-label="Close"><span aria-hidden="true">×</span></button>
+    </div>
+    <div class="dialog__body stack">
+      <div class="notice notice--warning"><span class="notice__icon">i</span><div id="image-dialog-banner">Applies to this store only. Other stores that share this design keep their own picture.</div></div>
+      <div class="image-tabs" role="tablist">
+        <button type="button" class="image-tab is-active" role="tab" data-tab="pick" aria-selected="true">Pick a picture</button>
+        <button type="button" class="image-tab" role="tab" data-tab="upload" aria-selected="false">Upload a file</button>
+        <button type="button" class="image-tab" role="tab" data-tab="link" aria-selected="false">From a link</button>
+      </div>
+      <div id="image-tab-pick" class="image-tab-pane">
+        <p class="muted text-small">Pictures on file for this logo version. Ones this store already shows are marked with how many products use them.</p>
+        <div id="image-options" class="image-options"></div>
+      </div>
+      <div id="image-tab-upload" class="image-tab-pane" hidden>
+        <label class="field"><span class="field__label">Image file (PNG, JPEG, GIF, WebP)</span><input id="image-upload-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp"></label>
+        <p id="image-upload-status" class="muted text-small"></p>
+      </div>
+      <div id="image-tab-link" class="image-tab-pane" hidden>
+        <label class="field"><span class="field__label">Link to the image</span><input id="image-link-url" type="url" placeholder="https://..." autocomplete="off"><span class="field__help">The picture is downloaded and stored with our other logo images, so the link can change later without breaking the store.</span></label>
+        <button id="image-link-fetch" type="button" class="button button--secondary button--small">Fetch picture</button>
+        <p id="image-link-status" class="muted text-small"></p>
+      </div>
+      <div class="image-preview-row">
+        <span class="assignment-image img-shade--neutral image-preview"><img id="image-preview" alt="" hidden></span>
+        <div><p id="image-impact" class="text-small"></p><p class="muted text-small">You can undo right after saving. The website updates when you press Sync store.</p></div>
+      </div>
+    </div>
+    <div class="dialog__footer"><span></span><div class="footer-actions"><button type="button" class="button button--ghost dialog-close">Cancel</button><button id="image-save" type="button" class="button button--primary" disabled>Save picture</button></div></div>
   </dialog>
 
   <dialog id="design-swap-dialog" class="dialog dialog--wide" aria-labelledby="design-swap-title">
