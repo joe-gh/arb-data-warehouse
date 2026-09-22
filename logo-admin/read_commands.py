@@ -17,7 +17,7 @@ class ReadCommand(BaseModel):
 
 
 class ListStoresCommand(ReadCommand):
-    pass
+    q: Optional[str] = Field(default=None, max_length=100, description="Optional filter: part of a store name or code (case-insensitive); null = every store.")
 
 
 class ListStylesCommand(ReadCommand):
@@ -297,6 +297,13 @@ class GetChangeHistoryCommand(ReadCommand):
     since_days: int = Field(default=7, ge=1, le=90, description="Days of history to search, up to 90.")
     actor: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Optional actor login, including an agent: prefix where recorded.")
     limit: int = Field(default=100, ge=1, le=300, description="Maximum changes, newest first.")
+
+
+class MyRecentActivityCommand(ReadCommand):
+    since_days: int = Field(default=1, ge=1, le=30, description="Days to look back (1 = since this time yesterday; max 30).")
+    store: Optional[str] = Field(default=None, max_length=100, description="Optional store code to narrow to.")
+    actor: Optional[str] = Field(default=None, max_length=100, description="Another person's login, for a hand-off; null = the person you are talking with.")
+    limit: int = Field(default=40, ge=1, le=200, description="Latest raw activity entries to include (max 200).")
 
 
 class GetStockCommand(ReadCommand):

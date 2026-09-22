@@ -225,6 +225,53 @@ def list_messages(
     }
 
 
+COMPACT_NOTE_PREFIX = "[Tool calls made in this turn: "
+COMPACT_NOTE_SUFFIX = ". Results not retained; call again if the data is needed.]"
+COMPACT_CALL_LIMIT = 20
+COMPACT_NAME_CHARS = 64
+COMPACT_ARGUMENT_CHARS = 200
+# Only the newest complete turn is replayed with its reasoning, tool calls and
+# tool results; every older turn is reduced to the assistant's visible text.
+VERBATIM_TURNS = 1
+
+
+def compact_assistant_items(items: list) -> Optional[dict]:
+    """Reduce one assistant turn to a plain, id-less assistant message.
+
+    Keeps the text the person saw and a bracketed note naming the tool calls
+    (name and bounded arguments) so the model knows what it already looked up.
+    Reasoning, provider ids and tool results are dropped: an item carrying a
+    provider id must be replayed with its reasoning partner, and results are
+    the bulk of a turn's weight. Returns None when there is nothing to keep.
+    """
+
+    texts: list[str] = []
+    calls: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "message":
+            content = item.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        texts.append(part["text"])
+        elif kind == "function_call":
+            name = str(item.get("name") or "")[:COMPACT_NAME_CHARS]
+            arguments = str(item.get("arguments") or "")[:COMPACT_ARGUMENT_CHARS]
+            calls.append(f"{name} {arguments}".strip())
+    text = "\n".join(part for part in texts if part)
+    if calls:
+        note = COMPACT_NOTE_PREFIX + "; ".join(calls[:COMPACT_CALL_LIMIT]) + COMPACT_NOTE_SUFFIX
+        text = f"{text}\n\n{note}" if text else note
+    if not text:
+        return None
+    return {"role": "assistant", "content": [{"type": "output_text", "text": text}]}
+
+
 def get_replay_items(
     cursor,
     session_id,
@@ -232,13 +279,20 @@ def get_replay_items(
     *,
     maximum_bytes: int = 200_000,
 ) -> list[dict]:
-    """Return complete recent turns within a database-enforced byte window.
+    """Return recent complete turns within a database-enforced byte budget.
 
-    The database ranks turn sizes before returning JSON, so a corrupted or
-    unexpectedly large history cannot be materialized in the web process.
-    A turn is replayable only when it has exactly one complete user message
-    and one complete assistant message; abandoned write instructions are
-    therefore never replayed on their own.
+    The newest complete turn is replayed verbatim when it fits the budget on
+    its own (so a "yes, go ahead" continues the reasoning it follows). Every
+    other turn - and the newest one when it does not fit - is charged at the
+    size of its compact projection: the person's message plus the assistant's
+    visible text and tool-call names. Turns are then kept newest-first until
+    the budget is spent, so an oversized turn never erases the conversation.
+
+    The database computes both sizes and only ships the projection a turn
+    needs, so a corrupted or unexpectedly large history cannot be
+    materialized in the web process. A turn is replayable only when it has
+    exactly one complete user message and one complete assistant message;
+    abandoned write instructions are therefore never replayed on their own.
     """
 
     safe_bytes = max(1, min(2_000_000, int(maximum_bytes)))
@@ -252,9 +306,7 @@ def get_replay_items(
              LIMIT %s
         ), complete_turns AS (
             SELECT turn_id,
-                   min(created_at) AS turn_created,
-                   sum(octet_length(replay_items::text))::bigint
-                       AS replay_bytes
+                   min(created_at) AS turn_created
               FROM recent_messages
              GROUP BY turn_id
             HAVING count(*) = 2
@@ -265,45 +317,96 @@ def get_replay_items(
                        WHERE role = 'assistant' AND status = 'complete'
                    ) = 1
         ), newest AS (
-            SELECT *
+            SELECT turn_id, turn_created,
+                   row_number() OVER (
+                       ORDER BY turn_created DESC, turn_id DESC
+                   ) AS recency
               FROM complete_turns
              ORDER BY turn_created DESC, turn_id DESC
              LIMIT %s
-        ), ranked AS (
-            SELECT newest.*,
-                   sum(replay_bytes) OVER (
-                       ORDER BY turn_created DESC, turn_id DESC
+        ), shaped AS (
+            SELECT n.turn_id, n.turn_created, n.recency,
+                   m.id, m.role, m.created_at,
+                   m.replay_items AS full_items,
+                   CASE WHEN m.role = 'user' THEN m.replay_items
+                        ELSE COALESCE((
+                            SELECT jsonb_agg(
+                                       CASE WHEN element->>'type' = 'message'
+                                            THEN element
+                                            ELSE jsonb_build_object(
+                                                'type', 'function_call',
+                                                'name', left(element->>'name', %s),
+                                                'arguments', left(element->>'arguments', %s)
+                                            )
+                                       END
+                                       ORDER BY ordinality
+                                   )
+                              FROM jsonb_array_elements(m.replay_items)
+                                   WITH ORDINALITY AS elements(element, ordinality)
+                             WHERE element->>'type' IN ('message', 'function_call')
+                        ), '[]'::jsonb)
+                   END AS compact_items
+              FROM newest n
+              JOIN recent_messages m ON m.turn_id = n.turn_id
+        ), sized AS (
+            SELECT turn_id, recency,
+                   sum(octet_length(full_items::text))::bigint AS full_bytes,
+                   sum(octet_length(compact_items::text))::bigint AS compact_bytes
+              FROM shaped
+             GROUP BY turn_id, recency
+        ), chosen AS (
+            SELECT turn_id, recency, verbatim,
+                   CASE WHEN verbatim THEN full_bytes ELSE compact_bytes END AS bytes
+              FROM (
+                  SELECT sized.*,
+                         (recency <= %s AND full_bytes <= %s) AS verbatim
+                    FROM sized
+              ) decided
+        ), budgeted AS (
+            SELECT turn_id, verbatim,
+                   sum(bytes) OVER (
+                       ORDER BY recency
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                    ) AS cumulative_bytes
-              FROM newest
-        ), selected AS (
-            SELECT turn_id, turn_created
-              FROM ranked
-             WHERE cumulative_bytes <= %s
+              FROM chosen
         )
-        SELECT message.replay_items
-          FROM selected
-          JOIN recent_messages AS message
-            ON message.turn_id = selected.turn_id
-         ORDER BY selected.turn_created,
-                  selected.turn_id,
-                  CASE message.role WHEN 'user' THEN 0 ELSE 1 END,
-                  message.created_at,
-                  message.id
+        SELECT s.role,
+               b.verbatim,
+               CASE WHEN b.verbatim THEN s.full_items ELSE s.compact_items END
+                   AS replay_items
+          FROM budgeted b
+          JOIN shaped s ON s.turn_id = b.turn_id
+         WHERE b.cumulative_bytes <= %s
+         ORDER BY s.turn_created,
+                  s.turn_id,
+                  CASE s.role WHEN 'user' THEN 0 ELSE 1 END,
+                  s.created_at,
+                  s.id
         """,
         (
             session_id,
             user_login,
             REPLAY_MESSAGE_SCAN_LIMIT,
             REPLAY_TURN_LIMIT,
+            COMPACT_NAME_CHARS,
+            COMPACT_ARGUMENT_CHARS,
+            VERBATIM_TURNS,
+            safe_bytes,
             safe_bytes,
         ),
     )
     replay: list[dict] = []
     for row in cursor.fetchall():
         items = row.get("replay_items") or []
-        if isinstance(items, list):
-            replay.extend(item for item in items if isinstance(item, dict))
+        if not isinstance(items, list):
+            continue
+        items = [item for item in items if isinstance(item, dict)]
+        if row.get("verbatim") or row.get("role") == "user":
+            replay.extend(items)
+            continue
+        compacted = compact_assistant_items(items)
+        if compacted is not None:
+            replay.append(compacted)
     return replay
 
 

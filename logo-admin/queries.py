@@ -3107,6 +3107,106 @@ def get_change_history(cursor, *, user_login, category_access=False, store=None,
                        actors=actors, since_days=params["days"])
 
 
+def my_recent_activity(cursor, *, user_login, actor=None, store=None, since_days=1, limit=40):
+    """The person's own recent operations, grouped by kind, with the undo route for each.
+
+    Audit rows, bulk runs and syncs are public to operators, so a named actor
+    (a hand-off) yields the same groups for that login; change-set cards are
+    listed only for the person's own login. Actors are matched with and
+    without the ``agent:`` prefix the assistant's own writes carry.
+    """
+    login = _clean(user_login, "user_login")
+    who = _optional(actor, "actor") or login
+    is_you = who.lower() == login.lower()
+    store_code = _optional(store, "store").upper()
+    days = max(1, min(int(since_days), 30))
+    limit = max(1, min(int(limit), 200))
+    _bound_statement_timeout(cursor, 20)
+    params = {"who": who.lower(), "agent_who": "agent:" + who.lower(), "store": store_code,
+              "days": days, "lim": limit + 1}
+    window = """at >= now() - %(days)s * interval '1 day'
+                AND lower(actor) IN (%(who)s, %(agent_who)s)
+                AND (%(store)s = '' OR fdm4_store = %(store)s)"""
+    sync_actions = "('sync_requested', 'sync_succeeded', 'sync_failed')"
+    edits, edits_truncated, edits_bytes = _bounded_query(cursor, f"""
+        SELECT left(fdm4_store, 100) AS store, left(action, 100) AS action,
+               count(*) AS entries, count(DISTINCT product_style) AS styles,
+               min(at) AS first_at, max(at) AS last_at,
+               (array_agg(DISTINCT left(product_style, 100)))[1:10] AS sample_styles
+          FROM logo.audit_log
+         WHERE {window} AND action NOT IN {sync_actions}
+         GROUP BY fdm4_store, action
+         ORDER BY max(at) DESC, fdm4_store, action
+         LIMIT 101
+    """, params, 100)
+    syncs, syncs_truncated, syncs_bytes = _bounded_query(cursor, f"""
+        SELECT at, left(fdm4_store, 100) AS store, left(action, 100) AS action,
+               left(detail->>'error', 400) AS error, detail->'styles' AS styles,
+               left(detail->>'request_id', 64) AS request_id
+          FROM logo.audit_log
+         WHERE {window} AND action IN {sync_actions}
+         ORDER BY at DESC LIMIT 21
+    """, params, 20)
+    batches, batches_truncated, batches_bytes = _bounded_query(cursor, """
+        SELECT batch_id, left(fdm4_store, 100) AS store, left(target->>'kind', 40) AS kind,
+               left(logo_code, 100) AS logo_code, left(target->>'style', 100) AS style,
+               applied AS rows_applied, created_at, undone_at, left(created_by, 100) AS created_by
+          FROM logo.bulk_batch
+         WHERE created_at >= now() - %(days)s * interval '1 day'
+           AND lower(created_by) IN (%(who)s, %(agent_who)s)
+           AND (%(store)s = '' OR fdm4_store = %(store)s)
+         ORDER BY created_at DESC LIMIT 51
+    """, params, 50)
+    cards, cards_truncated, cards_bytes = [], False, False
+    if is_you:
+        cards, cards_truncated, cards_bytes = _bounded_query(cursor, """
+            SELECT c.id::text AS change_set_id, c.status, c.origin, c.created_at,
+                   c.applied_at, c.undone_at, c.contains_hard_delete,
+                   count(i.id) AS items,
+                   coalesce(array_agg(DISTINCT left(i.tool_name, 100))
+                                FILTER (WHERE i.tool_name IS NOT NULL), '{}') AS tools,
+                   coalesce(array_agg(DISTINCT left(coalesce(i.arguments->>'store', i.arguments->>'fdm4_store'), 100))
+                                FILTER (WHERE coalesce(i.arguments->>'store', i.arguments->>'fdm4_store') IS NOT NULL), '{}') AS stores
+              FROM logo.agent_change_set c
+              LEFT JOIN logo.agent_change_set_item i
+                     ON i.change_set_id = c.id AND i.user_login = c.user_login
+             WHERE lower(c.user_login) = %(who)s
+               AND c.updated_at >= now() - %(days)s * interval '1 day'
+               AND (%(store)s = '' OR EXISTS (
+                       SELECT 1 FROM logo.agent_change_set_item j
+                        WHERE j.change_set_id = c.id AND j.user_login = c.user_login
+                          AND upper(coalesce(j.arguments->>'store', j.arguments->>'fdm4_store')) = %(store)s))
+             GROUP BY c.id
+             ORDER BY c.updated_at DESC LIMIT 51
+        """, params, 50)
+    entries, entries_truncated, entries_bytes = _bounded_query(cursor, f"""
+        SELECT id, at, left(action, 100) AS action, left(fdm4_store, 100) AS store,
+               left(product_style, 100) AS style, left(garment_color_code, 100) AS color,
+               option_row, position, left(detail::text, 300) AS change
+          FROM logo.audit_log
+         WHERE {window}
+         ORDER BY at DESC, id DESC LIMIT %(lim)s
+    """, params, limit)
+    rows_truncated = edits_truncated or syncs_truncated or batches_truncated or cards_truncated or entries_truncated
+    bytes_truncated = edits_bytes or syncs_bytes or batches_bytes or cards_bytes or entries_bytes
+    result = {
+        "actor": who, "is_you": is_you, "since_days": days, "store": store_code or None,
+        "logo_edits": edits, "syncs": syncs, "bulk_batches": batches, "change_sets": cards,
+        "recent_entries": entries,
+        "undo_routes": {
+            "logo_edits": "Single logo edits have no bulk undo: open the cell on Logo Configuration and set it back (the Activity Log shows the previous values). Edits staged through this chat are undone from their change-set card instead.",
+            "bulk_batches": "Logo Configuration > Bulk Operations > Recent bulk runs: pick the run and press Undo. A run with undone_at set is already undone.",
+            "change_sets": "Open the card in this chat and press \"Undo applied changes\" (status applied only); a pending card can be discarded.",
+            "syncs": "A sync is never undone: fix the logo rows, then press Sync store or Sync style again.",
+        },
+        "truncated": rows_truncated or bytes_truncated,
+        "truncation": {"rows": rows_truncated, "bytes": bytes_truncated},
+    }
+    if not is_you:
+        result["change_sets_note"] = "Change-set cards are listed only for your own login; another person's cards are not visible here."
+    return result
+
+
 def get_stock(cursor, *, style, color_code=None, size_code=None):
     style = _clean(style, "style").upper()
     _bound_statement_timeout(cursor, 15)

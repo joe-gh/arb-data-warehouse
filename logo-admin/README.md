@@ -86,6 +86,7 @@ AGENT_MAX_OUTPUT_TOKENS=2048
 AGENT_MAX_TOOL_CALLS=12
 AGENT_MAX_TOOL_RESULT_BYTES=100000
 AGENT_MAX_TURN_REPLAY_BYTES=1000000
+AGENT_MAX_HISTORY_BYTES=300000
 AGENT_MAX_CONCURRENT_TURNS=4
 AGENT_MAX_CHANGE_SET_ITEMS=50
 AGENT_TURN_TIMEOUT_SECONDS=90
@@ -149,7 +150,12 @@ WordPress login. `AGENT_WRITES_ENABLED` remains false until the complete write,
 retention, load, failure, and rollback gates in `docs/agent-release-runbook.md`
 have passed. OpenAI settings are required only when `AGENT_ENABLED=true`.
 `AGENT_MAX_TURN_REPLAY_BYTES` is a cumulative per-turn persistence bound and
-must be at least `AGENT_MAX_TOOL_RESULT_BYTES`. The 500-row spreadsheet cap is
+must be at least `AGENT_MAX_TOOL_RESULT_BYTES`. `AGENT_MAX_HISTORY_BYTES` is how much of
+the conversation the model sees again each turn: the newest complete turn is
+replayed verbatim (reasoning, tool calls and results) when it fits, and every
+older turn is reduced to the person's message plus the assistant's own reply
+with a note of the tool calls it made, so the assistant keeps the lists and
+decisions it already gave without paying for stale tool results. The 500-row spreadsheet cap is
 processed as one bounded batch; ordinary chat change sets retain their separate
 `AGENT_MAX_CHANGE_SET_ITEMS` cap.
 

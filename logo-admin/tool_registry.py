@@ -85,6 +85,7 @@ from read_commands import (
     CatNodeLookupCommand, CatMappingRowsCommand,
     GetProductStateCommand,
     GetChangeHistoryCommand,
+    MyRecentActivityCommand,
     GetStockCommand,
     AuditStorePricesCommand,
     WpProductCheckCommand,
@@ -243,6 +244,7 @@ APPROVED_AGENT_READ_NAMES = frozenset({
     "cat_node_lookup", "cat_mapping_rows",
     "get_product_state",
     "get_change_history",
+    "my_recent_activity",
     "get_stock",
     "audit_store_prices",
     "wp_product_check",
@@ -314,9 +316,33 @@ def _model_arguments(command: BaseModel) -> dict:
     return command.model_dump(mode="python")
 
 
+AGENT_STORE_FIELDS = (
+    "fdm4_store", "display_name", "blog_id", "enabled", "allows_none",
+    "assigned_styles", "assignment_count", "products",
+)
+
+
 def _list_stores(cursor, command, settings):
-    del command, settings
-    return queries.list_stores(cursor)
+    """The assistant's store list: the fields it can use, optionally filtered.
+
+    The full row (catalog slug, blog paths) is for the app's own pages; every
+    turn that replays it costs the model tokens for nothing.
+    """
+    del settings
+    result = queries.list_stores(cursor)
+    needle = (getattr(command, "q", None) or "").strip().lower()
+    stores = []
+    for row in result.get("stores", []):
+        if needle:
+            haystack = " ".join(
+                str(row.get(key) or "")
+                for key in ("fdm4_store", "display_name", "blog_name", "catalog_id")
+            ).lower()
+            if needle not in haystack:
+                continue
+        stores.append({key: row.get(key) for key in AGENT_STORE_FIELDS})
+    result["stores"] = stores
+    return result
 
 
 def _list_styles(cursor, command, settings):
@@ -566,6 +592,11 @@ def _get_change_history(cursor, command, settings, *, context):
     return queries.get_change_history(cursor, **_model_arguments(command), user_login=context.user_login, category_access=_category_read_allowed(context, settings))
 
 
+def _my_recent_activity(cursor, command, settings, *, context):
+    del settings
+    return queries.my_recent_activity(cursor, **_model_arguments(command), user_login=context.user_login)
+
+
 def _get_stock(cursor, command, settings):
     del settings
     return queries.get_stock(cursor, **_model_arguments(command))
@@ -603,6 +634,7 @@ def _explain_product(cursor, command, settings):
 CANONICAL_AGENT_READ_CONTRACTS = {
     "get_product_state": (GetProductStateCommand, _get_product_state),
     "get_change_history": (GetChangeHistoryCommand, _get_change_history),
+    "my_recent_activity": (MyRecentActivityCommand, _my_recent_activity),
     "get_stock": (GetStockCommand, _get_stock),
     "audit_store_prices": (AuditStorePricesCommand, _audit_store_prices),
     "wp_product_check": (WpProductCheckCommand, _wp_product_check),
@@ -1340,6 +1372,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     _write_spec("fill_missing_colors", "Copy each style's own source-color logos onto missing garment colors, up to 50 styles. Requires an explicit source color, refuses unknown styles and oversized store snapshots, and records an undoable fill-gaps batch in the editor history.", FillMissingColorsCommand, mutations.fill_missing_colors),
     _read_spec("get_product_state", 'Show a store product parent and its variations with prices, projected stock and active flags. Refuses unknown stores and products.', GetProductStateCommand, _get_product_state),
     _read_spec("get_change_history", 'Show recent changes by every recorded actor, newest first, with source and actor counts. Change-set cards are limited to your own; category history requires category access.', GetChangeHistoryCommand, _get_change_history),
+    _read_spec("my_recent_activity", 'Show the person\'s own recent operations in this app (default: the person you are talking with; pass actor for a hand-off), grouped by kind with the undo route for each: logo edits per store, syncs with their errors, bulk runs with undo state, their change-set cards, and the latest raw entries. Answers "what did I just do", "undo what I did", "did my sync go through".', MyRecentActivityCommand, _my_recent_activity),
     _read_spec("get_stock", 'Show live inventory by item and warehouse, with available stock calculated as on-hand minus committed, floored at zero per warehouse. Refuses unknown stock.', GetStockCommand, _get_stock),
     _read_spec("audit_store_prices", 'Evaluate the active price-rule chain for a store, showing counts per rule, the biggest price changes and freezes. Evaluates at most 50,001 candidates.', AuditStorePricesCommand, _audit_store_prices),
     _read_spec("wp_product_check", 'Read the WordPress product status, price, stock, categories and sync timestamp for a store product. Returns an unavailable reason when the site cannot be read.', WpProductCheckCommand, _wp_product_check),

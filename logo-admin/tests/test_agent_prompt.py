@@ -182,3 +182,15 @@ def test_write_mode_explains_spreadsheet_attachments():
     read_only = agent_prompt.build_instructions(writes_enabled=False)
     assert "Attach\nCSV/XLSX" in staged and "mapping" in staged and "Up to 2,000 rows" in staged
     assert "Attach\nCSV/XLSX" not in read_only     # uploads are refused while writes are off
+
+
+def test_prompt_keeps_conversation_memory_and_accepts_pasted_lists():
+    knowledge = agent_prompt.KNOWLEDGE
+    assert "my_recent_activity" in knowledge
+    assert "Never ask for something already in this conversation" in knowledge
+    assert "Tool calls made in this turn" in knowledge, "explains the trimmed-history note"
+    assert "Call list_stores only" in knowledge and "turn a store name into a code" in knowledge
+    staged = agent_prompt.build_instructions(writes_enabled=True)
+    assert "a list, a CSV" not in staged, "a pasted list must not trigger the attach-a-file rule"
+    assert "pasted into the chat" in staged
+    assert "without asking again" in staged

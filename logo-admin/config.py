@@ -216,6 +216,10 @@ class Settings:
     agent_max_tool_calls: int
     agent_max_tool_result_bytes: int
     agent_max_turn_replay_bytes: int
+    # Bytes of prior conversation replayed to the model each turn; older
+    # turns are compacted to their visible text, so this bounds cost, not
+    # memory.
+    agent_max_history_bytes: int
     agent_max_concurrent_turns: int
     agent_max_change_set_items: int
     agent_turn_timeout_seconds: int
@@ -340,6 +344,9 @@ def get_settings() -> Settings:
             "AGENT_MAX_TOOL_RESULT_BYTES must not exceed "
             "AGENT_MAX_TURN_REPLAY_BYTES"
         )
+    agent_max_history_bytes = _integer(
+        "AGENT_MAX_HISTORY_BYTES", 300_000, 20_000, 2 * 1024 * 1024
+    )
 
     return Settings(
         database_dsn=_required("DATABASE_DSN"),
@@ -378,6 +385,7 @@ def get_settings() -> Settings:
         agent_max_tool_calls=agent_max_tool_calls,
         agent_max_tool_result_bytes=agent_max_tool_result_bytes,
         agent_max_turn_replay_bytes=agent_max_turn_replay_bytes,
+        agent_max_history_bytes=agent_max_history_bytes,
         agent_max_concurrent_turns=agent_max_concurrent_turns,
         agent_max_change_set_items=_integer(
             "AGENT_MAX_CHANGE_SET_ITEMS", 50, 1, 500

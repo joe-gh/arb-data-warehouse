@@ -369,10 +369,7 @@ def _prepare_turn(
             cursor,
             session_id,
             user_login,
-            maximum_bytes=min(
-                500_000,
-                max(20_000, settings.agent_max_input_chars * 8),
-            ),
+            maximum_bytes=settings.agent_max_history_bytes,
         )
         leased = agent_repository.acquire_turn(
             cursor,

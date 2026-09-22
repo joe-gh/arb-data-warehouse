@@ -81,3 +81,13 @@ def test_tool_result_cap_cannot_exceed_cumulative_turn_replay(monkeypatch):
 def test_reviewed_spreadsheet_default_is_full_bounded_batch(monkeypatch):
     monkeypatch.delenv("AGENT_MAX_SPREADSHEET_ROWS", raising=False)
     assert _reload().agent_max_spreadsheet_rows == 500
+
+
+def test_history_budget_default_bounds_and_override(monkeypatch):
+    monkeypatch.delenv("AGENT_MAX_HISTORY_BYTES", raising=False)
+    assert _reload().agent_max_history_bytes == 300_000
+    monkeypatch.setenv("AGENT_MAX_HISTORY_BYTES", "10000")
+    with pytest.raises(ConfigurationError, match="AGENT_MAX_HISTORY_BYTES"):
+        _reload()
+    monkeypatch.setenv("AGENT_MAX_HISTORY_BYTES", "600000")
+    assert _reload().agent_max_history_bytes == 600_000
