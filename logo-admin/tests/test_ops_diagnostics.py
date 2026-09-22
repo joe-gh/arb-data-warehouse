@@ -104,6 +104,7 @@ def test_history_merges_actors_sources_filters_and_own_cards(mapped_store):
     _admin("INSERT INTO catmgr.audit_log(actor,action,entity,entity_key,detail) VALUES ('categorizer','changed','term','3',%s)",(Json({'blog_id':mapped_store}),))
     result = _read('get_change_history',{'store':'S_TEST'})
     assert {'logo.audit_log','logo.bulk_batch','woo.price_rule','woo.sync_exclusion','catmgr.audit_log'} <= {r['source'] for r in result['rows']}
+    assert {r['store_name'] for r in result['rows'] if r['store']=='S_TEST'} == {'Ops Test'}, 'history rows name the store'
     batches = [r for r in result['rows'] if r['source']=='logo.bulk_batch']
     assert len(batches)==3 and {'bulk_applied','bulk_undone'} <= {r['action'] for r in batches}, 'an undone batch keeps its applied row'
     assert {'admin-two','pricer','freezer','categorizer'} <= {a['actor'] for a in result['actors']}

@@ -77,9 +77,11 @@ def test_prompt_size_is_reasonable_for_every_turn():
     # Upper bound tracks the write-mode prompt: the app knowledge base plus a
     # description of every write tool. It grows with the tool catalog (57 writes
     # + cross-store/pricing/PIM reads), so the ceiling is a runaway-growth guard,
-    # not a fixed target. Raise it deliberately when the tool surface grows.
+    # not a fixed target. Raise it deliberately when the tool surface grows
+    # (4,400 -> 4,600 on 2026-09-22 for my_recent_activity and the
+    # conversation-memory rules).
     words = len(agent_prompt.build_instructions(writes_enabled=True).split())
-    assert 900 < words < 4_400
+    assert 900 < words < 4_600
 
 
 SCREEN = {
@@ -190,6 +192,7 @@ def test_prompt_keeps_conversation_memory_and_accepts_pasted_lists():
     assert "Never ask for something already in this conversation" in knowledge
     assert "Tool calls made in this turn" in knowledge, "explains the trimmed-history note"
     assert "Call list_stores only" in knowledge and "turn a store name into a code" in knowledge
+    assert "store_name" in knowledge and "Never call list_stores repeatedly" in knowledge
     staged = agent_prompt.build_instructions(writes_enabled=True)
     assert "a list, a CSV" not in staged, "a pasted list must not trigger the attach-a-file rule"
     assert "pasted into the chat" in staged

@@ -4,6 +4,14 @@ unless an actor is named for a hand-off; change-set cards stay owner-only."""
 
 from psycopg2.extras import Json
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def named_test_store():
+    _admin("DELETE FROM woo.store_blog_map WHERE fdm4_store='S_TEST'")
+    _admin("INSERT INTO woo.store_blog_map (blog_id,fdm4_store,blog_path,blog_name) VALUES (900103,'S_TEST','/ops-test/','Ops Test Store')")
+    yield
+    _admin("DELETE FROM woo.store_blog_map WHERE blog_id=900103")
 from pydantic import ValidationError
 
 import staging
@@ -43,6 +51,8 @@ def test_groups_the_persons_own_work_with_undo_routes():
 
     edits = {(g["store"], g["action"]): g for g in result["logo_edits"]}
     assert edits[("S_TEST", "assignment_updated")]["styles"] == 2
+    assert edits[("S_TEST", "assignment_updated")]["store_name"] == "Ops Test Store"
+    assert edits[("S_OTHER", "assignment_created")]["store_name"] == "S_OTHER", "an unmapped store falls back to its code"
     assert set(edits[("S_TEST", "assignment_updated")]["sample_styles"]) == {"STYLE-1", "STYLE-2"}
     assert edits[("S_OTHER", "assignment_created")]["styles"] == 1
     assert ("S_TEST", "assignment_deleted") not in edits, "five-day-old work is outside the default day"
@@ -50,11 +60,13 @@ def test_groups_the_persons_own_work_with_undo_routes():
 
     assert [s["action"] for s in result["syncs"]] == ["sync_failed"]
     assert "Design conflict" in result["syncs"][0]["error"]
+    assert result["syncs"][0]["store_name"] == "Ops Test Store"
 
     assert len(result["bulk_batches"]) == 1
     batch = result["bulk_batches"][0]
     assert batch["kind"] == "paste" and batch["rows_applied"] == 12 and batch["undone_at"] is None
     assert batch["created_by"] == "agent:" + USER
+    assert batch["store_name"] == "Ops Test Store" and "blog_name" not in batch
 
     cards = {c["change_set_id"]: c for c in result["change_sets"]}
     assert cards[str(mine["id"])]["status"] == "pending"

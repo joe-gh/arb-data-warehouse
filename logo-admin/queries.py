@@ -3095,16 +3095,24 @@ def get_change_history(cursor, *, user_login, category_access=False, store=None,
     rows, truncated, byte_truncated = _bounded_query(cursor, cte + """
         SELECT at, source, left(coalesce(actor,''),100) AS actor, left(action,100) AS action,
                left(store,100) AS store, left(style,100) AS style, change_set_id, batch_id,
+               (SELECT bn.blog_name FROM woo.store_blog_map bn WHERE bn.fdm4_store = matched.store ORDER BY bn.blog_id LIMIT 1) AS blog_name,
                left(replace(label,'_',' ') || CASE WHEN store<>'' THEN ' on ' || store ELSE '' END
                     || CASE WHEN style<>'' THEN ' / ' || style ELSE '' END, 1024) AS what
           FROM matched ORDER BY at DESC, source, source_id DESC LIMIT %(lim)s
     """, params, limit)
+    _name_stores(rows)
     actors, actor_truncated, actor_bytes = _bounded_query(cursor, cte + """
         SELECT left(coalesce(actor,''),100) AS actor, count(*) AS count
           FROM matched GROUP BY actor ORDER BY count(*) DESC, actor LIMIT 301
     """, params, 300)
     return _ops_result(rows, truncated or actor_truncated, byte_truncated or actor_bytes,
                        actors=actors, since_days=params["days"])
+
+
+def _name_stores(rows):
+    """Turn a selected blog_name into the store's display name (in place)."""
+    for row in rows:
+        row["store_name"] = _store_display_name(row.get("store"), None, row.pop("blog_name", None)) if row.get("store") else ""
 
 
 def my_recent_activity(cursor, *, user_login, actor=None, store=None, since_days=1, limit=40):
@@ -3132,8 +3140,9 @@ def my_recent_activity(cursor, *, user_login, actor=None, store=None, since_days
         SELECT left(fdm4_store, 100) AS store, left(action, 100) AS action,
                count(*) AS entries, count(DISTINCT product_style) AS styles,
                min(at) AS first_at, max(at) AS last_at,
-               (array_agg(DISTINCT left(product_style, 100)))[1:10] AS sample_styles
-          FROM logo.audit_log
+               (array_agg(DISTINCT left(product_style, 100)))[1:10] AS sample_styles,
+               (SELECT bn.blog_name FROM woo.store_blog_map bn WHERE bn.fdm4_store = a.fdm4_store ORDER BY bn.blog_id LIMIT 1) AS blog_name
+          FROM logo.audit_log a
          WHERE {window} AND action NOT IN {sync_actions}
          GROUP BY fdm4_store, action
          ORDER BY max(at) DESC, fdm4_store, action
@@ -3142,16 +3151,18 @@ def my_recent_activity(cursor, *, user_login, actor=None, store=None, since_days
     syncs, syncs_truncated, syncs_bytes = _bounded_query(cursor, f"""
         SELECT at, left(fdm4_store, 100) AS store, left(action, 100) AS action,
                left(detail->>'error', 400) AS error, detail->'styles' AS styles,
-               left(detail->>'request_id', 64) AS request_id
-          FROM logo.audit_log
+               left(detail->>'request_id', 64) AS request_id,
+               (SELECT bn.blog_name FROM woo.store_blog_map bn WHERE bn.fdm4_store = a.fdm4_store ORDER BY bn.blog_id LIMIT 1) AS blog_name
+          FROM logo.audit_log a
          WHERE {window} AND action IN {sync_actions}
          ORDER BY at DESC LIMIT 21
     """, params, 20)
     batches, batches_truncated, batches_bytes = _bounded_query(cursor, """
         SELECT batch_id, left(fdm4_store, 100) AS store, left(target->>'kind', 40) AS kind,
                left(logo_code, 100) AS logo_code, left(target->>'style', 100) AS style,
-               applied AS rows_applied, created_at, undone_at, left(created_by, 100) AS created_by
-          FROM logo.bulk_batch
+               applied AS rows_applied, created_at, undone_at, left(created_by, 100) AS created_by,
+               (SELECT bn.blog_name FROM woo.store_blog_map bn WHERE bn.fdm4_store = b.fdm4_store ORDER BY bn.blog_id LIMIT 1) AS blog_name
+          FROM logo.bulk_batch b
          WHERE created_at >= now() - %(days)s * interval '1 day'
            AND lower(created_by) IN (%(who)s, %(agent_who)s)
            AND (%(store)s = '' OR fdm4_store = %(store)s)
@@ -3187,6 +3198,8 @@ def my_recent_activity(cursor, *, user_login, actor=None, store=None, since_days
          WHERE {window}
          ORDER BY at DESC, id DESC LIMIT %(lim)s
     """, params, limit)
+    for group in (edits, syncs, batches):
+        _name_stores(group)
     rows_truncated = edits_truncated or syncs_truncated or batches_truncated or cards_truncated or entries_truncated
     bytes_truncated = edits_bytes or syncs_bytes or batches_bytes or cards_bytes or entries_bytes
     result = {

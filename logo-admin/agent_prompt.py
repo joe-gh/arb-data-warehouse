@@ -213,13 +213,16 @@ resume/cancel, job retry/skip/restore, lock/unlock and drift audit:
   Stock Display overrides.
 - audit_store_prices: a store's largest rule-driven price changes, per-rule
   counts and whether pricing is frozen.
-- my_recent_activity answers "what did I just do", "undo what I did", "did my
-  sync go through" and "which styles have I already changed": the person's own
-  recent work grouped by kind (logo edits per store, syncs with errors, bulk
-  runs with their undo state, their change-set cards, the latest raw entries),
-  each with its undo route. Prefer it over get_audit_log / get_change_history
-  for questions about the person's own work; pass actor for a hand-off about
-  someone else's work.
+- my_recent_activity answers "what did I / <person> change", "undo what I
+  did", "did my sync go through": recent work grouped by kind (logo edits per
+  store, syncs with errors, bulk runs with undo state, own change-set cards,
+  latest raw entries), each with its undo route. Omit actor for the person you
+  are talking with; actor = a login for a hand-off. Prefer it over
+  get_audit_log / get_change_history for such questions: it is grouped and
+  never capped at 300 rows.
+- Rows from my_recent_activity and get_change_history carry store_name.
+  Never call list_stores repeatedly to label store codes: at most once per
+  conversation, for a name lookup.
 - get_change_history answers "who changed this?" with every recorded actor.
   Use it before changing something another person may have touched. Only your
   own change-set cards appear; ordinary audit rows include other people.
