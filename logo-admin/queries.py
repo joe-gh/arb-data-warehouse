@@ -3391,16 +3391,18 @@ def find_issues(cursor, *, store=None, checks=None, limit=50, category_access=Fa
                 FROM logo.assignment a
                WHERE a.active AND NULLIF(btrim(a.design_id),'') IS NOT NULL AND NULLIF(btrim(a.logo_code),'') IS NOT NULL
                  AND (%(store)s='' OR a.fdm4_store=%(store)s)
-                 AND ( EXISTS (SELECT 1 FROM logo.design_customer dc
-                              WHERE dc.design_id = btrim(a.design_id)
-                                AND (dc.cust_number = substring(a.fdm4_store from 3)
-                                     OR dc.cust_number = ANY(COALESCE((SELECT ss.extra_customers FROM logo.store_settings ss
+                 -- One relation for both ownership levels (same rule as the
+                 -- WordPress guard) so the planner keeps a single semi-join;
+                 -- an OR of two EXISTS runs a subplan per row and times out.
+                 AND EXISTS (SELECT 1 FROM (
+                                SELECT dc.design_id, dc.cust_number FROM logo.design_customer dc
+                                UNION ALL
+                                SELECT btrim(own.design_id), btrim(own.cust_number) FROM fdm4.dec_design own
+                             ) owner_of
+                              WHERE owner_of.design_id = btrim(a.design_id)
+                                AND (owner_of.cust_number = substring(a.fdm4_store from 3)
+                                     OR owner_of.cust_number = ANY(COALESCE((SELECT ss.extra_customers FROM logo.store_settings ss
                                                                         WHERE ss.fdm4_store = a.fdm4_store), ARRAY[]::text[]))))
-                       OR EXISTS (SELECT 1 FROM fdm4.dec_design own
-                              WHERE btrim(own.design_id) = btrim(a.design_id)
-                                AND (btrim(own.cust_number) = substring(a.fdm4_store from 3)
-                                     OR btrim(own.cust_number) = ANY(COALESCE((SELECT ss.extra_customers FROM logo.store_settings ss
-                                                                        WHERE ss.fdm4_store = a.fdm4_store), ARRAY[]::text[])))) )
                GROUP BY 1,2,3,4 HAVING count(DISTINCT btrim(a.design_id)) > 1
             ) k""", "Make each logo and placement use one design in Logo Configuration; until then the website sync leaves that logo out of FDM4 order stamping."),
     }
